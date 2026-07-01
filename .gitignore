@@ -80,6 +80,7 @@ education-agent/
 
 # Test/debug files
 backend/*.txt
+!backend/requirements*.txt
 backend/*.json
 backend/*.log
 backend/*.msi
