@@ -13,8 +13,8 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1  # pin bcrypt version for passlib compatibility
 
 # AI模型（支持多个提供商）
-anthropic==0.18.1
-openai==1.12.0
+anthropic>=0.18.1
+openai>=1.12.0
 httpx>=0.25.2
 langchain-openai>=0.1.0
 langgraph>=0.1.0
