@@ -39,6 +39,7 @@ class UserCreate(BaseModel):
     password: str = Field(..., min_length=6, max_length=128)
     email: str
     role: UserRole = UserRole.STUDENT
+    org_name: str = Field(..., min_length=1, max_length=100)
 
 
 class UserLogin(BaseModel):
@@ -59,6 +60,8 @@ class UserResponse(BaseModel):
     username: str
     email: str
     role: str
+    org_id: str = ""
+    org_name: str = ""
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -99,6 +102,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         # 解码JWT
         payload = jwt.decode(credentials.credentials, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         user_id: str = payload.get("sub")
+        org_id: str = payload.get("org_id", "")
 
         if user_id is None:
             raise credentials_exception
@@ -109,11 +113,20 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         if user is None:
             raise credentials_exception
 
+        # 获取组织名称
+        org_name = ""
+        if org_id:
+            org = await db.get_org(org_id)
+            if org:
+                org_name = org.get("name", "")
+
         return UserResponse(
             user_id=user["user_id"],
             username=user["username"],
             email=user["email"],
-            role=user["role"]
+            role=user["role"],
+            org_id=org_id,
+            org_name=org_name,
         )
 
     except jwt.PyJWTError as e:
@@ -142,8 +155,19 @@ async def register_user(user_data: UserCreate) -> Token:
             detail="用户名已存在"
         )
 
+    # 检查组织名是否已存在
+    existing_org = await db.get_org_by_name(user_data.org_name)
+    if existing_org:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="组织名已存在"
+        )
+
     # 生成用户ID（UUID保证唯一性）
     user_id = f"user_{uuid.uuid4().hex[:12]}"
+
+    # 创建组织
+    org_id = await db.create_org(name=user_data.org_name, owner_id=user_id)
 
     # 创建用户数据
     user_dict = {
@@ -151,20 +175,21 @@ async def register_user(user_data: UserCreate) -> Token:
         "username": user_data.username,
         "email": user_data.email,
         "role": user_data.role.value if isinstance(user_data.role, Enum) else user_data.role,
-        "hashed_password": get_password_hash(user_data.password)
+        "hashed_password": get_password_hash(user_data.password),
+        "org_id": org_id,
     }
 
     # 保存到数据库
     await db.create_user(user_dict)
 
-    # 创建访问令牌
+    # 创建访问令牌（携带 org_id）
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user_id},
+        data={"sub": user_id, "org_id": org_id},
         expires_delta=access_token_expires
     )
 
-    logger.info(f"用户注册成功: {user_data.username}")
+    logger.info(f"用户注册成功: {user_data.username}, 组织: {user_data.org_name}")
 
     return Token(access_token=access_token)
 
@@ -188,10 +213,11 @@ async def login_user(user_data: UserLogin) -> Token:
             detail="用户名或密码错误"
         )
 
-    # 创建访问令牌
+    # 创建访问令牌（携带 org_id）
+    org_id = user.get("org_id", "")
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user["user_id"]},
+        data={"sub": user["user_id"], "org_id": org_id},
         expires_delta=access_token_expires
     )
 

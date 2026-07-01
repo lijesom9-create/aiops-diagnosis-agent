@@ -109,7 +109,15 @@ class Database:
                 "username": "test",
                 "email": "test@example.com",
                 "role": "student",
+                "org_id": "org_test",
                 "hashed_password": hashed_password
+            })
+            self._organizations.append({
+                "org_id": "org_test",
+                "name": "test-org",
+                "owner_id": "test_user_001",
+                "created_at": datetime.now(),
+                "updated_at": datetime.now(),
             })
             logger.info("已创建测试用户: test/123456")
 
