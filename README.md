@@ -108,8 +108,6 @@ npm run dev
 education-agent/
 ├── backend/                   # 后端代码
 │   ├── app/
-│   │   ├── agent/            # 自研 Agent
-│   │   ├── agent_v2/         # V2 Agent（LLM 驱动）
 │   │   ├── langgraph_agent/  # LangGraph Agent
 │   │   ├── api/              # API 路由
 │   │   ├── capabilities/     # 能力系统
