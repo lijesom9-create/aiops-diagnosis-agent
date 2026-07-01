@@ -227,6 +227,7 @@ class KnowledgeItem:
     source: str  # course | teaching | user_document
     metadata: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    org_id: str = ""
 
     def to_chroma(self) -> Dict[str, Any]:
         """转换为 ChromaDB 存储格式"""
@@ -237,6 +238,7 @@ class KnowledgeItem:
                 "title": self.title,
                 "source": self.source,
                 "created_at": self.created_at,
+                "org_id": self.org_id,
                 **self.metadata,
             }
         }
@@ -363,6 +365,7 @@ class UnifiedKnowledgeStore:
         source: Optional[str] = None,
         user_id: Optional[str] = None,
         topic_id: Optional[str] = None,
+        org_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         搜索知识
@@ -391,10 +394,16 @@ class UnifiedKnowledgeStore:
             filters=filters if filters else None,
         )
 
-        # 后处理：用户隔离
+        # 后处理：组织隔离 + 用户隔离
         output = []
         for doc_id, score, metadata in results:
-            # 如果指定了 user_id，只返回公共知识或该用户的私有知识
+            # 组织隔离：只返回同一组织的数据
+            if org_id:
+                doc_org_id = metadata.get("org_id")
+                if doc_org_id and doc_org_id != org_id:
+                    continue  # 跳过其他组织的数据
+
+            # 用户隔离：如果指定了 user_id，只返回公共知识或该用户的私有知识
             if user_id:
                 doc_user_id = metadata.get("user_id")
                 if doc_user_id and doc_user_id != user_id:
@@ -446,9 +455,10 @@ class UnifiedKnowledgeStore:
         source: str,
         top_k: int = 5,
         user_id: Optional[str] = None,
+        org_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """按类型搜索"""
-        return self.search(query=query, top_k=top_k, source=source, user_id=user_id)
+        return self.search(query=query, top_k=top_k, source=source, user_id=user_id, org_id=org_id)
 
     # ========== 混合检索 ==========
 
@@ -459,6 +469,7 @@ class UnifiedKnowledgeStore:
         min_score: float = 0.0,
         source: Optional[str] = None,
         user_id: Optional[str] = None,
+        org_id: Optional[str] = None,
         rewrite_query: bool = True,
     ) -> List[Dict[str, Any]]:
         """
@@ -481,10 +492,10 @@ class UnifiedKnowledgeStore:
             queries = QueryRewriter.rewrite(query)
 
         # 1. 向量检索（主查询）
-        vector_results = self._vector_search(query, top_k=top_k * 3, source=source, user_id=user_id)
+        vector_results = self._vector_search(query, top_k=top_k * 3, source=source, user_id=user_id, org_id=org_id)
 
         # 2. BM25 检索
-        bm25_results = self._bm25_search(queries, top_k=top_k * 3, source=source, user_id=user_id)
+        bm25_results = self._bm25_search(queries, top_k=top_k * 3, source=source, user_id=user_id, org_id=org_id)
 
         # 3. RRF 融合
         if bm25_results and vector_results:
@@ -530,6 +541,7 @@ class UnifiedKnowledgeStore:
     def _vector_search(
         self, query: str, top_k: int = 10,
         source: Optional[str] = None, user_id: Optional[str] = None,
+        org_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """向量检索"""
         filters = {}
@@ -543,6 +555,10 @@ class UnifiedKnowledgeStore:
 
         output = []
         for doc_id, score, metadata in results:
+            if org_id:
+                doc_org_id = metadata.get("org_id")
+                if doc_org_id and doc_org_id != org_id:
+                    continue
             if user_id:
                 doc_user_id = metadata.get("user_id")
                 if doc_user_id and doc_user_id != user_id:
@@ -560,6 +576,7 @@ class UnifiedKnowledgeStore:
     def _bm25_search(
         self, queries: List[str], top_k: int = 10,
         source: Optional[str] = None, user_id: Optional[str] = None,
+        org_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """BM25 关键词检索（使用持久化倒排索引）"""
         self._ensure_bm25_index()
