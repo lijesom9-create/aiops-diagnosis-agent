@@ -54,6 +54,7 @@ class Database:
         self._long_term_memories: List[Dict] = []
         self._user_profiles: List[Dict] = []
         self._user_knowledge_bases: List[Dict] = []
+        self._organizations: List[Dict] = []
         self._courses: List[Dict] = []
         self._knowledge_points: List[Dict] = []
         self._teaching_experiences: List[Dict] = []
@@ -416,6 +417,53 @@ class Database:
         original_len = len(self._study_plans)
         self._study_plans = [p for p in self._study_plans if p.get("plan_id") != plan_id]
         return len(self._study_plans) < original_len
+
+    # ========== 组织操作 ==========
+
+    async def create_org(self, name: str, owner_id: str) -> str:
+        """创建组织"""
+        await self.connect()
+        org_id = f"org_{uuid.uuid4().hex[:12]}"
+        org = {
+            "org_id": org_id,
+            "name": name,
+            "owner_id": owner_id,
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        }
+        if self._use_mongo:
+            await self._mongo.organizations.insert_one(org)
+        else:
+            self._organizations.append(org)
+        return org_id
+
+    async def get_org(self, org_id: str) -> Optional[Dict]:
+        """获取组织"""
+        await self.connect()
+        if self._use_mongo:
+            return await self._mongo.organizations.find_one({"org_id": org_id}, {"_id": 0})
+        for org in self._organizations:
+            if org.get("org_id") == org_id:
+                return org
+        return None
+
+    async def get_org_by_name(self, name: str) -> Optional[Dict]:
+        """按名称获取组织"""
+        await self.connect()
+        if self._use_mongo:
+            return await self._mongo.organizations.find_one({"name": name}, {"_id": 0})
+        for org in self._organizations:
+            if org.get("name") == name:
+                return org
+        return None
+
+    async def get_user_orgs(self, user_id: str) -> List[Dict]:
+        """获取用户创建的组织"""
+        await self.connect()
+        if self._use_mongo:
+            cursor = self._mongo.organizations.find({"owner_id": user_id}, {"_id": 0})
+            return await cursor.to_list(100)
+        return [org for org in self._organizations if org.get("owner_id") == user_id]
 
     # ========== 会话操作 ==========
 
