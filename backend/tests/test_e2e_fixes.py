@@ -36,6 +36,7 @@ class TestAuthFlow:
             password="test123456",
             email=f"{unique_name}@test.com",
             role="student",
+            org_name=f"org_{uuid.uuid4().hex[:8]}",
         )
         token = await register_user(user_data)
         assert token.access_token
@@ -57,6 +58,7 @@ class TestAuthFlow:
             password="test123456",
             email="h@h.com",
             role=UserRole.ADMIN,
+            org_name="test-org",
         )
         # 角色被接受为枚举值，但 register_user 会正确存储
         assert user.role == UserRole.ADMIN
@@ -69,7 +71,7 @@ class TestAuthFlow:
         from app.core.auth import UserCreate
 
         with pytest.raises(ValidationError):
-            UserCreate(username="u", password="123", email="e@e.com")
+            UserCreate(username="u", password="123", email="e@e.com", org_name="test-org")
 
     def test_uuid_user_id_generation(self):
         """用户 ID 应使用 UUID 格式而非时间戳"""

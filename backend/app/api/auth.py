@@ -21,6 +21,7 @@ class RegisterRequest(BaseModel):
     password: str
     email: str
     role: UserRole = UserRole.STUDENT
+    org_name: str
 
 
 class LoginRequest(BaseModel):
@@ -44,7 +45,8 @@ async def register(request: RegisterRequest):
         username=request.username,
         password=request.password,
         email=request.email,
-        role=request.role
+        role=request.role,
+        org_name=request.org_name,
     )
 
     return await register_user(user_data)

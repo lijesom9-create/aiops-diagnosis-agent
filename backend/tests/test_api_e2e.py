@@ -43,6 +43,7 @@ def student_token(client):
         "password": "test123456",
         "email": f"{username}@test.com",
         "role": "student",
+        "org_name": f"org_{uuid.uuid4().hex[:8]}",
     })
     assert resp.status_code == 200
     return resp.json()["access_token"]
@@ -57,6 +58,7 @@ def teacher_token(client):
         "password": "test123456",
         "email": f"{username}@test.com",
         "role": "teacher",
+        "org_name": f"org_{uuid.uuid4().hex[:8]}",
     })
     assert resp.status_code == 200
     return resp.json()["access_token"]
@@ -115,6 +117,7 @@ class TestAuthAPI:
             "password": "test123456",
             "email": f"{username}@test.com",
             "role": "student",
+        "org_name": f"org_{uuid.uuid4().hex[:8]}",
         })
         assert resp.status_code == 200
         data = resp.json()
@@ -129,6 +132,7 @@ class TestAuthAPI:
             "password": "test123456",
             "email": f"{username}@test.com",
             "role": "teacher",
+        "org_name": f"org_{uuid.uuid4().hex[:8]}",
         })
         assert resp.status_code == 200
         assert "access_token" in resp.json()
@@ -141,6 +145,8 @@ class TestAuthAPI:
             "username": username,
             "password": "test123456",
             "email": f"{username}@test.com",
+            "role": "student",
+            "org_name": f"org_{uuid.uuid4().hex[:8]}",
         })
         assert resp1.status_code == 200
 
@@ -149,6 +155,8 @@ class TestAuthAPI:
             "username": username,
             "password": "test123456",
             "email": f"{username}2@test.com",
+            "role": "student",
+            "org_name": f"org_{uuid.uuid4().hex[:8]}",
         })
         assert resp2.status_code == 400
 
@@ -161,6 +169,7 @@ class TestAuthAPI:
                 "username": f"short_{uuid.uuid4().hex[:8]}",
                 "password": "123",
                 "email": "short@test.com",
+                "org_name": f"org_{uuid.uuid4().hex[:8]}",
             })
             # 应该返回 4xx 或 5xx，不应返回 200
             assert resp.status_code >= 400
@@ -176,6 +185,8 @@ class TestAuthAPI:
             "username": username,
             "password": "test123456",
             "email": f"{username}@test.com",
+            "role": "student",
+            "org_name": f"org_{uuid.uuid4().hex[:8]}",
         })
 
         # 登录
@@ -193,6 +204,8 @@ class TestAuthAPI:
             "username": username,
             "password": "test123456",
             "email": f"{username}@test.com",
+            "role": "student",
+            "org_name": f"org_{uuid.uuid4().hex[:8]}",
         })
 
         resp = client.post("/api/auth/login", json={

@@ -31,6 +31,7 @@ def student_token(client):
         "password": "test123456",
         "email": f"{username}@test.com",
         "role": "student",
+        "org_name": f"org_{uuid.uuid4().hex[:8]}",
     })
     assert resp.status_code == 200
     return resp.json()["access_token"]
@@ -159,6 +160,7 @@ class TestTopicSearch:
             "password": "test123456",
             "email": f"{other_username}@test.com",
             "role": "student",
+        "org_name": f"org_{uuid.uuid4().hex[:8]}",
         })
         other_token = resp.json()["access_token"]
 
