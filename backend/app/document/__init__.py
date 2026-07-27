@@ -14,6 +14,10 @@ from .chunker import DocumentChunker
 from .uploader import DocumentUploader
 from .pymupdf_parser import PyMuPDFParser
 from .ocr import OCRProcessor, PDFWithOCR
+from .models import (
+    ElementType, ElementMetadata, DocumentElement,
+    DocumentMetadata, StructuredDocument, Chunk,
+)
 
 __all__ = [
     "DocumentParser",
@@ -22,4 +26,7 @@ __all__ = [
     "PyMuPDFParser",
     "OCRProcessor",
     "PDFWithOCR",
+    # 新模型
+    "ElementType", "ElementMetadata", "DocumentElement",
+    "DocumentMetadata", "StructuredDocument", "Chunk",
 ]
