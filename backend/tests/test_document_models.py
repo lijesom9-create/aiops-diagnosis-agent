@@ -92,3 +92,36 @@ class TestChunk:
     def test_chunk_defaults(self):
         chunk = Chunk(id="chunk_002", text="test", element_type="text", metadata={})
         assert chunk.metadata == {}
+
+
+class TestTextParser:
+    """Tests for TextParser (Task 2)"""
+
+    def test_parse_markdown_with_headings(self):
+        from backend.app.document.text_parser import TextParser
+        content = b"# Title\n\nIntro text.\n\n## Section 1\n\nBody text."
+        doc = TextParser().parse(content, "test.md")
+        assert doc.metadata.filename == "test.md"
+        assert len(doc.elements) >= 3
+        assert doc.elements[0].type.value == "heading"
+
+    def test_parse_plain_text(self):
+        from backend.app.document.text_parser import TextParser
+        content = b"Hello\n\nWorld\n\n- item 1\n- item 2"
+        doc = TextParser().parse(content, "test.txt")
+        assert len(doc.elements) > 0
+        paragraphs = [e for e in doc.elements if e.type.value == "paragraph"]
+        lists = [e for e in doc.elements if e.type.value == "list"]
+        assert len(paragraphs) > 0 or len(lists) > 0
+
+    def test_parse_empty_content(self):
+        from backend.app.document.text_parser import TextParser
+        doc = TextParser().parse(b"", "empty.txt")
+        assert len(doc.elements) == 0
+
+    def test_parse_markdown_code_block(self):
+        from backend.app.document.text_parser import TextParser
+        content = b"# Code\n\n```python\nx = 1\nprint(x)\n```"
+        doc = TextParser().parse(content, "code.md")
+        code_elements = [e for e in doc.elements if e.type.value == "code"]
+        assert len(code_elements) >= 1

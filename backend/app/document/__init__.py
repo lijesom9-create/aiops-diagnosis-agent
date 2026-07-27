@@ -18,6 +18,7 @@ from .models import (
     ElementType, ElementMetadata, DocumentElement,
     DocumentMetadata, StructuredDocument, Chunk,
 )
+from .text_parser import TextParser
 
 __all__ = [
     "DocumentParser",
@@ -26,6 +27,7 @@ __all__ = [
     "PyMuPDFParser",
     "OCRProcessor",
     "PDFWithOCR",
+    "TextParser",
     # 新模型
     "ElementType", "ElementMetadata", "DocumentElement",
     "DocumentMetadata", "StructuredDocument", "Chunk",
