@@ -10,8 +10,10 @@ from typing import List, Optional
 from pathlib import Path
 from loguru import logger
 
-from .parser import DocumentParser
+from .parser import DocumentParser, ParserFactory
 from .chunker import DocumentChunker
+from .struct_chunker import StructureAwareChunker
+from .models import Chunk, DocumentElement
 from ..knowledge.unified_store import UnifiedKnowledgeStore, KnowledgeItem
 from ..storage.file_storage import FileStorage, get_file_storage
 
@@ -26,6 +28,7 @@ class DocumentUploader:
         chunk_size: int = 500,
         chunk_overlap: int = 50,
         strategy: str = "auto",  # 自动选择分块策略
+        collection_name: Optional[str] = None,  # 兼容旧测试
     ):
         self.parser = DocumentParser()
         self.chunker = DocumentChunker(
@@ -33,8 +36,20 @@ class DocumentUploader:
             chunk_overlap=chunk_overlap,
             strategy=strategy,
         )
-        self.knowledge_store = knowledge_store
         self.file_storage = file_storage or get_file_storage()
+        self._collection_name = collection_name
+
+        if knowledge_store is not None:
+            self.knowledge_store = knowledge_store
+        elif collection_name:
+            # 兼容旧测试：自动创建内存 store
+            from ..retrieval.embeddings import TFIDFModel
+            self.knowledge_store = UnifiedKnowledgeStore(
+                embedding_model=TFIDFModel(max_features=100),
+                collection_name=collection_name,
+            )
+        else:
+            self.knowledge_store = None
 
     async def upload(
         self,
@@ -47,7 +62,7 @@ class DocumentUploader:
         document_id: Optional[str] = None,
     ) -> dict:
         """
-        上传并索引文档
+        上传并索引文档（使用新的结构化管道，失败时降级到旧管道）
 
         Args:
             content: 文件二进制内容
@@ -60,97 +75,139 @@ class DocumentUploader:
         Returns:
             dict: 上传结果，包含 document_id, chunk_count
         """
-        # 1. 解析文档
+        document_id = document_id or str(uuid.uuid4())
+        file_info = None
+
+        # 保存原始文件
+        if user_id and self.file_storage:
+            try:
+                file_info = await self.file_storage.save(
+                    content=content, filename=filename,
+                    user_id=user_id, document_id=document_id,
+                )
+            except Exception as e:
+                logger.warning(f"保存原始文件失败: {e}")
+
+        # 尝试新管道（结构化解析 + by_title 分块）
+        try:
+            result = await self._upload_new_pipeline(
+                content=content, filename=filename, title=title,
+                document_id=document_id, course_id=course_id,
+                user_id=user_id, topic_id=topic_id, file_info=file_info,
+            )
+            return result
+        except Exception as e:
+            logger.warning(f"新管道处理失败，降级到旧管道: {e}")
+            result = await self._upload_legacy(
+                content=content, filename=filename, title=title,
+                document_id=document_id, course_id=course_id,
+                user_id=user_id, topic_id=topic_id, file_info=file_info,
+            )
+            return result
+
+    async def _upload_new_pipeline(
+        self, content, filename, title, document_id,
+        course_id, user_id, topic_id, file_info,
+    ) -> dict:
+        """使用新的结构化管道（ParserFactory + StructureAwareChunker）"""
+        parser = ParserFactory.get_parser(filename)
+        doc = parser.parse(content, filename)
+
+        if not doc.elements:
+            raise ValueError("文档内容为空或解析失败")
+
+        chunker = StructureAwareChunker(max_chars=self.chunker.chunk_size)
+        chunks = chunker.chunk(doc)
+
+        if not chunks:
+            raise ValueError("文档分块后为空")
+
+        return self._store_chunks(
+            chunks=chunks, document_id=document_id, filename=filename,
+            title=title, course_id=course_id, user_id=user_id,
+            topic_id=topic_id, file_info=file_info,
+        )
+
+    async def _upload_legacy(
+        self, content, filename, title, document_id,
+        course_id, user_id, topic_id, file_info,
+    ) -> dict:
+        """使用旧管道（DocumentParser + DocumentChunker，降级路径）"""
         text = self.parser.parse(content, filename)
         if not text.strip():
             raise ValueError("文档内容为空或解析失败")
 
-        # 2. 生成文档 ID
-        document_id = document_id or str(uuid.uuid4())
-        metadata = self.parser.get_metadata(filename, title)
-        metadata["course_id"] = course_id
-        metadata["user_id"] = user_id
-        metadata["topic_id"] = topic_id
-        metadata["document_id"] = document_id
-
-        # 3. 保存原始文件到文件系统
-        file_info = None
-        if user_id and self.file_storage:
-            try:
-                file_info = await self.file_storage.save(
-                    content=content,
-                    filename=filename,
-                    user_id=user_id,
-                    document_id=document_id,
-                )
-                metadata["file_path"] = file_info.get("file_path")
-                metadata["file_size"] = file_info.get("file_size")
-                logger.info(f"原始文件已保存: {file_info.get('file_path')}")
-            except Exception as e:
-                logger.warning(f"保存原始文件失败: {e}")
-
-        # 4. 根据文件类型选择分块策略
         ext = Path(filename).suffix.lower()
-        if ext in (".md", ".markdown"):
-            force_strategy = "markdown"
-        else:
-            force_strategy = "recursive"  # PDF/Word/TXT 使用递归分块
+        force_strategy = "markdown" if ext in (".md", ".markdown") else "recursive"
+        old_chunks = self.chunker.chunk(text, document_id, force_strategy=force_strategy)
 
-        # 5. 分块
-        chunks = self.chunker.chunk(text, document_id, force_strategy=force_strategy)
-        if not chunks:
+        if not old_chunks:
             raise ValueError("文档分块后为空")
 
-        # 6. 转换为 KnowledgeItem 并存入统一知识库
+        # 将旧 chunks 转换为新 Chunk 格式
+        chunks = []
+        for i, c in enumerate(old_chunks):
+            chunks.append(Chunk(
+                id=c["id"],
+                text=c["text"],
+                element_type="text",
+                metadata={"chunk_index": i, "source": "legacy"},
+            ))
+
+        return self._store_chunks(
+            chunks=chunks, document_id=document_id, filename=filename,
+            title=title, course_id=course_id, user_id=user_id,
+            topic_id=topic_id, file_info=file_info,
+        )
+
+    def _store_chunks(
+        self, chunks, document_id, filename, title,
+        course_id, user_id, topic_id, file_info,
+    ) -> dict:
+        """将分块存储到统一知识库"""
+        metadata_base = {
+            "document_id": document_id,
+            "filename": filename,
+            "title": title or filename,
+            "user_id": user_id,
+            "topic_id": topic_id,
+            "course_id": course_id,
+            "source": "user_document",
+        }
+        if file_info:
+            metadata_base["file_path"] = file_info.get("file_path")
+            metadata_base["file_size"] = file_info.get("file_size")
+
         items = []
+        total_chars = 0
         for chunk in chunks:
-            # 合并元数据，保留 heading_path
-            chunk_metadata = chunk["metadata"]
-            merged = {
-                **metadata,
-                **chunk_metadata,
-                "source": "user_document",
-            }
+            merged = {**metadata_base, **chunk.metadata}
+            cleaned = {k: v for k, v in merged.items() if v not in (None, [], "")}
+            total_chars += len(chunk.text)
 
-            # 过滤 None 值和空列表
-            cleaned = {}
-            for k, v in merged.items():
-                if v is None:
-                    continue
-                if isinstance(v, list) and len(v) == 0:
-                    continue
-                cleaned[k] = v
-
-            # 标题路径转为字符串（方便存储）
-            if "heading_path" in cleaned and isinstance(cleaned["heading_path"], list):
-                cleaned["heading_path_str"] = " > ".join(cleaned["heading_path"])
-
-            item = KnowledgeItem(
-                id=chunk["id"],
+            items.append(KnowledgeItem(
+                id=chunk.id,
                 title=title or filename,
-                content=chunk["text"],
+                content=chunk.text,
                 source="user_document",
                 metadata=cleaned,
-            )
-            items.append(item)
+            ))
 
-        # 7. 批量添加到统一知识库
         if not self.knowledge_store:
-            raise RuntimeError("UnifiedKnowledgeStore 未初始化，文档无法入库")
+            raise RuntimeError("UnifiedKnowledgeStore 未初始化")
         self.knowledge_store.add_batch(items)
 
         logger.info(f"文档上传完成: {filename} -> {document_id}, 共 {len(chunks)} 块")
-
         return {
             "document_id": document_id,
             "filename": filename,
-            "title": metadata["title"],
+            "title": title or filename,
             "chunk_count": len(chunks),
-            "char_count": len(text),
+            "char_count": total_chars,
             "file_path": file_info.get("file_path") if file_info else None,
         }
 
-    def list_documents(self, user_id: Optional[str] = None) -> List[dict]:
+    async def list_documents(self, user_id: Optional[str] = None) -> List[dict]:
         """列出已上传的文档"""
         if not self.knowledge_store:
             return []
