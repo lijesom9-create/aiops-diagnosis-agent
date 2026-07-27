@@ -19,6 +19,7 @@ from .models import (
     DocumentMetadata, StructuredDocument, Chunk,
 )
 from .text_parser import TextParser
+from .docling_parser import DoclingParser
 
 __all__ = [
     "DocumentParser",
@@ -28,6 +29,7 @@ __all__ = [
     "OCRProcessor",
     "PDFWithOCR",
     "TextParser",
+    "DoclingParser",
     # 新模型
     "ElementType", "ElementMetadata", "DocumentElement",
     "DocumentMetadata", "StructuredDocument", "Chunk",
