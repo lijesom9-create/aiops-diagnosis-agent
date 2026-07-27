@@ -125,3 +125,48 @@ class TestTextParser:
         doc = TextParser().parse(content, "code.md")
         code_elements = [e for e in doc.elements if e.type.value == "code"]
         assert len(code_elements) >= 1
+
+
+class TestParserFactory:
+    """Tests for ParserFactory (Task 4)"""
+
+    def test_factory_returns_docling_for_pdf(self):
+        from backend.app.document.parser import ParserFactory
+        from backend.app.document.docling_parser import DoclingParser
+        parser = ParserFactory.get_parser("test.pdf")
+        assert isinstance(parser, DoclingParser)
+
+    def test_factory_returns_textparser_for_md(self):
+        from backend.app.document.parser import ParserFactory
+        from backend.app.document.text_parser import TextParser
+        parser = ParserFactory.get_parser("test.md")
+        assert isinstance(parser, TextParser)
+
+    def test_factory_returns_textparser_for_txt(self):
+        from backend.app.document.parser import ParserFactory
+        from backend.app.document.text_parser import TextParser
+        parser = ParserFactory.get_parser("test.txt")
+        assert isinstance(parser, TextParser)
+
+    def test_factory_unknown_extension(self):
+        from backend.app.document.parser import ParserFactory
+        import pytest
+        with pytest.raises(ValueError, match="不支持的文件格式"):
+            ParserFactory.get_parser("test.xyz")
+
+    def test_factory_parse_returns_structured_document(self):
+        """端到端：工厂获取解析器 -> 解析 -> 返回结构化文档"""
+        from backend.app.document.parser import ParserFactory
+        from backend.app.document.models import StructuredDocument
+        parser = ParserFactory.get_parser("test.txt")
+        doc = parser.parse(b"Hello world", "test.txt")
+        assert isinstance(doc, StructuredDocument)
+        assert len(doc.elements) >= 1
+
+    def test_supported_extensions(self):
+        from backend.app.document.parser import ParserFactory
+        exts = ParserFactory.get_supported_extensions()
+        assert ".pdf" in exts
+        assert ".md" in exts
+        assert ".txt" in exts
+        assert ".docx" in exts

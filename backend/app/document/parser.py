@@ -251,3 +251,53 @@ class DocumentParser:
             "title": title or Path(filename).stem,
             "extension": Path(filename).suffix.lower(),
         }
+
+
+# ============================================================
+# ParserFactory - 新解析器工厂
+# ============================================================
+
+
+class ParserFactory:
+    """解析器工厂——根据文件扩展名自动选择合适的解析器"""
+
+    _PARSER_REGISTRY = {}
+
+    @classmethod
+    def register(cls, parser_cls):
+        """注册解析器"""
+        for ext in parser_cls.SUPPORTED_EXTENSIONS:
+            cls._PARSER_REGISTRY[ext.lower()] = parser_cls
+
+    @classmethod
+    def get_parser(cls, filename: str):
+        """
+        获取解析器实例
+
+        Args:
+            filename: 文件名（用于判断格式）
+
+        Returns:
+            BaseParser: 解析器实例
+
+        Raises:
+            ValueError: 不支持的文件格式
+        """
+        ext = Path(filename).suffix.lower()
+        if ext in cls._PARSER_REGISTRY:
+            return cls._PARSER_REGISTRY[ext]()
+
+        from .docling_parser import DoclingParser
+        from .text_parser import TextParser
+
+        if ext in DoclingParser.SUPPORTED_EXTENSIONS:
+            return DoclingParser()
+        elif ext in TextParser.SUPPORTED_EXTENSIONS:
+            return TextParser()
+        else:
+            raise ValueError(f"不支持的文件格式: {ext}")
+
+    @classmethod
+    def get_supported_extensions(cls):
+        """获取所有支持的扩展名"""
+        return set(cls._PARSER_REGISTRY.keys())
