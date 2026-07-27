@@ -21,6 +21,7 @@ from .models import (
 from .text_parser import TextParser
 from .docling_parser import DoclingParser
 from .parser import ParserFactory
+from .struct_chunker import StructureAwareChunker
 
 # 自动注册解析器到工厂
 ParserFactory.register(DoclingParser)
