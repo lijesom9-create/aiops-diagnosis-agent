@@ -300,4 +300,10 @@ class ParserFactory:
     @classmethod
     def get_supported_extensions(cls):
         """获取所有支持的扩展名"""
-        return set(cls._PARSER_REGISTRY.keys())
+        from .docling_parser import DoclingParser
+        from .text_parser import TextParser
+
+        exts = set()
+        exts.update(DoclingParser.SUPPORTED_EXTENSIONS)
+        exts.update(TextParser.SUPPORTED_EXTENSIONS)
+        return exts

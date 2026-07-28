@@ -36,6 +36,8 @@ __all__ = [
     "PDFWithOCR",
     "TextParser",
     "DoclingParser",
+    "ParserFactory",
+    "StructureAwareChunker",
     # 新模型
     "ElementType", "ElementMetadata", "DocumentElement",
     "DocumentMetadata", "StructuredDocument", "Chunk",

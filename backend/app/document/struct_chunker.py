@@ -114,14 +114,18 @@ class StructureAwareChunker:
                     if not sent:
                         continue
                     if len(sent) > self.max_chars:
-                        # 超长句子按字符切分
+                        # 超长句子按字符切分，仍保留标题路径
                         for i in range(0, len(sent), self.max_chars):
                             chunk_text = sent[i:i + self.max_chars]
                             chunks.append(Chunk(
                                 id=f"chunk_{uuid.uuid4().hex[:12]}",
                                 text=chunk_text,
                                 element_type="text",
-                                metadata={"element_type": "text"},
+                                metadata={
+                                    "heading_path": list(current_heading_path),
+                                    "heading_path_str": " > ".join(current_heading_path),
+                                    "element_type": "text",
+                                },
                             ))
                     else:
                         chunks.append(Chunk(

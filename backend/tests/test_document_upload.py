@@ -119,3 +119,45 @@ class TestDocumentUploader:
 
         docs = await uploader.list_documents()
         assert not any(d["document_id"] == doc_id for d in docs)
+
+
+class TestUploaderNewPipeline:
+    """验证新的结构化解析 + by_title 分块管道"""
+
+    @pytest.mark.asyncio
+    async def test_upload_text_uses_new_pipeline(self):
+        """新 pipeline 能正确处理 MD 文件"""
+        from app.knowledge.unified_store import UnifiedKnowledgeStore
+        from app.retrieval.embeddings import TFIDFModel
+
+        store = UnifiedKnowledgeStore(
+            embedding_model=TFIDFModel(max_features=100),
+            collection_name="test_pipeline",
+            persist_directory="./data/test_pipeline",
+        )
+        uploader = DocumentUploader(knowledge_store=store)
+
+        result = await uploader.upload(
+            content=b"# Test\n\nHello world.",
+            filename="test.md",
+            title="Test Doc",
+        )
+        assert result["chunk_count"] >= 1
+        assert result["filename"] == "test.md"
+        assert result["title"] == "Test Doc"
+
+    @pytest.mark.asyncio
+    async def test_upload_empty_content_raises_error(self):
+        """空内容应报错"""
+        from app.knowledge.unified_store import UnifiedKnowledgeStore
+        from app.retrieval.embeddings import TFIDFModel
+
+        store = UnifiedKnowledgeStore(
+            embedding_model=TFIDFModel(max_features=100),
+            collection_name="test_empty",
+            persist_directory="./data/test_empty",
+        )
+        uploader = DocumentUploader(knowledge_store=store)
+
+        with pytest.raises(ValueError, match="文档内容为空|parse failed|cannot parse|分块后为空"):
+            await uploader.upload(content=b"", filename="empty.txt")

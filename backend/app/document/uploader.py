@@ -233,3 +233,16 @@ class DocumentUploader:
                 }
 
         return list(docs.values())
+
+    async def delete_document(self, document_id: str) -> bool:
+        """删除指定文档及其所有分块"""
+        if not self.knowledge_store:
+            raise RuntimeError("UnifiedKnowledgeStore 未初始化")
+
+        try:
+            deleted_count = self.knowledge_store.delete_by_document(document_id)
+            logger.info(f"文档已删除: {document_id}, 共 {deleted_count} 条")
+            return deleted_count != 0
+        except Exception as e:
+            logger.error(f"删除文档失败 {document_id}: {e}")
+            return False

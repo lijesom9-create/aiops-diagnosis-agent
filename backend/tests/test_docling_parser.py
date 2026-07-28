@@ -6,13 +6,13 @@ import pytest
 class TestDoclingParser:
     def setup_method(self):
         try:
-            from backend.app.document.docling_parser import DoclingParser
+            from app.document.docling_parser import DoclingParser
             self.parser = DoclingParser()
         except ImportError:
             pytest.skip("Docling not installed")
 
     def test_supported_extensions(self):
-        from backend.app.document.docling_parser import DoclingParser
+        from app.document.docling_parser import DoclingParser
         assert ".pdf" in DoclingParser.SUPPORTED_EXTENSIONS
         assert ".docx" in DoclingParser.SUPPORTED_EXTENSIONS
 

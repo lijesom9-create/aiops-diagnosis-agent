@@ -1,7 +1,7 @@
 """Tests for document data models"""
 
 import pytest
-from backend.app.document.models import (
+from app.document.models import (
     ElementType, ElementMetadata, DocumentElement,
     StructuredDocument, DocumentMetadata, Chunk
 )
@@ -98,7 +98,7 @@ class TestTextParser:
     """Tests for TextParser (Task 2)"""
 
     def test_parse_markdown_with_headings(self):
-        from backend.app.document.text_parser import TextParser
+        from app.document.text_parser import TextParser
         content = b"# Title\n\nIntro text.\n\n## Section 1\n\nBody text."
         doc = TextParser().parse(content, "test.md")
         assert doc.metadata.filename == "test.md"
@@ -106,7 +106,7 @@ class TestTextParser:
         assert doc.elements[0].type.value == "heading"
 
     def test_parse_plain_text(self):
-        from backend.app.document.text_parser import TextParser
+        from app.document.text_parser import TextParser
         content = b"Hello\n\nWorld\n\n- item 1\n- item 2"
         doc = TextParser().parse(content, "test.txt")
         assert len(doc.elements) > 0
@@ -115,12 +115,12 @@ class TestTextParser:
         assert len(paragraphs) > 0 or len(lists) > 0
 
     def test_parse_empty_content(self):
-        from backend.app.document.text_parser import TextParser
+        from app.document.text_parser import TextParser
         doc = TextParser().parse(b"", "empty.txt")
         assert len(doc.elements) == 0
 
     def test_parse_markdown_code_block(self):
-        from backend.app.document.text_parser import TextParser
+        from app.document.text_parser import TextParser
         content = b"# Code\n\n```python\nx = 1\nprint(x)\n```"
         doc = TextParser().parse(content, "code.md")
         code_elements = [e for e in doc.elements if e.type.value == "code"]
@@ -131,40 +131,40 @@ class TestParserFactory:
     """Tests for ParserFactory (Task 4)"""
 
     def test_factory_returns_docling_for_pdf(self):
-        from backend.app.document.parser import ParserFactory
-        from backend.app.document.docling_parser import DoclingParser
+        from app.document.parser import ParserFactory
+        from app.document.docling_parser import DoclingParser
         parser = ParserFactory.get_parser("test.pdf")
         assert isinstance(parser, DoclingParser)
 
     def test_factory_returns_textparser_for_md(self):
-        from backend.app.document.parser import ParserFactory
-        from backend.app.document.text_parser import TextParser
+        from app.document.parser import ParserFactory
+        from app.document.text_parser import TextParser
         parser = ParserFactory.get_parser("test.md")
         assert isinstance(parser, TextParser)
 
     def test_factory_returns_textparser_for_txt(self):
-        from backend.app.document.parser import ParserFactory
-        from backend.app.document.text_parser import TextParser
+        from app.document.parser import ParserFactory
+        from app.document.text_parser import TextParser
         parser = ParserFactory.get_parser("test.txt")
         assert isinstance(parser, TextParser)
 
     def test_factory_unknown_extension(self):
-        from backend.app.document.parser import ParserFactory
+        from app.document.parser import ParserFactory
         import pytest
         with pytest.raises(ValueError, match="不支持的文件格式"):
             ParserFactory.get_parser("test.xyz")
 
     def test_factory_parse_returns_structured_document(self):
         """端到端：工厂获取解析器 -> 解析 -> 返回结构化文档"""
-        from backend.app.document.parser import ParserFactory
-        from backend.app.document.models import StructuredDocument
+        from app.document.parser import ParserFactory
+        from app.document.models import StructuredDocument
         parser = ParserFactory.get_parser("test.txt")
         doc = parser.parse(b"Hello world", "test.txt")
         assert isinstance(doc, StructuredDocument)
         assert len(doc.elements) >= 1
 
     def test_supported_extensions(self):
-        from backend.app.document.parser import ParserFactory
+        from app.document.parser import ParserFactory
         exts = ParserFactory.get_supported_extensions()
         assert ".pdf" in exts
         assert ".md" in exts
