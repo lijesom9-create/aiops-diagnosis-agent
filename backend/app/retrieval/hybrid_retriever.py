@@ -8,6 +8,7 @@
 - 重排序: CrossEncoder / LLM
 """
 
+import math
 import re
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
@@ -161,7 +162,7 @@ class SparseRetriever:
             if term not in self._idf_cache:
                 df = self._doc_freqs.get(term, 0)
                 n = len(self._documents)
-                self._idf_cache[term] = max(0, (n - df + 0.5) / (df + 0.5) + 1)
+                self._idf_cache[term] = max(0.0, math.log((n - df + 0.5) / (df + 0.5) + 1))
             idf = self._idf_cache[term]
 
             # BM25 公式（防止除零）

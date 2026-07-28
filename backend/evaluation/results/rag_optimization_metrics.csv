@@ -1,0 +1,21 @@
+phase,optimization,query_set,strategy,rewrite_mode,candidate_multiplier,cross_max_length,recall_at_5,mrr,ndcg_at_5,note
+基线,vector_only,36_queries,vector_only,-,-,-,0.615,0.925,0.790,单路语义检索
+基线,bm25_only,36_queries,bm25_only,-,-,-,0.424,0.929,0.637,单路关键词检索（已修正IDF公式）
+基线,hybrid_rrf,36_queries,hybrid_rrf,basic,3,-,0.587,0.918,0.735,向量+BM25 RRF融合无重排
+基线,hybrid_rrf+simple,36_queries,hybrid_rrf+simple,basic,3,-,0.489,0.736,0.564,RRF+SimpleReranker（质量下降）
+基线,hybrid_rrf_pc,36_queries,hybrid_rrf_pc,basic,3,-,0.875,0.940,0.859,父子分块子块检索父块返回无重排
+基线,hybrid_rrf_pc+simple,36_queries,hybrid_rrf_pc+simple,basic,3,-,0.875,0.940,0.859,父子分块+SimpleReranker（无增益）
+重写对比,basic_vs_enhanced_rewrite,36_queries,hybrid_rrf,basic,3,-,0.587,0.918,0.735,基础查询重写
+重写对比,basic_vs_enhanced_rewrite,36_queries,hybrid_rrf,enhanced,3,-,0.562,0.958,0.726,增强查询重写（标准分块上变化不大）
+重写对比,basic_vs_enhanced_rewrite,36_queries,hybrid_rrf+cross,basic,3,512,0.673,1.000,0.873,基础重写+CrossEncoder
+重写对比,basic_vs_enhanced_rewrite,36_queries,hybrid_rrf+cross,enhanced,3,512,0.673,1.000,0.872,增强重写+CrossEncoder（变化不大）
+重写对比,basic_vs_enhanced_rewrite,36_queries,hybrid_rrf_pc+cross,basic,3,512,0.875,0.940,0.859,父子分块基础重写
+重写对比,basic_vs_enhanced_rewrite,36_queries,hybrid_rrf_pc+cross,enhanced,3,512,0.883,0.972,0.893,父子分块增强重写（略有提升）
+重排参数,candidate_multiplier扫描,36_queries,hybrid_rrf+cross,enhanced,2,512,0.677,1.000,0.877,candidate_multiplier=2
+重排参数,candidate_multiplier扫描,36_queries,hybrid_rrf+cross,enhanced,3,512,0.673,1.000,0.872,candidate_multiplier=3
+重排参数,candidate_multiplier扫描,36_queries,hybrid_rrf+cross,enhanced,4,512,0.683,1.000,0.879,candidate_multiplier=4（边际增益）
+数据集扩展,24_vs_36_queries,24_queries,hybrid_rrf+cross,basic,3,512,0.770,1.000,0.919,24查询旧数据集（较简单）
+数据集扩展,24_vs_36_queries,24_queries,hybrid_rrf_pc+cross,enhanced,3,512,0.883,0.972,0.893,24查询+父子分块
+数据集扩展,24_vs_36_queries,36_queries,hybrid_rrf+cross,basic,3,512,0.673,1.000,0.873,36查询数据集（更难）
+数据集扩展,24_vs_36_queries,36_queries,hybrid_rrf_pc+cross,enhanced,3,512,0.883,0.972,0.893,36查询+父子分块（保持高水平）
+最终落地,服务默认配置,36_queries,hybrid_rrf_pc+cross,enhanced,3,512,0.883,0.972,0.893,当前默认：parent_child+enhanced+multiplier3

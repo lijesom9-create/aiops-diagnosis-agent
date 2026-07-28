@@ -8,6 +8,7 @@ Reranker - 结果重排序
 - LLM 重排序（基于大模型）
 """
 
+import math
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 from loguru import logger
@@ -146,8 +147,13 @@ class CrossEncoderReranker(Reranker):
 
     name = "cross_encoder_reranker"
 
-    def __init__(self, model_name: str = "BAAI/bge-reranker-base"):
+    def __init__(
+        self,
+        model_name: str = "BAAI/bge-reranker-base",
+        max_length: int = 512,
+    ):
         self.model_name = model_name
+        self.max_length = max_length
         self._model = None
 
     def _load_model(self):
@@ -193,10 +199,11 @@ class CrossEncoderReranker(Reranker):
 
         try:
             # 构建查询对
-            pairs = [(query, r.content[:512]) for r in results]
+            pairs = [(query, r.content[:self.max_length]) for r in results]
 
-            # 计算分数
-            scores = self._model.predict(pairs)
+            # 计算分数（CrossEncoder 输出 logits，用 sigmoid 映射到 [0,1]）
+            raw_scores = self._model.predict(pairs)
+            scores = [1.0 / (1.0 + math.exp(-s)) for s in raw_scores]
 
             # 排序
             scored_results = list(zip(scores, results))

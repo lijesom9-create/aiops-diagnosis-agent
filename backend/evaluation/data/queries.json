@@ -1,0 +1,184 @@
+{
+  "queries": [
+    {
+      "query": "装饰器的作用是什么",
+      "source": "user_document",
+      "expected_keywords": ["装饰器", "功能"]
+    },
+    {
+      "query": "如何用装饰器统计函数执行时间",
+      "source": "user_document",
+      "expected_keywords": ["装饰器", "执行时间", "timer"]
+    },
+    {
+      "query": "装饰器有哪些应用场景",
+      "source": "user_document",
+      "expected_keywords": ["日志", "权限", "缓存"]
+    },
+    {
+      "query": "迭代器和生成器有什么区别",
+      "source": "user_document",
+      "expected_keywords": ["迭代器", "生成器"]
+    },
+    {
+      "query": "yield 关键字的作用",
+      "source": "user_document",
+      "expected_keywords": ["yield"]
+    },
+    {
+      "query": "生成器表达式和列表推导式有什么区别",
+      "source": "user_document",
+      "expected_keywords": ["生成器表达式", "列表推导式"]
+    },
+    {
+      "query": "FastAPI 如何定义路由",
+      "source": "user_document",
+      "expected_keywords": ["FastAPI", "@app.get", "路由"]
+    },
+    {
+      "query": "FastAPI 依赖注入怎么用",
+      "source": "user_document",
+      "expected_keywords": ["Depends", "依赖注入"]
+    },
+    {
+      "query": "FastAPI 路径参数和查询参数区别",
+      "source": "user_document",
+      "expected_keywords": ["路径参数", "查询参数"]
+    },
+    {
+      "query": "INNER JOIN 和 LEFT JOIN 区别",
+      "source": "user_document",
+      "expected_keywords": ["INNER JOIN", "LEFT JOIN"]
+    },
+    {
+      "query": "SQL 连接条件怎么写",
+      "source": "user_document",
+      "expected_keywords": ["ON", "连接条件"]
+    },
+    {
+      "query": "表连接会返回什么数据",
+      "source": "user_document",
+      "expected_keywords": ["INNER JOIN", "NULL"]
+    },
+    {
+      "query": "递归需要哪些条件",
+      "source": "user_document",
+      "expected_keywords": ["基准情形", "递归情形"]
+    },
+    {
+      "query": "动态规划适用什么问题",
+      "source": "user_document",
+      "expected_keywords": ["重叠子问题", "最优子结构"]
+    },
+    {
+      "query": "记忆化搜索的作用",
+      "source": "user_document",
+      "expected_keywords": ["lru_cache", "记忆化"]
+    },
+    {
+      "query": "git init 做什么",
+      "source": "user_document",
+      "expected_keywords": ["git init", "仓库"]
+    },
+    {
+      "query": "如何提交代码更改",
+      "source": "user_document",
+      "expected_keywords": ["git add", "git commit"]
+    },
+    {
+      "query": "Git 分支怎么切换",
+      "source": "user_document",
+      "expected_keywords": ["git branch", "切换"]
+    },
+    {
+      "query": "RESTful 资源 URL 怎么设计",
+      "source": "user_document",
+      "expected_keywords": ["资源", "URL"]
+    },
+    {
+      "query": "GET 和 POST 有什么区别",
+      "source": "user_document",
+      "expected_keywords": ["GET", "POST"]
+    },
+    {
+      "query": "HTTP 状态码 404 表示什么",
+      "source": "user_document",
+      "expected_keywords": ["404", "状态码"]
+    },
+    {
+      "query": "Docker 镜像和容器有什么区别",
+      "source": "user_document",
+      "expected_keywords": ["镜像", "容器"]
+    },
+    {
+      "query": "Dockerfile 常用指令有哪些",
+      "source": "user_document",
+      "expected_keywords": ["FROM", "RUN", "COPY", "CMD"]
+    },
+    {
+      "query": "Docker 默认网络模式是什么",
+      "source": "user_document",
+      "expected_keywords": ["bridge", "网络"]
+    },
+    {
+      "query": "Redis 支持哪些数据类型",
+      "source": "user_document",
+      "expected_keywords": ["String", "Hash", "List", "Set"]
+    },
+    {
+      "query": "Redis 缓存怎么设置过期时间",
+      "source": "user_document",
+      "expected_keywords": ["缓存", "过期时间", "setex"]
+    },
+    {
+      "query": "Redis RDB 和 AOF 有什么区别",
+      "source": "user_document",
+      "expected_keywords": ["RDB", "AOF", "持久化"]
+    },
+    {
+      "query": "SQLAlchemy 怎么定义模型",
+      "source": "user_document",
+      "expected_keywords": ["Column", "declarative_base", "模型"]
+    },
+    {
+      "query": "SQLAlchemy Session 的作用",
+      "source": "user_document",
+      "expected_keywords": ["Session", "事务", "提交"]
+    },
+    {
+      "query": "ORM 的 CRUD 操作有哪些",
+      "source": "user_document",
+      "expected_keywords": ["add", "query", "delete", "commit"]
+    },
+    {
+      "query": "Celery 的核心组件有哪些",
+      "source": "user_document",
+      "expected_keywords": ["Task", "Broker", "Worker", "Backend"]
+    },
+    {
+      "query": "Celery 任务怎么异步调用",
+      "source": "user_document",
+      "expected_keywords": ["delay", "任务", "队列"]
+    },
+    {
+      "query": "Celery Beat 是做什么的",
+      "source": "user_document",
+      "expected_keywords": ["定时任务", "调度器", "beat_schedule"]
+    },
+    {
+      "query": "Python async 和 await 怎么用",
+      "source": "user_document",
+      "expected_keywords": ["async", "await", "协程"]
+    },
+    {
+      "query": "asyncio.gather 的作用是什么",
+      "source": "user_document",
+      "expected_keywords": ["gather", "并发", "协程"]
+    },
+    {
+      "query": "异步代码中如何调用阻塞操作",
+      "source": "user_document",
+      "expected_keywords": ["to_thread", "阻塞", "线程池"]
+    }
+  ]
+}

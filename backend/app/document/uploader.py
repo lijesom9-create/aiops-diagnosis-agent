@@ -13,6 +13,7 @@ from loguru import logger
 from .parser import DocumentParser, ParserFactory
 from .chunker import DocumentChunker
 from .struct_chunker import StructureAwareChunker
+from .parent_child_chunker import ParentChildChunker
 from .models import Chunk, DocumentElement
 from ..knowledge.unified_store import UnifiedKnowledgeStore, KnowledgeItem
 from ..storage.file_storage import FileStorage, get_file_storage
@@ -27,7 +28,11 @@ class DocumentUploader:
         file_storage: FileStorage = None,
         chunk_size: int = 500,
         chunk_overlap: int = 50,
-        strategy: str = "auto",  # 自动选择分块策略
+        strategy: str = "auto",  # 自动选择分块策略（旧管道）
+        chunking_strategy: str = "parent_child",  # 新管道分块策略
+        parent_max_chars: int = 1500,
+        child_max_chars: int = 300,
+        child_overlap_chars: int = 50,
         collection_name: Optional[str] = None,  # 兼容旧测试
     ):
         self.parser = DocumentParser()
@@ -36,6 +41,10 @@ class DocumentUploader:
             chunk_overlap=chunk_overlap,
             strategy=strategy,
         )
+        self.chunking_strategy = chunking_strategy
+        self.parent_max_chars = parent_max_chars
+        self.child_max_chars = child_max_chars
+        self.child_overlap_chars = child_overlap_chars
         self.file_storage = file_storage or get_file_storage()
         self._collection_name = collection_name
 
@@ -109,14 +118,22 @@ class DocumentUploader:
         self, content, filename, title, document_id,
         course_id, user_id, topic_id, file_info,
     ) -> dict:
-        """使用新的结构化管道（ParserFactory + StructureAwareChunker）"""
+        """使用新的结构化管道（ParserFactory + 可配置分块器）"""
         parser = ParserFactory.get_parser(filename)
         doc = parser.parse(content, filename)
 
         if not doc.elements:
             raise ValueError("文档内容为空或解析失败")
 
-        chunker = StructureAwareChunker(max_chars=self.chunker.chunk_size)
+        if self.chunking_strategy == "parent_child":
+            chunker = ParentChildChunker(
+                parent_max_chars=self.parent_max_chars,
+                child_max_chars=self.child_max_chars,
+                child_overlap_chars=self.child_overlap_chars,
+            )
+        else:
+            chunker = StructureAwareChunker(max_chars=self.chunker.chunk_size)
+
         chunks = chunker.chunk(doc)
 
         if not chunks:

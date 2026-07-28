@@ -49,14 +49,17 @@ class RAGGenerator:
         self,
         llm_service,
         memory_manager: MemoryManager,
+        extra_instructions: Optional[str] = None,
     ):
         """
         Args:
             llm_service: LLM 服务
             memory_manager: 记忆管理器
+            extra_instructions: 附加到 prompt 的额外要求
         """
         self.llm = llm_service
         self.memory = memory_manager
+        self.extra_instructions = extra_instructions
 
     async def generate(
         self,
@@ -182,6 +185,10 @@ class RAGGenerator:
 
     def _build_prompt(self, query: str, context: str) -> str:
         """构建 Prompt"""
+        extra = ""
+        if self.extra_instructions:
+            extra = f"\n8. {self.extra_instructions}\n"
+
         return f"""{context}
 
 ## 用户问题
@@ -194,6 +201,7 @@ class RAGGenerator:
 4. 引用知识库来源时使用 [1]、[2] 等标记
 5. 如果上下文没有相关信息，明确说明
 6. 保持回答简洁、准确、有帮助
+7. 回答中应明确覆盖用户问题里的关键概念，如技术术语、命令、关键字等，并对每个关键概念给出具体说明，避免只给出简要结论{extra}
 
 ## 回答"""
 

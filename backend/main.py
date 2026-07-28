@@ -38,9 +38,17 @@ async def lifespan(app: FastAPI):
 
     embedding_model = get_embedding_model()
 
-    # 创建 Reranker
-    reranker = CrossEncoderReranker(model_name="BAAI/bge-reranker-base")
-    logger.info("Reranker 初始化完成: BAAI/bge-reranker-base")
+    # 创建 Reranker（可配置开关，加载失败时优雅降级）
+    reranker = None
+    if settings.RERANKER_ENABLED:
+        try:
+            reranker = CrossEncoderReranker(model_name=settings.RERANKER_MODEL_NAME)
+            # 触发一次加载，确保模型可用
+            reranker._load_model()
+            logger.info(f"Reranker 初始化完成: {settings.RERANKER_MODEL_NAME}")
+        except Exception as e:
+            logger.warning(f"Reranker 加载失败，将禁用重排: {e}")
+            reranker = None
 
     knowledge_store = UnifiedKnowledgeStore(
         embedding_model=embedding_model,

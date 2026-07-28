@@ -1,0 +1,96 @@
+{
+  "queries": 36,
+  "persist_dir": "C:\\Users\\x'z'f\\AppData\\Local\\Temp\\retrieval_eval_files_1has582w",
+  "results": [
+    {
+      "rewrite_mode": "basic",
+      "rrf_k": 60,
+      "candidate_multiplier": 3,
+      "cross_max_length": null,
+      "method": "hybrid_rrf",
+      "recall@5": 0.5871926299009632,
+      "mrr": 0.9175925925925926,
+      "ndcg@5": 0.7354267940382085
+    },
+    {
+      "rewrite_mode": "basic",
+      "rrf_k": 60,
+      "candidate_multiplier": 3,
+      "cross_max_length": 512,
+      "method": "hybrid_rrf+cross",
+      "recall@5": 0.6733792056708723,
+      "mrr": 1.0,
+      "ndcg@5": 0.8734679347677371
+    },
+    {
+      "rewrite_mode": "enhanced",
+      "rrf_k": 60,
+      "candidate_multiplier": 3,
+      "cross_max_length": null,
+      "method": "hybrid_rrf",
+      "recall@5": 0.561928079636413,
+      "mrr": 0.9583333333333334,
+      "ndcg@5": 0.7259299027473487
+    },
+    {
+      "rewrite_mode": "enhanced",
+      "rrf_k": 60,
+      "candidate_multiplier": 3,
+      "cross_max_length": 512,
+      "method": "hybrid_rrf+cross",
+      "recall@5": 0.6733792056708723,
+      "mrr": 1.0,
+      "ndcg@5": 0.8721513989665928
+    },
+    {
+      "rewrite_mode": "enhanced",
+      "rrf_k": 60,
+      "candidate_multiplier": 2,
+      "cross_max_length": 512,
+      "method": "hybrid_rrf+cross",
+      "recall@5": 0.6773474596391263,
+      "mrr": 1.0,
+      "ndcg@5": 0.8766996515783476
+    },
+    {
+      "rewrite_mode": "enhanced",
+      "rrf_k": 60,
+      "candidate_multiplier": 3,
+      "cross_max_length": 512,
+      "method": "hybrid_rrf+cross",
+      "recall@5": 0.6733792056708723,
+      "mrr": 1.0,
+      "ndcg@5": 0.8721513989665928
+    },
+    {
+      "rewrite_mode": "enhanced",
+      "rrf_k": 60,
+      "candidate_multiplier": 4,
+      "cross_max_length": 512,
+      "method": "hybrid_rrf+cross",
+      "recall@5": 0.6829030151946819,
+      "mrr": 1.0,
+      "ndcg@5": 0.8792821732274776
+    },
+    {
+      "rewrite_mode": "basic",
+      "rrf_k": 60,
+      "candidate_multiplier": 3,
+      "cross_max_length": 512,
+      "method": "hybrid_rrf_pc+cross",
+      "recall@5": 0.8746031746031746,
+      "mrr": 0.9398148148148148,
+      "ndcg@5": 0.8585821015298026
+    },
+    {
+      "rewrite_mode": "enhanced",
+      "rrf_k": 60,
+      "candidate_multiplier": 3,
+      "cross_max_length": 512,
+      "method": "hybrid_rrf_pc+cross",
+      "recall@5": 0.8825396825396825,
+      "mrr": 0.9722222222222222,
+      "ndcg@5": 0.8927087792537786
+    }
+  ]
+}

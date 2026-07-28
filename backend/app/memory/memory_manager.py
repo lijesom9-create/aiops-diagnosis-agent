@@ -209,6 +209,7 @@ class MemoryManager:
         max_history_turns: int = 10,
         max_rag_results: int = 5,
         max_archival_results: int = 3,
+        rag_content_limit: Optional[int] = 200,
     ) -> str:
         """
         组装完整的上下文
@@ -224,6 +225,7 @@ class MemoryManager:
             max_history_turns: 最大历史轮次
             max_rag_results: 最大 RAG 结果数
             max_archival_results: 最大档案结果数
+            rag_content_limit: RAG 知识单条内容截断长度，None 或 -1 表示不截断
 
         Returns:
             str: 组装好的上下文
@@ -259,7 +261,9 @@ class MemoryManager:
                 parts.append("## 知识库")
                 for i, result in enumerate(knowledge_results, 1):
                     title = result.get("metadata", {}).get("title", "")
-                    content = result.get("content", "")[:200]
+                    content = result.get("content", "")
+                    if rag_content_limit is not None and rag_content_limit > 0:
+                        content = content[:rag_content_limit]
                     parts.append(f"[{i}] {title}\n{content}")
 
         return "\n\n".join(parts)

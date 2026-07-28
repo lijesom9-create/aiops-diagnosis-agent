@@ -22,6 +22,7 @@ from .text_parser import TextParser
 from .docling_parser import DoclingParser
 from .parser import ParserFactory
 from .struct_chunker import StructureAwareChunker
+from .parent_child_chunker import ParentChildChunker
 
 # 自动注册解析器到工厂
 ParserFactory.register(DoclingParser)
@@ -38,6 +39,7 @@ __all__ = [
     "DoclingParser",
     "ParserFactory",
     "StructureAwareChunker",
+    "ParentChildChunker",
     # 新模型
     "ElementType", "ElementMetadata", "DocumentElement",
     "DocumentMetadata", "StructuredDocument", "Chunk",

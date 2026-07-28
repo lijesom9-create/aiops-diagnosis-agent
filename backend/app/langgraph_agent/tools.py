@@ -70,13 +70,18 @@ def set_knowledge_store(store):
 @tool
 def search_knowledge(query: str, limit: int = 5) -> str:
     """
-    搜索知识库
+    搜索用户的私有知识库
 
-    使用混合检索（关键词 + 语义 + RRF 融合）从本地知识库中搜索相关信息。
+    仅用于查询用户上传的文档、笔记、资料等私有知识库内容。
+    使用混合检索（关键词 + 语义 + RRF 融合）从本地知识库中搜索。
+
+    不适用于通用知识问题（如编程概念、框架原理、常见术语解释等），
+    这类问题应该直接由 AI 用训练知识回答。
+
     适用于：
-    - 查找文档内容
-    - 搜索知识库
-    - 获取参考资料
+    - 查找用户上传的文档内容
+    - 搜索用户私有知识库
+    - 获取用户资料中的参考资料
 
     Args:
         query: 搜索关键词
@@ -95,7 +100,7 @@ def search_knowledge(query: str, limit: int = 5) -> str:
     try:
         if _knowledge_store:
             # 使用混合检索（BM25 + Vector + RRF 融合 + 查询重写）
-            results = _knowledge_store.hybrid_search(
+            results = _knowledge_store.hybrid_search_parent_child(
                 query, top_k=limit, rewrite_query=True
             )
             if results:
@@ -333,16 +338,16 @@ def rag_search(query: str, limit: int = 5) -> str:
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(
                         asyncio.run,
-                        _knowledge_store.hybrid_search(query, limit=limit)
+                        _knowledge_store.hybrid_search_parent_child(query, top_k=limit)
                     )
                     results = future.result(timeout=30)
             else:
                 results = asyncio.run(
-                    _knowledge_store.hybrid_search(query, limit=limit)
+                    _knowledge_store.hybrid_search_parent_child(query, top_k=limit)
                 )
         except Exception:
             results = asyncio.run(
-                _knowledge_store.hybrid_search(query, limit=limit)
+                _knowledge_store.hybrid_search_parent_child(query, top_k=limit)
             )
 
         if not results:
@@ -400,16 +405,16 @@ def summarize_documents(query: str, max_docs: int = 5) -> str:
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(
                         asyncio.run,
-                        _knowledge_store.hybrid_search(query, limit=max_docs)
+                        _knowledge_store.hybrid_search_parent_child(query, top_k=max_docs)
                     )
                     results = future.result(timeout=30)
             else:
                 results = asyncio.run(
-                    _knowledge_store.hybrid_search(query, limit=max_docs)
+                    _knowledge_store.hybrid_search_parent_child(query, top_k=max_docs)
                 )
         except Exception:
             results = asyncio.run(
-                _knowledge_store.hybrid_search(query, limit=max_docs)
+                _knowledge_store.hybrid_search_parent_child(query, top_k=max_docs)
             )
 
         if not results:

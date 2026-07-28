@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     CHROMA_PORT: Optional[int] = None
     CHROMA_PERSIST_DIR: Optional[str] = None
 
+    # 重排器配置
+    RERANKER_ENABLED: bool = True
+    RERANKER_MODEL_NAME: str = "BAAI/bge-reranker-base"
+
     # 外部搜索配置
     TAVILY_API_KEY: Optional[str] = None
     JINA_API_KEY: Optional[str] = None

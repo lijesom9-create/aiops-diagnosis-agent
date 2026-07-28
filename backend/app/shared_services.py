@@ -103,8 +103,17 @@ def get_hybrid_retriever():
             vector_store=knowledge_store.vector_store if knowledge_store else None,
         )
 
-        # 创建 Reranker
-        reranker = CrossEncoderReranker(model_name="BAAI/bge-reranker-base")
+        # 复用 KnowledgeStore 的 reranker，避免重复加载模型
+        reranker = None
+        if knowledge_store and knowledge_store.reranker:
+            reranker = knowledge_store.reranker
+        elif settings.RERANKER_ENABLED:
+            try:
+                reranker = CrossEncoderReranker(model_name=settings.RERANKER_MODEL_NAME)
+                reranker._load_model()
+            except Exception as e:
+                logger.warning(f"Hybrid retriever 加载 reranker 失败: {e}")
+                reranker = None
 
         # 创建混合检索器
         _hybrid_retriever = HybridRetriever(
@@ -113,7 +122,7 @@ def get_hybrid_retriever():
             fusion_method="rrf",
             reranker=reranker,
         )
-        logger.info("Hybrid retriever 初始化完成（含 Reranker）")
+        logger.info(f"Hybrid retriever 初始化完成（reranker: {reranker.name if reranker else 'None'}）")
     return _hybrid_retriever
 
 

@@ -404,6 +404,36 @@ class ChromaDBVectorStore:
         except Exception:
             return None
 
+    def get_by_ids(self, doc_ids: List[str]) -> List[Dict]:
+        """
+        批量根据 ID 获取记录
+
+        Args:
+            doc_ids: 文档/分块 ID 列表
+
+        Returns:
+            List[Dict]: 记录列表，每个包含 id, content, metadata
+        """
+        if not doc_ids:
+            return []
+
+        try:
+            result = self._collection.get(
+                ids=doc_ids,
+                include=["documents", "metadatas"],
+            )
+            output = []
+            for i, doc_id in enumerate(result["ids"]):
+                output.append({
+                    "id": doc_id,
+                    "content": result["documents"][i] if result["documents"] else "",
+                    "metadata": result["metadatas"][i] if result["metadatas"] else {},
+                })
+            return output
+        except Exception as e:
+            logger.error(f"批量获取记录失败: {e}")
+            return []
+
     def delete_by_document(self, document_id: str) -> int:
         """
         删除文档的所有分块

@@ -9,6 +9,7 @@ Unified Knowledge Store - 统一知识存储
 MongoDB 只存储元数据和状态，不存储知识内容。
 """
 
+import math
 import re
 import threading
 from typing import List, Dict, Any, Optional, Set
@@ -181,7 +182,7 @@ class BM25Index:
                 continue
 
             df = self._doc_freqs.get(term, 0)
-            idf = max(0, (self._total_docs - df + 0.5) / (df + 0.5) + 1)
+            idf = max(0.0, math.log((self._total_docs - df + 0.5) / (df + 0.5) + 1))
 
             if self._avg_doc_length == 0:
                 tf_norm = 0.0
@@ -259,6 +260,7 @@ class UnifiedKnowledgeStore:
         persist_directory: Optional[str] = None,
         reranker=None,
     ):
+        self.embedding_model = embedding_model
         self.vector_store = ChromaDBVectorStore(
             embedding_model=embedding_model,
             collection_name=collection_name,
@@ -280,14 +282,26 @@ class UnifiedKnowledgeStore:
         self._bm25_initialized = True
 
     def _rebuild_bm25_index(self) -> None:
-        """从 ChromaDB 重建 BM25 索引"""
-        all_data = self.vector_store.get_all(include=["documents"])
+        """从 ChromaDB 重建 BM25 索引（只索引子块，父块不进入 BM25）"""
+        all_data = self.vector_store.get_all(include=["documents", "metadatas"])
         if not all_data or not all_data.get("ids"):
             return
         ids = all_data["ids"]
         documents = all_data.get("documents", [])
+        metadatas = all_data.get("metadatas", []) or [{}] * len(ids)
+
         self._bm25 = BM25Index()
-        self._bm25.add_batch(ids, documents)
+        child_ids = []
+        child_documents = []
+        for i, doc_id in enumerate(ids):
+            meta = metadatas[i] if i < len(metadatas) else {}
+            # 父块不进入 BM25 索引
+            if meta.get("chunk_type") == "parent":
+                continue
+            child_ids.append(doc_id)
+            child_documents.append(documents[i])
+
+        self._bm25.add_batch(child_ids, child_documents)
         logger.info(f"BM25 索引重建完成: {self._bm25.size} 篇文档")
 
     # ========== 添加知识 ==========
@@ -300,9 +314,10 @@ class UnifiedKnowledgeStore:
             content=item.content,
             metadata=chroma_data["metadata"],
         )
-        # 同步更新 BM25 索引
+        # 同步更新 BM25 索引：只索引子块
         self._ensure_bm25_index()
-        self._bm25.add_document(item.id, item.content)
+        if chroma_data["metadata"].get("chunk_type") != "parent":
+            self._bm25.add_document(item.id, item.content)
         logger.debug(f"添加知识: {item.id} ({item.source})")
 
     def add_batch(self, items: List[KnowledgeItem]) -> None:
@@ -315,9 +330,17 @@ class UnifiedKnowledgeStore:
         metadatas = [item.to_chroma()["metadata"] for item in items]
 
         self.vector_store.add_batch(doc_ids, contents, metadatas)
-        # 同步更新 BM25 索引
+        # 同步更新 BM25 索引：只索引子块
         self._ensure_bm25_index()
-        self._bm25.add_batch(doc_ids, contents)
+        child_ids = []
+        child_contents = []
+        for i, meta in enumerate(metadatas):
+            if meta.get("chunk_type") == "parent":
+                continue
+            child_ids.append(doc_ids[i])
+            child_contents.append(contents[i])
+        if child_ids:
+            self._bm25.add_batch(child_ids, child_contents)
         logger.info(f"批量添加知识: {len(items)} 条")
 
     def add_batch_with_dedup(
@@ -471,6 +494,9 @@ class UnifiedKnowledgeStore:
         user_id: Optional[str] = None,
         org_id: Optional[str] = None,
         rewrite_query: bool = True,
+        rewrite_mode: str = "basic",
+        rrf_k: int = 60,
+        candidate_multiplier: int = 3,
     ) -> List[Dict[str, Any]]:
         """
         混合检索：BM25（关键词）+ Vector（语义）+ RRF 融合
@@ -482,6 +508,9 @@ class UnifiedKnowledgeStore:
             source: 来源过滤
             user_id: 用户过滤
             rewrite_query: 是否重写查询
+            rewrite_mode: 重写模式，"basic" 或 "enhanced"
+            rrf_k: RRF 融合参数 k，默认 60
+            candidate_multiplier: vector/BM25 候选数量相对于 top_k 的倍数，默认 3
 
         Returns:
             List[Dict]: 搜索结果
@@ -489,17 +518,24 @@ class UnifiedKnowledgeStore:
         # 0. 查询重写
         queries = [query]
         if rewrite_query:
-            queries = QueryRewriter.rewrite(query)
+            if rewrite_mode == "enhanced":
+                queries = QueryRewriter.enhanced_rewrite(query)
+            else:
+                queries = QueryRewriter.rewrite(query)
 
         # 1. 向量检索（主查询）
-        vector_results = self._vector_search(query, top_k=top_k * 3, source=source, user_id=user_id, org_id=org_id)
+        vector_results = self._vector_search(
+            query, top_k=top_k * candidate_multiplier, source=source, user_id=user_id, org_id=org_id
+        )
 
         # 2. BM25 检索
-        bm25_results = self._bm25_search(queries, top_k=top_k * 3, source=source, user_id=user_id, org_id=org_id)
+        bm25_results = self._bm25_search(
+            queries, top_k=top_k * candidate_multiplier, source=source, user_id=user_id, org_id=org_id
+        )
 
         # 3. RRF 融合
         if bm25_results and vector_results:
-            fused = self._rrf_fuse(bm25_results, vector_results, k=60)
+            fused = self._rrf_fuse(bm25_results, vector_results, k=rrf_k)
         elif vector_results:
             fused = vector_results
         else:
@@ -537,6 +573,214 @@ class UnifiedKnowledgeStore:
         # 5. 过滤低分 + 截断
         result = [r for r in fused if r.get("score", 0) >= min_score][:top_k]
         return result
+
+    def hybrid_search_parent_child(
+        self,
+        query: str,
+        top_k: int = 5,
+        min_score: float = 0.0,
+        source: Optional[str] = None,
+        user_id: Optional[str] = None,
+        org_id: Optional[str] = None,
+        rewrite_query: bool = True,
+        rewrite_mode: str = "enhanced",
+        child_top_k: int = 15,
+        rrf_k: int = 60,
+        candidate_multiplier: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """
+        父子文档混合检索
+
+        流程：
+        1. 向量检索子块（chunk_type=child）
+        2. BM25 检索子块
+        3. RRF 融合子块结果
+        4. 按 parent_id 去重
+        5. 批量取回父块
+        6. 返回父块作为 LLM 生成上下文
+
+        Args:
+            query: 搜索查询
+            top_k: 返回父块数量
+            min_score: 最小 RRF 分数
+            source: 来源过滤
+            user_id: 用户过滤
+            org_id: 组织过滤
+            rewrite_query: 是否重写查询
+            child_top_k: 检索的子块数量（去重后得到父块）
+
+        Returns:
+            List[Dict]: 父块搜索结果
+        """
+        # 0. 查询重写
+        queries = [query]
+        if rewrite_query:
+            if rewrite_mode == "enhanced":
+                queries = QueryRewriter.enhanced_rewrite(query)
+            else:
+                queries = QueryRewriter.rewrite(query)
+
+        # 1. 向量检索子块
+        vector_filters: Dict[str, Any] = {"chunk_type": "child"}
+        if source:
+            # ChromaDB 要求多字段过滤使用 $and
+            vector_filters = {"$and": [{"chunk_type": "child"}, {"source": source}]}
+
+        vector_results = self.vector_store.search(
+            query=query,
+            top_k=child_top_k * candidate_multiplier,
+            min_score=0.0,
+            filters=vector_filters,
+        )
+
+        vector_children = []
+        for doc_id, score, metadata in vector_results:
+            if org_id and metadata.get("org_id") and metadata.get("org_id") != org_id:
+                continue
+            if user_id and metadata.get("user_id") and metadata.get("user_id") != user_id:
+                continue
+            vector_children.append({
+                "id": doc_id,
+                "score": score,
+                "metadata": metadata,
+            })
+
+        # 2. BM25 检索子块
+        self._ensure_bm25_index()
+        bm25_children = []
+        if self._bm25.size > 0:
+            all_scores: Dict[str, float] = {}
+            for q in queries:
+                results = self._bm25.search(q, top_k=child_top_k * candidate_multiplier)
+                for doc_id, score in results:
+                    all_scores[doc_id] = max(all_scores.get(doc_id, 0), score)
+
+            sorted_docs = sorted(all_scores.items(), key=lambda x: x[1], reverse=True)[:child_top_k]
+            for doc_id, score in sorted_docs:
+                try:
+                    chroma_result = self.vector_store._collection.get(
+                        ids=[doc_id], include=["metadatas", "documents"]
+                    )
+                    meta = chroma_result["metadatas"][0] if chroma_result["metadatas"] else {}
+                    content = chroma_result["documents"][0] if chroma_result["documents"] else ""
+                except Exception:
+                    meta = {}
+                    content = ""
+
+                if meta.get("chunk_type") != "child":
+                    continue
+                if source and meta.get("source") != source:
+                    continue
+                if user_id and meta.get("user_id") and meta.get("user_id") != user_id:
+                    continue
+
+                bm25_children.append({
+                    "id": doc_id,
+                    "score": score,
+                    "metadata": meta,
+                    "content": content,
+                })
+
+        # 3. RRF 融合子块结果
+        if bm25_children and vector_children:
+            fused_children = self._rrf_fuse(vector_children, bm25_children, k=rrf_k)
+        elif vector_children:
+            fused_children = vector_children
+        else:
+            fused_children = bm25_children
+
+        if not fused_children:
+            return []
+
+        # 4. 按 parent_id 去重，保留每个父块下得分最高的子块
+        parent_id_to_best_child: Dict[str, Dict[str, Any]] = {}
+        for child in fused_children:
+            parent_id = child["metadata"].get("parent_id")
+            if not parent_id:
+                continue
+            if parent_id not in parent_id_to_best_child:
+                parent_id_to_best_child[parent_id] = child
+
+        parent_ids = list(parent_id_to_best_child.keys())
+        if not parent_ids:
+            return []
+
+        # 5. 批量取回父块
+        parent_records = self.vector_store.get_by_ids(parent_ids)
+        parent_results = []
+        for record in parent_records:
+            parent_id = record["id"]
+            meta = record["metadata"]
+            if org_id and meta.get("org_id") and meta.get("org_id") != org_id:
+                continue
+            if user_id and meta.get("user_id") and meta.get("user_id") != user_id:
+                continue
+
+            best_child = parent_id_to_best_child.get(parent_id, {})
+            parent_results.append({
+                "id": parent_id,
+                "score": best_child.get("score", 0),
+                "title": meta.get("title", ""),
+                "content": record["content"],
+                "source": meta.get("source", ""),
+                "metadata": meta,
+            })
+
+        # 6. heading_path 相关性过滤与加权
+        parent_results = self._apply_heading_path_filter(parent_results, query)
+
+        # 7. 按分数排序、过滤、截断
+        parent_results.sort(key=lambda x: x["score"], reverse=True)
+        return [r for r in parent_results if r.get("score", 0) >= min_score][:top_k]
+
+    def _apply_heading_path_filter(
+        self,
+        parent_results: List[Dict[str, Any]],
+        query: str,
+        heading_path_boost: float = 0.05,
+    ) -> List[Dict[str, Any]]:
+        """
+        过滤与查询无关的父块，并对 heading_path 命中的父块加权。
+
+        匹配词包括：
+        - 原始查询分词
+        - QueryRewriter 扩展出的同义词 / 缩写
+
+        若过滤后结果为空，则回退到原始结果，避免过度过滤导致召回下降。
+        """
+        if not parent_results:
+            return parent_results
+
+        query_terms = set(t.lower() for t in BM25Index._tokenize(query) if t)
+        expansion_terms = set(QueryRewriter.expand_terms(query))
+        all_terms = sorted(query_terms | expansion_terms)
+
+        if not all_terms:
+            return parent_results
+
+        filtered_results = []
+        for r in parent_results:
+            content_lower = r["content"].lower()
+            heading_path_str = " ".join(
+                r["metadata"].get("heading_path", [])
+            ).lower()
+
+            content_match = any(term in content_lower for term in all_terms)
+            heading_match = any(term in heading_path_str for term in all_terms)
+
+            if content_match or heading_match:
+                if heading_match:
+                    r["score"] = r.get("score", 0) + heading_path_boost
+                filtered_results.append(r)
+
+        # 如果严格过滤导致无结果，回退到原始候选集
+        if not filtered_results:
+            logger.debug(
+                f"heading_path 过滤后无结果，回退原始父块: query={query}"
+            )
+            return parent_results
+
+        return filtered_results
 
     def _vector_search(
         self, query: str, top_k: int = 10,
@@ -801,6 +1045,34 @@ class UnifiedKnowledgeStore:
 
 # ========== 查询重写 ==========
 
+def _build_expansion_map(
+    base_synonyms: Dict[str, List[str]],
+    abbreviations: Dict[str, List[str]],
+) -> Dict[str, List[str]]:
+    """构建双向同义词扩展表（包含术语和缩写）"""
+    raw: Dict[str, Set[str]] = {}
+    sources = [base_synonyms, abbreviations]
+    for source in sources:
+        for term, synonyms in source.items():
+            key = term.lower()
+            raw.setdefault(key, set())
+            for syn in synonyms:
+                syn_key = syn.lower()
+                raw[key].add(syn_key)
+                # 反向映射：同义词 -> 原词及其他同义词
+                raw.setdefault(syn_key, set())
+                raw[syn_key].add(key)
+                raw[syn_key].update(
+                    s.lower() for s in synonyms if s.lower() != syn_key
+                )
+    # 移除自身并排序，保证输出稳定
+    return {
+        k: sorted(v - {k})
+        for k, v in raw.items()
+        if v - {k}
+    }
+
+
 class QueryRewriter:
     """
     查询重写器
@@ -814,10 +1086,120 @@ class QueryRewriter:
     # 停用词
     STOP_WORDS = {"的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都", "一", "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好", "自己", "这", "那", "吗", "呢", "吧", "啊", "请", "帮", "我"}
 
+    # 技术术语中英文对照 / 同义词（key 为小写，中文按字面匹配，英文按单词边界匹配）
+    BASE_TECH_SYNONYMS: Dict[str, List[str]] = {
+        # Python
+        "装饰器": ["decorator"],
+        "迭代器": ["iterator"],
+        "生成器": ["generator"],
+        "生成器表达式": ["generator expression"],
+        "列表推导式": ["list comprehension"],
+        "高阶函数": ["higher-order function"],
+        "闭包": ["closure"],
+        "递归": ["recursion"],
+        "动态规划": ["dynamic programming", "dp"],
+        "记忆化": ["memoization", "lru_cache"],
+        # Web / FastAPI
+        "fastapi": ["fast api"],
+        "依赖注入": ["dependency injection", "depends"],
+        "路由": ["routing", "route"],
+        "restful": ["rest", "api design"],
+        "get": ["http get"],
+        "post": ["http post"],
+        "状态码": ["status code"],
+        # 数据库 / SQLAlchemy
+        "sqlalchemy": ["sqlalchemy", "orm"],
+        "orm": ["对象关系映射", "模型映射"],
+        "session": ["会话", "事务"],
+        "crud": ["增删改查", "create", "read", "update", "delete"],
+        "表连接": ["join", "sql join"],
+        # 缓存 / Redis
+        "redis": ["key-value", "缓存数据库"],
+        "缓存": ["cache"],
+        "持久化": ["persistence"],
+        # 消息队列 / Celery
+        "celery": ["任务队列", "distributed task queue"],
+        "broker": ["消息中间件", "消息代理"],
+        "worker": ["工作进程", "任务执行进程"],
+        "backend": ["结果后端", "result backend"],
+        "定时任务": ["periodic task", "scheduled task"],
+        # 异步
+        "async": ["异步", "协程"],
+        "await": ["等待", "挂起"],
+        "asyncio": ["事件循环", "event loop"],
+        "gather": ["并发执行", "同时运行"],
+        "to_thread": ["线程池", "thread pool"],
+        # 版本控制 / Docker
+        "git": ["version control", "版本控制"],
+        "分支": ["branch"],
+        "提交": ["commit"],
+        "docker": ["container", "容器化"],
+        "镜像": ["image"],
+        "容器": ["container"],
+        # 通用
+        "sql": ["database", "数据库"],
+        "api": ["接口"],
+        "url": ["统一资源定位符"],
+        "lru": ["lru_cache"],
+    }
+
+    # 缩写 / 首字母缩写词补全
+    ABBREVIATIONS: Dict[str, List[str]] = {
+        "orm": ["对象关系映射", "sqlalchemy"],
+        "crud": ["增删改查", "创建", "读取", "更新", "删除"],
+        "api": ["接口", "application programming interface"],
+        "url": ["统一资源定位符"],
+        "jwt": ["token", "认证"],
+        "rdb": ["redis rdb", "内存快照"],
+        "aof": ["append only file", "写操作日志"],
+        "sql": ["structured query language", "数据库"],
+    }
+
+    _EXPANSION_MAP: Dict[str, List[str]] = _build_expansion_map(
+        BASE_TECH_SYNONYMS, ABBREVIATIONS
+    )
+
+    @staticmethod
+    def _is_english_term(term: str) -> bool:
+        """判断是否主要由英文/数字/下划线组成的术语"""
+        return bool(re.fullmatch(r"[a-z0-9_.]+|[a-z]+\s+[a-z]+", term))
+
+    @staticmethod
+    def _term_in_query(query_lower: str, term: str) -> bool:
+        """判断术语是否出现在查询中（英文使用单词边界，中文使用子串）"""
+        if not term:
+            return False
+        if QueryRewriter._is_english_term(term):
+            return re.search(r"\b" + re.escape(term) + r"\b", query_lower) is not None
+        return term in query_lower
+
+    @staticmethod
+    def expand_terms(query: str) -> List[str]:
+        """
+        扩展查询中的技术术语，返回应补充的同义词列表
+
+        Args:
+            query: 原始查询
+
+        Returns:
+            List[str]: 需要补充的术语列表（已过滤掉查询中已有的词）
+        """
+        if not query or not query.strip():
+            return []
+
+        query_lower = query.lower().strip()
+        expansions: Set[str] = set()
+        for term, synonyms in QueryRewriter._EXPANSION_MAP.items():
+            if QueryRewriter._term_in_query(query_lower, term):
+                for syn in synonyms:
+                    if not QueryRewriter._term_in_query(query_lower, syn):
+                        expansions.add(syn)
+        return sorted(expansions)
+
     @staticmethod
     def rewrite(query: str) -> List[str]:
         """
-        重写查询，返回多个查询变体
+        重写查询，返回多个查询变体（基础模式）
 
         Args:
             query: 原始查询
@@ -849,6 +1231,55 @@ class QueryRewriter:
 
         # 3. 去重
         return list(dict.fromkeys(queries))  # 保持顺序去重
+
+    @staticmethod
+    def enhanced_rewrite(query: str) -> List[str]:
+        """
+        增强重写查询，返回多个查询变体
+
+        在基础模式上增加：
+        - 技术术语中英文同义词扩展（双向映射）
+        - 缩写补全
+        - 核心关键词组合
+
+        Args:
+            query: 原始查询
+
+        Returns:
+            List[str]: 查询变体列表（包含原始查询）
+        """
+        if not query or not query.strip():
+            return [query]
+
+        queries = QueryRewriter.rewrite(query)
+        base_query = query.strip()
+        base_query_lower = base_query.lower()
+
+        # 1. 同义词 / 缩写扩展查询
+        expanded_terms = QueryRewriter.expand_terms(base_query)
+        if expanded_terms:
+            expanded_query = base_query_lower + " " + " ".join(expanded_terms)
+            if expanded_query not in queries:
+                queries.append(expanded_query)
+
+        # 2. 生成仅含核心关键词的英文/中文混合查询
+        terms = UnifiedKnowledgeStore._tokenize(base_query_lower)
+        keywords = [t for t in terms if t not in QueryRewriter.STOP_WORDS]
+        keyword_queries: List[str] = []
+        for term in keywords:
+            term_lower = term.lower()
+            keyword_queries.append(term_lower)
+            # 追加该词的同义词（如果有）
+            for syn in QueryRewriter._EXPANSION_MAP.get(term_lower, []):
+                keyword_queries.append(syn)
+
+        if keyword_queries:
+            keyword_query = " ".join(list(dict.fromkeys(keyword_queries)))
+            if keyword_query not in queries:
+                queries.append(keyword_query)
+
+        # 3. 去重
+        return list(dict.fromkeys(queries))
 
 
 # ========== 知识迁移工具 ==========
