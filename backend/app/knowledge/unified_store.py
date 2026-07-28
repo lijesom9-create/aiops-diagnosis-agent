@@ -494,7 +494,7 @@ class UnifiedKnowledgeStore:
         user_id: Optional[str] = None,
         org_id: Optional[str] = None,
         rewrite_query: bool = True,
-        rewrite_mode: str = "basic",
+        rewrite_mode: str = "enhanced",
         rrf_k: int = 60,
         candidate_multiplier: int = 3,
     ) -> List[Dict[str, Any]]:
@@ -507,8 +507,9 @@ class UnifiedKnowledgeStore:
             min_score: 最小相似度
             source: 来源过滤
             user_id: 用户过滤
+            org_id: 组织过滤
             rewrite_query: 是否重写查询
-            rewrite_mode: 重写模式，"basic" 或 "enhanced"
+            rewrite_mode: 重写模式，"basic" 或 "enhanced"，默认 enhanced
             rrf_k: RRF 融合参数 k，默认 60
             candidate_multiplier: vector/BM25 候选数量相对于 top_k 的倍数，默认 3
 

@@ -193,9 +193,9 @@ class CrossEncoderReranker(Reranker):
 
         # 加载模型
         if not self._load_model():
-            # 回退到简单重排序
-            simple_reranker = SimpleReranker()
-            return simple_reranker.rerank(query, results, limit)
+            # 模型加载失败时按原分数排序返回，避免 SimpleReranker 降低质量
+            logger.warning("CrossEncoder 加载失败，按原始分数返回结果")
+            return sorted(results, key=lambda r: r.score, reverse=True)[:limit]
 
         try:
             # 构建查询对
@@ -219,9 +219,8 @@ class CrossEncoderReranker(Reranker):
 
         except Exception as e:
             logger.error(f"CrossEncoder 重排序失败: {e}")
-            # 回退到简单重排序
-            simple_reranker = SimpleReranker()
-            return simple_reranker.rerank(query, results, limit)
+            # 按原分数排序返回，避免 SimpleReranker 降低质量
+            return sorted(results, key=lambda r: r.score, reverse=True)[:limit]
 
 
 class LLMReranker(Reranker):
@@ -249,15 +248,13 @@ class LLMReranker(Reranker):
         如果 LLM 服务不可用，回退到简单重排序。
         """
         if not self.llm_service:
-            logger.warning("LLM 服务不可用，回退到简单重排序")
-            simple_reranker = SimpleReranker()
-            return simple_reranker.rerank(query, results, limit)
+            logger.warning("LLM 服务不可用，按原始分数返回结果")
+            return sorted(results, key=lambda r: r.score, reverse=True)[:limit]
 
         # TODO: 实现 LLM 重排序逻辑
         # 1. 构建 prompt：query + results
         # 2. 调用 LLM 获取排序结果
         # 3. 解析 LLM 输出并重排序
 
-        # 临时回退到简单重排序
-        simple_reranker = SimpleReranker()
-        return simple_reranker.rerank(query, results, limit)
+        # 未实现 LLM 重排序逻辑，按原始分数返回
+        return sorted(results, key=lambda r: r.score, reverse=True)[:limit]

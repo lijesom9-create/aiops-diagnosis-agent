@@ -13,7 +13,7 @@ Retrieval Layer - 检索层
 """
 
 from .base import BaseRetriever, RetrievalResult
-from .reranker import Reranker, SimpleReranker
+from .reranker import Reranker
 
 # 新增：混合检索器
 from .hybrid_retriever import (
@@ -30,7 +30,6 @@ __all__ = [
 
     # 重排序
     "Reranker",
-    "SimpleReranker",
 
     # 混合检索器
     "SparseRetriever",

@@ -27,7 +27,7 @@ from loguru import logger
 from app.document.uploader import DocumentUploader
 from app.knowledge.unified_store import KnowledgeItem, UnifiedKnowledgeStore
 from app.retrieval.embeddings import TFIDFModel, create_embedding_model
-from app.retrieval.reranker import CrossEncoderReranker, SimpleReranker
+from app.retrieval.reranker import CrossEncoderReranker
 
 
 EvalCase = Dict[str, Any]
@@ -220,47 +220,6 @@ def _hybrid_with_reranker(
         return [r["id"] for r in results]
     finally:
         store.reranker = original
-
-
-def make_hybrid_rrf_simple_search(reranker: SimpleReranker):
-    """返回绑定 SimpleReranker 的搜索函数（避免重复创建）"""
-    def search(
-        store: UnifiedKnowledgeStore,
-        query: str,
-        source: Optional[str],
-        top_k: int,
-        rrf_k: int = 60,
-        rewrite_query: bool = True,
-        rewrite_mode: str = "basic",
-        candidate_multiplier: int = 3,
-        **kwargs,
-    ) -> List[str]:
-        return _hybrid_with_reranker(
-            store, query, source, top_k, rrf_k,
-            rewrite_query, rewrite_mode, candidate_multiplier, reranker,
-        )
-    return search
-
-
-def make_hybrid_rrf_pc_simple_search(reranker: SimpleReranker):
-    """返回绑定 SimpleReranker 的父子文档搜索函数"""
-    def search(
-        store: UnifiedKnowledgeStore,
-        query: str,
-        source: Optional[str],
-        top_k: int,
-        rrf_k: int = 60,
-        rewrite_query: bool = True,
-        rewrite_mode: str = "basic",
-        candidate_multiplier: int = 3,
-        **kwargs,
-    ) -> List[str]:
-        return _hybrid_with_reranker(
-            store, query, source, top_k, rrf_k,
-            rewrite_query, rewrite_mode, candidate_multiplier, reranker,
-            use_parent_child=True,
-        )
-    return search
 
 
 def make_hybrid_rrf_cross_search(reranker: CrossEncoderReranker):
@@ -533,7 +492,6 @@ async def _run_ablation_core(
     expected_index, expected_parent_index = build_expected_index(store, queries)
 
     # 预先实例化 reranker，避免每次查询重复加载模型
-    simple_reranker = SimpleReranker()
     cross_reranker = CrossEncoderReranker(
         model_name="BAAI/bge-reranker-base",
         max_length=cross_max_length,
@@ -541,14 +499,13 @@ async def _run_ablation_core(
     cross_reranker._load_model()
 
     # (方法名, 搜索函数, 是否使用 parent 级别期望索引)
+    # 注：SimpleReranker 已验证效果差，已从默认策略中移除
     strategies: List[Tuple[str, SearchFn, bool]] = [
         ("vector_only", vector_only_search, False),
         ("bm25_only", bm25_only_search, False),
         ("hybrid_rrf", hybrid_rrf_search, False),
-        ("hybrid_rrf+simple", make_hybrid_rrf_simple_search(simple_reranker), False),
         ("hybrid_rrf+cross", make_hybrid_rrf_cross_search(cross_reranker), False),
         ("hybrid_rrf_pc", hybrid_rrf_pc_search, True),
-        ("hybrid_rrf_pc+simple", make_hybrid_rrf_pc_simple_search(simple_reranker), True),
         ("hybrid_rrf_pc+cross", make_hybrid_rrf_pc_cross_search(cross_reranker), True),
     ]
 
