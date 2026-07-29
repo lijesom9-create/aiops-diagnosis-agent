@@ -47,9 +47,33 @@ class Settings(BaseSettings):
     CHROMA_PORT: Optional[int] = None
     CHROMA_PERSIST_DIR: Optional[str] = None
 
+    # 向量存储后端选择：chroma | qdrant
+    VECTOR_STORE_BACKEND: str = "chroma"
+
+    # Qdrant 配置（local mode 无需 host/port）
+    QDRANT_HOST: Optional[str] = None
+    QDRANT_PORT: Optional[int] = None
+    QDRANT_PERSIST_DIR: Optional[str] = None
+
     # 重排器配置
     RERANKER_ENABLED: bool = True
     RERANKER_MODEL_NAME: str = "BAAI/bge-reranker-base"
+
+    # ========== RAG 检索链路推荐参数（基于参数扫描实验） ==========
+    # 检索 top_k：召回与 LLM 上下文成本的平衡（5 推荐，8 可获更高 recall）
+    RAG_TOP_K: int = 5
+    # 候选集倍数：向量/BM25 各返回 top_k * multiplier 个候选（3 最佳）
+    RAG_CANDIDATE_MULTIPLIER: int = 3
+    # RRF 融合参数 k 值（60 业界默认，有 reranker 时调参无效）
+    RAG_RRF_K: int = 60
+    # RRF 权重（vector : bm25，1:1 默认，有 reranker 时调参无效）
+    RAG_VECTOR_WEIGHT: float = 1.0
+    RAG_BM25_WEIGHT: float = 1.0
+    # 查询重写模式：basic | enhanced | llm | enhanced_llm
+    # enhanced=规则重写（默认）；enhanced_llm=规则+LLM MultiQuery（可选）
+    RAG_REWRITE_MODE: str = "enhanced"
+    # 父子分离存储（推荐 True：BM25 精度 +29pp）
+    RAG_SEPARATE_PARENT_CHILD: bool = True
 
     # 外部搜索配置
     TAVILY_API_KEY: Optional[str] = None

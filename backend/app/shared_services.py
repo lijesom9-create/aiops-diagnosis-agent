@@ -13,20 +13,46 @@ class RAGRetrieverAdapter:
     """
     RAG 检索器适配器
 
-    将 UnifiedKnowledgeStore 的 search 接口适配为 MemoryManager 期望的 rag_retriever 接口。
+    将 UnifiedKnowledgeStore 的 hybrid_search_parent_child 接口适配为
+    MemoryManager 期望的 rag_retriever 接口。
+
+    P0-1 修复：之前调用纯向量 search()，所有 RAG 优化（BM25/RRF/parent-child/reranker）均失效。
+    现在改调 hybrid_search_parent_child，让生产 RAG 链路用上完整优化。
     """
 
     def __init__(self, knowledge_store):
         self.knowledge_store = knowledge_store
+        # 从 config 读取推荐参数
+        from app.core.config import settings
+        self._rewrite_mode = settings.RAG_REWRITE_MODE
+        self._candidate_multiplier = settings.RAG_CANDIDATE_MULTIPLIER
+        self._rrf_k = settings.RAG_RRF_K
+        self._vector_weight = settings.RAG_VECTOR_WEIGHT
+        self._bm25_weight = settings.RAG_BM25_WEIGHT
 
     def search(self, query: str, top_k: int = 5) -> List[Any]:
         """
-        搜索知识库
+        搜索知识库（使用 hybrid_search_parent_child 完整链路）
 
         Returns:
             带有 to_dict() 方法的对象列表
         """
-        results = self.knowledge_store.search(query=query, top_k=top_k)
+        # 优先用 hybrid_search_parent_child（完整 RAG 链路）
+        # 失败时降级到纯向量 search
+        try:
+            results = self.knowledge_store.hybrid_search_parent_child(
+                query=query,
+                top_k=top_k,
+                rewrite_query=True,
+                rewrite_mode=self._rewrite_mode,
+                candidate_multiplier=self._candidate_multiplier,
+                rrf_k=self._rrf_k,
+                vector_weight=self._vector_weight,
+                bm25_weight=self._bm25_weight,
+            )
+        except Exception as e:
+            logger.warning(f"hybrid_search_parent_child 失败，降级到纯向量检索: {e}")
+            results = self.knowledge_store.search(query=query, top_k=top_k)
 
         # 将 dict 转换为带 to_dict() 方法的对象
         class ResultItem:

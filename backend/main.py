@@ -53,6 +53,8 @@ async def lifespan(app: FastAPI):
     knowledge_store = UnifiedKnowledgeStore(
         embedding_model=embedding_model,
         reranker=reranker,
+        separate_parent_child=settings.RAG_SEPARATE_PARENT_CHILD,
+        vector_store_backend=settings.VECTOR_STORE_BACKEND,
     )
     set_knowledge_store(knowledge_store)
     set_shared_store(knowledge_store)

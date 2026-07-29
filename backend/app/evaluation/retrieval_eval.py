@@ -1054,8 +1054,8 @@ async def main():
         "--rewrite-mode",
         type=str,
         default="basic",
-        choices=["basic", "enhanced"],
-        help="查询重写模式：basic 或 enhanced（增强模式会扩展同义词/缩写）",
+        choices=["basic", "enhanced", "llm", "enhanced_llm"],
+        help="查询重写模式：basic / enhanced / llm（仅LLM）/ enhanced_llm（规则+LLM叠加）",
     )
     parser.add_argument(
         "--candidate-multiplier",

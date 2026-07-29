@@ -18,6 +18,7 @@ from datetime import datetime
 from loguru import logger
 
 from ..retrieval.chroma_store import ChromaDBVectorStore
+from ..retrieval.qdrant_store import QdrantVectorStore
 from ..retrieval.embeddings import EmbeddingModel
 
 
@@ -259,20 +260,84 @@ class UnifiedKnowledgeStore:
         collection_name: str = "knowledge",
         persist_directory: Optional[str] = None,
         reranker=None,
+        vector_store_backend: Optional[str] = None,
+        separate_parent_child: bool = True,
     ):
         self.embedding_model = embedding_model
-        self.vector_store = ChromaDBVectorStore(
+        self._separate_parent_child = separate_parent_child
+
+        # 子块向量库（向后兼容：self.vector_store 始终指向 child store）
+        self.vector_store = self._create_vector_store(
             embedding_model=embedding_model,
             collection_name=collection_name,
             persist_directory=persist_directory,
+            backend=vector_store_backend,
         )
+        # 父块向量库（分离存储：独立 collection，不参与 ANN 检索，仅按 ID 取回）
+        if separate_parent_child:
+            self._parent_store = self._create_vector_store(
+                embedding_model=embedding_model,
+                collection_name=f"{collection_name}_parent",
+                persist_directory=persist_directory,
+                backend=vector_store_backend,
+            )
+        else:
+            # 兼容模式：父子同库（旧逻辑，不推荐）
+            self._parent_store = self.vector_store
+
         self.reranker = reranker
 
-        # BM25 倒排索引（内存持久化，启动时从 ChromaDB 加载）
+        # BM25 倒排索引（内存持久化，启动时从子块向量库加载）
         self._bm25 = BM25Index()
         self._bm25_initialized = False
 
-        logger.info(f"UnifiedKnowledgeStore 初始化完成, 当前记录数: {self.vector_store.size()}")
+        logger.info(
+            f"UnifiedKnowledgeStore 初始化完成 (parent_child_separated={separate_parent_child}), "
+            f"child_size={self.vector_store.size()}, parent_size={self._parent_store.size()}"
+        )
+
+    @staticmethod
+    def _create_vector_store(
+        embedding_model: EmbeddingModel,
+        collection_name: str,
+        persist_directory: Optional[str],
+        backend: Optional[str] = None,
+    ):
+        """
+        工厂方法：根据 backend 选择向量存储后端
+
+        Args:
+            backend: "chroma" | "qdrant" | None（None 时从 settings 读取）
+        """
+        # 延迟导入避免循环依赖
+        from ..core.config import settings
+
+        backend = (backend or settings.VECTOR_STORE_BACKEND or "chroma").lower()
+
+        if backend == "qdrant":
+            host = settings.QDRANT_HOST
+            port = settings.QDRANT_PORT
+            path = persist_directory or settings.QDRANT_PERSIST_DIR
+            logger.info(f"使用 Qdrant 向量存储后端 (host={host}, path={path})")
+            return QdrantVectorStore(
+                embedding_model=embedding_model,
+                collection_name=collection_name,
+                persist_directory=path,
+                host=host,
+                port=port,
+            )
+
+        # 默认 ChromaDB
+        host = settings.CHROMA_HOST
+        port = settings.CHROMA_PORT
+        path = persist_directory or settings.CHROMA_PERSIST_DIR
+        return ChromaDBVectorStore(
+            embedding_model=embedding_model,
+            collection_name=collection_name,
+            persist_directory=path,
+            host=host,
+            port=port,
+        )
 
     def _ensure_bm25_index(self) -> None:
         """确保 BM25 索引已加载（懒加载）"""
@@ -280,6 +345,40 @@ class UnifiedKnowledgeStore:
             return
         self._rebuild_bm25_index()
         self._bm25_initialized = True
+
+    def _rewrite_query(self, query: str, rewrite_query: bool, rewrite_mode: str) -> List[str]:
+        """
+        统一查询重写入口
+
+        支持模式：
+        - basic: 仅规则重写（去后缀、关键词组合）
+        - enhanced: 规则重写 + 同义词/缩写扩展（默认）
+        - llm: 仅 LLM MultiQuery 重写，失败降级到 enhanced
+        - enhanced_llm: 规则重写 + LLM MultiQuery 叠加（去重），失败降级到 enhanced
+        """
+        if not rewrite_query:
+            return [query]
+
+        if rewrite_mode in ("llm", "enhanced_llm"):
+            try:
+                from ..retrieval.llm_query_rewriter import get_default_llm_rewriter
+                rewriter = get_default_llm_rewriter()
+                # 注入 embedding_model（用于变体语义过滤）
+                if self.embedding_model is not None:
+                    rewriter.set_embedding_model(self.embedding_model)
+                original_mode = rewriter.mode
+                rewriter.mode = rewrite_mode
+                try:
+                    return rewriter.rewrite(query)
+                finally:
+                    rewriter.mode = original_mode
+            except Exception as e:
+                logger.warning(f"LLM MultiQuery 重写失败，降级到 enhanced: {type(e).__name__}: {e}")
+                return QueryRewriter.enhanced_rewrite(query)
+
+        if rewrite_mode == "enhanced":
+            return QueryRewriter.enhanced_rewrite(query)
+        return QueryRewriter.rewrite(query)
 
     def _rebuild_bm25_index(self) -> None:
         """从 ChromaDB 重建 BM25 索引（只索引子块，父块不进入 BM25）"""
@@ -295,33 +394,35 @@ class UnifiedKnowledgeStore:
         child_documents = []
         for i, doc_id in enumerate(ids):
             meta = metadatas[i] if i < len(metadatas) else {}
-            # 父块不进入 BM25 索引
+            # 分离模式下 child_store 已无 parent；兼容模式下仍需过滤
             if meta.get("chunk_type") == "parent":
                 continue
             child_ids.append(doc_id)
             child_documents.append(documents[i])
 
         self._bm25.add_batch(child_ids, child_documents)
-        logger.info(f"BM25 索引重建完成: {self._bm25.size} 篇文档")
+        logger.info(f"BM25 索引重建完成: {self._bm25.size} 篇文档 (从 child_store 加载)")
 
     # ========== 添加知识 ==========
 
     def add(self, item: KnowledgeItem) -> None:
-        """添加单条知识"""
+        """添加单条知识（按 chunk_type 分流到 parent/child store）"""
         chroma_data = item.to_chroma()
-        self.vector_store.add(
+        meta = chroma_data["metadata"]
+        target_store = self._parent_store if meta.get("chunk_type") == "parent" else self.vector_store
+        target_store.add(
             doc_id=item.id,
             content=item.content,
-            metadata=chroma_data["metadata"],
+            metadata=meta,
         )
         # 同步更新 BM25 索引：只索引子块
         self._ensure_bm25_index()
-        if chroma_data["metadata"].get("chunk_type") != "parent":
+        if meta.get("chunk_type") != "parent":
             self._bm25.add_document(item.id, item.content)
-        logger.debug(f"添加知识: {item.id} ({item.source})")
+        logger.debug(f"添加知识: {item.id} ({item.source}, chunk_type={meta.get('chunk_type')})")
 
     def add_batch(self, items: List[KnowledgeItem]) -> None:
-        """批量添加知识"""
+        """批量添加知识（按 chunk_type 分流到 parent/child store）"""
         if not items:
             return
 
@@ -329,11 +430,32 @@ class UnifiedKnowledgeStore:
         contents = [item.content for item in items]
         metadatas = [item.to_chroma()["metadata"] for item in items]
 
-        self.vector_store.add_batch(doc_ids, contents, metadatas)
+        # 父子分流
+        if self._separate_parent_child:
+            parent_idx, child_idx = [], []
+            for i, meta in enumerate(metadatas):
+                if meta.get("chunk_type") == "parent":
+                    parent_idx.append(i)
+                else:
+                    child_idx.append(i)
+            if child_idx:
+                self.vector_store.add_batch(
+                    [doc_ids[i] for i in child_idx],
+                    [contents[i] for i in child_idx],
+                    [metadatas[i] for i in child_idx],
+                )
+            if parent_idx:
+                self._parent_store.add_batch(
+                    [doc_ids[i] for i in parent_idx],
+                    [contents[i] for i in parent_idx],
+                    [metadatas[i] for i in parent_idx],
+                )
+        else:
+            self.vector_store.add_batch(doc_ids, contents, metadatas)
+
         # 同步更新 BM25 索引：只索引子块
         self._ensure_bm25_index()
-        child_ids = []
-        child_contents = []
+        child_ids, child_contents = [], []
         for i, meta in enumerate(metadatas):
             if meta.get("chunk_type") == "parent":
                 continue
@@ -341,7 +463,7 @@ class UnifiedKnowledgeStore:
             child_contents.append(contents[i])
         if child_ids:
             self._bm25.add_batch(child_ids, child_contents)
-        logger.info(f"批量添加知识: {len(items)} 条")
+        logger.info(f"批量添加知识: {len(items)} 条 (parent={sum(1 for m in metadatas if m.get('chunk_type')=='parent')}, child={len(child_ids)})")
 
     def add_batch_with_dedup(
         self,
@@ -509,7 +631,7 @@ class UnifiedKnowledgeStore:
             user_id: 用户过滤
             org_id: 组织过滤
             rewrite_query: 是否重写查询
-            rewrite_mode: 重写模式，"basic" 或 "enhanced"，默认 enhanced
+            rewrite_mode: 重写模式，"basic" / "enhanced" / "llm" / "enhanced_llm"，默认 enhanced
             rrf_k: RRF 融合参数 k，默认 60
             candidate_multiplier: vector/BM25 候选数量相对于 top_k 的倍数，默认 3
 
@@ -517,12 +639,7 @@ class UnifiedKnowledgeStore:
             List[Dict]: 搜索结果
         """
         # 0. 查询重写
-        queries = [query]
-        if rewrite_query:
-            if rewrite_mode == "enhanced":
-                queries = QueryRewriter.enhanced_rewrite(query)
-            else:
-                queries = QueryRewriter.rewrite(query)
+        queries = self._rewrite_query(query, rewrite_query, rewrite_mode)
 
         # 1. 向量检索（主查询）
         vector_results = self._vector_search(
@@ -588,6 +705,8 @@ class UnifiedKnowledgeStore:
         child_top_k: int = 15,
         rrf_k: int = 60,
         candidate_multiplier: int = 3,
+        vector_weight: float = 1.0,
+        bm25_weight: float = 1.0,
     ) -> List[Dict[str, Any]]:
         """
         父子文档混合检索
@@ -613,18 +732,13 @@ class UnifiedKnowledgeStore:
         Returns:
             List[Dict]: 父块搜索结果
         """
-        # 0. 查询重写
-        queries = [query]
-        if rewrite_query:
-            if rewrite_mode == "enhanced":
-                queries = QueryRewriter.enhanced_rewrite(query)
-            else:
-                queries = QueryRewriter.rewrite(query)
+        # 0. 查询重写（支持 basic / enhanced / llm / enhanced_llm）
+        queries = self._rewrite_query(query, rewrite_query, rewrite_mode)
 
         # 1. 向量检索子块
         vector_filters: Dict[str, Any] = {"chunk_type": "child"}
         if source:
-            # ChromaDB 要求多字段过滤使用 $and
+            # 多字段过滤使用 $and（与具体后端无关）
             vector_filters = {"$and": [{"chunk_type": "child"}, {"source": source}]}
 
         vector_results = self.vector_store.search(
@@ -659,11 +773,13 @@ class UnifiedKnowledgeStore:
             sorted_docs = sorted(all_scores.items(), key=lambda x: x[1], reverse=True)[:child_top_k]
             for doc_id, score in sorted_docs:
                 try:
-                    chroma_result = self.vector_store._collection.get(
-                        ids=[doc_id], include=["metadatas", "documents"]
-                    )
-                    meta = chroma_result["metadatas"][0] if chroma_result["metadatas"] else {}
-                    content = chroma_result["documents"][0] if chroma_result["documents"] else ""
+                    records = self.vector_store.get_by_ids([doc_id])
+                    if records:
+                        meta = records[0]["metadata"]
+                        content = records[0]["content"]
+                    else:
+                        meta = {}
+                        content = ""
                 except Exception:
                     meta = {}
                     content = ""
@@ -682,9 +798,12 @@ class UnifiedKnowledgeStore:
                     "content": content,
                 })
 
-        # 3. RRF 融合子块结果
+        # 3. 加权 RRF 融合子块结果
         if bm25_children and vector_children:
-            fused_children = self._rrf_fuse(vector_children, bm25_children, k=rrf_k)
+            fused_children = self._rrf_fuse(
+                vector_children, bm25_children, k=rrf_k,
+                weight_a=vector_weight, weight_b=bm25_weight,
+            )
         elif vector_children:
             fused_children = vector_children
         else:
@@ -693,21 +812,20 @@ class UnifiedKnowledgeStore:
         if not fused_children:
             return []
 
-        # 4. 按 parent_id 去重，保留每个父块下得分最高的子块
-        parent_id_to_best_child: Dict[str, Dict[str, Any]] = {}
+        # 4. 按 parent_id 聚合：记录每个父块的命中子块列表（用于投票加权）
+        parent_id_to_children: Dict[str, List[Dict[str, Any]]] = {}
         for child in fused_children:
             parent_id = child["metadata"].get("parent_id")
             if not parent_id:
                 continue
-            if parent_id not in parent_id_to_best_child:
-                parent_id_to_best_child[parent_id] = child
+            parent_id_to_children.setdefault(parent_id, []).append(child)
 
-        parent_ids = list(parent_id_to_best_child.keys())
+        parent_ids = list(parent_id_to_children.keys())
         if not parent_ids:
             return []
 
-        # 5. 批量取回父块
-        parent_records = self.vector_store.get_by_ids(parent_ids)
+        # 5. 批量从 parent_store 取回父块（父子分离存储）
+        parent_records = self._parent_store.get_by_ids(parent_ids)
         parent_results = []
         for record in parent_records:
             parent_id = record["id"]
@@ -717,20 +835,60 @@ class UnifiedKnowledgeStore:
             if user_id and meta.get("user_id") and meta.get("user_id") != user_id:
                 continue
 
-            best_child = parent_id_to_best_child.get(parent_id, {})
+            children = parent_id_to_children.get(parent_id, [])
+            if not children:
+                continue
+            # P1: 投票加权 —— 分数 = 最高子块分数 + 0.1 * (命中子块数 - 1)
+            best_child = max(children, key=lambda c: c.get("score", 0))
+            hit_count = len(children)
+            vote_boost = 0.1 * (hit_count - 1)
+            parent_score = best_child.get("score", 0) + vote_boost
+
             parent_results.append({
                 "id": parent_id,
-                "score": best_child.get("score", 0),
+                "score": parent_score,
                 "title": meta.get("title", ""),
                 "content": record["content"],
                 "source": meta.get("source", ""),
                 "metadata": meta,
+                "_hit_count": hit_count,  # 调试用
             })
 
         # 6. heading_path 相关性过滤与加权
         parent_results = self._apply_heading_path_filter(parent_results, query)
 
-        # 7. 按分数排序、过滤、截断
+        # 7. Rerank（P0-2 修复：对父块重排，之前缺失）
+        if self.reranker and parent_results:
+            try:
+                from ..retrieval.base import RetrievalResult
+                retrieval_results = [
+                    RetrievalResult(
+                        doc_id=item["id"],
+                        content=item["content"],
+                        score=item["score"],
+                        metadata=item["metadata"],
+                        source=item.get("source", ""),
+                    )
+                    for item in parent_results
+                ]
+                # 取 top_k * 2 给 reranker，重排后截断 top_k
+                rerank_limit = min(len(parent_results), max(top_k * 2, top_k + 5))
+                reranked = self.reranker.rerank(query, retrieval_results, limit=rerank_limit)
+                parent_results = [
+                    {
+                        "id": r.doc_id,
+                        "score": r.score,
+                        "title": r.metadata.get("title", ""),
+                        "content": r.content,
+                        "source": r.source,
+                        "metadata": r.metadata,
+                    }
+                    for r in reranked
+                ]
+            except Exception as e:
+                logger.warning(f"Parent-child rerank 失败，使用原始排序: {e}")
+
+        # 8. 按分数排序、过滤、截断
         parent_results.sort(key=lambda x: x["score"], reverse=True)
         return [r for r in parent_results if r.get("score", 0) >= min_score][:top_k]
 
@@ -842,16 +1000,18 @@ class UnifiedKnowledgeStore:
         # 排序
         sorted_docs = sorted(all_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
-        # 构建结果（从 ChromaDB 获取元数据）
+        # 构建结果（从向量库获取元数据）
         output = []
         for doc_id, score in sorted_docs:
-            # 获取元数据
+            # 获取元数据（通过公开 API，避免依赖具体后端的 _collection）
             try:
-                chroma_result = self.vector_store._collection.get(
-                    ids=[doc_id], include=["metadatas", "documents"]
-                )
-                meta = chroma_result["metadatas"][0] if chroma_result["metadatas"] else {}
-                content = chroma_result["documents"][0] if chroma_result["documents"] else ""
+                records = self.vector_store.get_by_ids([doc_id])
+                if records:
+                    meta = records[0]["metadata"]
+                    content = records[0]["content"]
+                else:
+                    meta = {}
+                    content = ""
             except Exception:
                 meta = {}
                 content = ""
@@ -877,21 +1037,26 @@ class UnifiedKnowledgeStore:
 
     @staticmethod
     def _rrf_fuse(
-        results_a: List[Dict], results_b: List[Dict], k: int = 60
+        results_a: List[Dict], results_b: List[Dict], k: int = 60,
+        weight_a: float = 1.0, weight_b: float = 1.0,
     ) -> List[Dict]:
-        """RRF (Reciprocal Rank Fusion) 融合两路结果"""
+        """加权 RRF (Reciprocal Rank Fusion) 融合两路结果
+
+        公式: score(d) = weight_a / (k + rank_a + 1) + weight_b / (k + rank_b + 1)
+        weight_a / weight_b 控制两路的相对重要性（默认 1:1 等价标准 RRF）
+        """
         scores: Dict[str, float] = {}
         doc_map: Dict[str, Dict] = {}
 
         for rank, doc in enumerate(results_a):
             doc_id = doc["id"]
-            scores[doc_id] = scores.get(doc_id, 0) + 1.0 / (k + rank + 1)
+            scores[doc_id] = scores.get(doc_id, 0) + weight_a / (k + rank + 1)
             if doc_id not in doc_map:
                 doc_map[doc_id] = doc
 
         for rank, doc in enumerate(results_b):
             doc_id = doc["id"]
-            scores[doc_id] = scores.get(doc_id, 0) + 1.0 / (k + rank + 1)
+            scores[doc_id] = scores.get(doc_id, 0) + weight_b / (k + rank + 1)
             if doc_id not in doc_map:
                 doc_map[doc_id] = doc
 
@@ -923,28 +1088,47 @@ class UnifiedKnowledgeStore:
     # ========== 删除知识 ==========
 
     def delete(self, doc_id: str) -> bool:
-        """删除知识"""
-        result = self.vector_store.delete(doc_id=doc_id)
+        """删除知识（同时尝试删父子两个 store）"""
+        r1 = self.vector_store.delete(doc_id=doc_id)
+        r2 = True
+        if self._separate_parent_child:
+            r2 = self._parent_store.delete(doc_id=doc_id)
         # 同步更新 BM25 索引
         self._ensure_bm25_index()
         self._bm25.remove_document(doc_id)
-        return result
+        return r1 or r2
 
     def delete_by_user(self, user_id: str) -> int:
-        """删除用户的所有知识"""
-        return self.vector_store.delete_by_filter({"user_id": user_id})
+        """删除用户的所有知识（同时删父子两个 store）"""
+        n1 = self.vector_store.delete_by_filter({"user_id": user_id})
+        if self._separate_parent_child:
+            n2 = self._parent_store.delete_by_filter({"user_id": user_id})
+        self._ensure_bm25_index()
+        return n1
 
     def delete_by_topic(self, topic_id: str) -> int:
-        """删除主题的所有知识"""
-        return self.vector_store.delete_by_filter({"topic_id": topic_id})
+        """删除主题的所有知识（同时删父子两个 store）"""
+        n1 = self.vector_store.delete_by_filter({"topic_id": topic_id})
+        if self._separate_parent_child:
+            n2 = self._parent_store.delete_by_filter({"topic_id": topic_id})
+        self._ensure_bm25_index()
+        return n1
 
     def delete_by_document(self, document_id: str) -> int:
-        """删除文档的所有知识"""
-        return self.vector_store.delete_by_document(document_id)
+        """删除文档的所有知识（同时删父子两个 store）"""
+        n1 = self.vector_store.delete_by_document(document_id)
+        n2 = self._parent_store.delete_by_document(document_id) if self._separate_parent_child else 0
+        # 同步更新 BM25
+        self._ensure_bm25_index()
+        return n1 if n1 >= 0 else n2
 
     def get_by_document(self, document_id: str) -> List[Dict[str, Any]]:
-        """获取文档的所有知识"""
-        return self.vector_store.get_by_document(document_id)
+        """获取文档的所有知识（合并父子两个 store）"""
+        children = self.vector_store.get_by_document(document_id)
+        if self._separate_parent_child:
+            parents = self._parent_store.get_by_document(document_id)
+            return children + parents
+        return children
 
     def update_document(
         self,
@@ -953,15 +1137,7 @@ class UnifiedKnowledgeStore:
         batch_size: int = 100,
     ) -> Dict[str, int]:
         """
-        更新文档知识
-
-        Args:
-            document_id: 文档 ID
-            items: 新的知识条目列表
-            batch_size: 批量大小
-
-        Returns:
-            Dict: {"deleted": 5, "added": 4}
+        更新文档知识（先删父子两个 store 旧数据，再按 chunk_type 分流添加）
         """
         if not items:
             return {"deleted": 0, "added": 0, "failed": 0}
@@ -970,14 +1146,46 @@ class UnifiedKnowledgeStore:
         contents = [item.content for item in items]
         metadatas = [item.to_chroma()["metadata"] for item in items]
 
-        stats = self.vector_store.update_document(
-            document_id=document_id,
-            doc_ids=doc_ids,
-            contents=contents,
-            metadatas=metadatas,
-            batch_size=batch_size,
-        )
+        # 先删两个 store 的旧数据
+        self.vector_store.delete_by_document(document_id)
+        if self._separate_parent_child:
+            self._parent_store.delete_by_document(document_id)
 
+        # 按 chunk_type 分流添加
+        stats = {"deleted": -1, "added": 0, "failed": 0}
+        if self._separate_parent_child:
+            parent_idx, child_idx = [], []
+            for i, meta in enumerate(metadatas):
+                if meta.get("chunk_type") == "parent":
+                    parent_idx.append(i)
+                else:
+                    child_idx.append(i)
+            if child_idx:
+                s = self.vector_store.add_with_dedup(
+                    [doc_ids[i] for i in child_idx],
+                    [contents[i] for i in child_idx],
+                    [metadatas[i] for i in child_idx],
+                    batch_size=batch_size,
+                )
+                stats["added"] += s.get("added", 0) + s.get("updated", 0)
+                stats["failed"] += s.get("failed", 0)
+            if parent_idx:
+                s = self._parent_store.add_with_dedup(
+                    [doc_ids[i] for i in parent_idx],
+                    [contents[i] for i in parent_idx],
+                    [metadatas[i] for i in parent_idx],
+                    batch_size=batch_size,
+                )
+                stats["added"] += s.get("added", 0) + s.get("updated", 0)
+                stats["failed"] += s.get("failed", 0)
+        else:
+            s = self.vector_store.add_with_dedup(doc_ids, contents, metadatas, batch_size=batch_size)
+            stats["added"] = s.get("added", 0) + s.get("updated", 0)
+            stats["failed"] = s.get("failed", 0)
+
+        # 重建 BM25
+        self._bm25_initialized = False
+        self._ensure_bm25_index()
         logger.info(f"文档 {document_id} 更新完成: {stats}")
         return stats
 
@@ -988,17 +1196,7 @@ class UnifiedKnowledgeStore:
         batch_size: int = 100,
     ) -> Dict[str, int]:
         """
-        增量更新文档知识
-
-        只更新变化的分块，而不是删除所有再重新添加。
-
-        Args:
-            document_id: 文档 ID
-            items: 新的知识条目列表
-            batch_size: 批量大小
-
-        Returns:
-            Dict: {"added": 2, "deleted": 1, "updated": 1, "unchanged": 3}
+        增量更新文档知识（按 chunk_type 分流到父子 store）
         """
         if not items:
             return {"added": 0, "deleted": 0, "updated": 0, "unchanged": 0, "failed": 0}
@@ -1012,25 +1210,50 @@ class UnifiedKnowledgeStore:
                 "metadata": item.to_chroma()["metadata"],
             })
 
-        stats = self.vector_store.incremental_update(
-            document_id=document_id,
-            new_chunks=chunks,
-            batch_size=batch_size,
-        )
+        # 分离模式下按 chunk_type 分流
+        if self._separate_parent_child:
+            child_chunks = [c for c in chunks if c["metadata"].get("chunk_type") != "parent"]
+            parent_chunks = [c for c in chunks if c["metadata"].get("chunk_type") == "parent"]
+            stats = {"added": 0, "deleted": 0, "updated": 0, "unchanged": 0, "failed": 0}
+            if child_chunks:
+                s = self.vector_store.incremental_update(
+                    document_id=document_id, new_chunks=child_chunks, batch_size=batch_size,
+                )
+                for k in stats:
+                    stats[k] += s.get(k, 0)
+            if parent_chunks:
+                s = self._parent_store.incremental_update(
+                    document_id=document_id, new_chunks=parent_chunks, batch_size=batch_size,
+                )
+                for k in stats:
+                    stats[k] += s.get(k, 0)
+        else:
+            stats = self.vector_store.incremental_update(
+                document_id=document_id, new_chunks=chunks, batch_size=batch_size,
+            )
 
+        # 重建 BM25
+        self._bm25_initialized = False
+        self._ensure_bm25_index()
         logger.info(f"文档 {document_id} 增量更新完成: {stats}")
         return stats
 
     # ========== 统计 ==========
 
     def size(self) -> int:
-        """记录数量"""
-        return self.vector_store.size()
+        """记录数量（父子 store 合计）"""
+        n = self.vector_store.size()
+        if self._separate_parent_child:
+            n += self._parent_store.size()
+        return n
 
     def get_statistics(self) -> Dict[str, Any]:
         """获取统计信息"""
         all_data = self.vector_store.get_all(include=["metadatas"])
         metadatas = all_data.get("metadatas", [])
+        if self._separate_parent_child:
+            parent_data = self._parent_store.get_all(include=["metadatas"])
+            metadatas = metadatas + parent_data.get("metadatas", [])
 
         # 按来源统计
         source_counts = {}
@@ -1039,7 +1262,7 @@ class UnifiedKnowledgeStore:
             source_counts[source] = source_counts.get(source, 0) + 1
 
         return {
-            "total": self.vector_store.size(),
+            "total": self.size(),
             "by_source": source_counts,
         }
 
