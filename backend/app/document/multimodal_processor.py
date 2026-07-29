@@ -231,7 +231,7 @@ class MultimodalProcessor:
             try:
                 from .ocr import OCRProcessor
                 ocr = OCRProcessor(engine="paddleocr")
-                text = ocr.extract_text_from_image(tmp_path)
+                text = ocr.ocr_image(tmp_path)
                 if text and text.strip():
                     return text.strip()
             except Exception as e:
@@ -241,7 +241,7 @@ class MultimodalProcessor:
             try:
                 from .ocr import OCRProcessor
                 ocr = OCRProcessor(engine="tesseract")
-                text = ocr.extract_text_from_image(tmp_path)
+                text = ocr.ocr_image(tmp_path)
                 if text and text.strip():
                     return text.strip()
             except Exception as e:

@@ -292,7 +292,16 @@ class ParserFactory:
         """
         ext = Path(filename).suffix.lower()
         if ext in cls._PARSER_REGISTRY:
-            return cls._PARSER_REGISTRY[ext]()
+            parser_cls = cls._PARSER_REGISTRY[ext]
+            # 传递多模态参数（DoclingParser 支持 image_store/extract_images，
+            # TextParser 不支持这些参数，用 try/except 兼容）
+            try:
+                return parser_cls(
+                    image_store=image_store,
+                    extract_images=extract_images,
+                )
+            except TypeError:
+                return parser_cls()
 
         from .docling_parser import DoclingParser
         from .text_parser import TextParser
