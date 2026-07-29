@@ -143,9 +143,14 @@ class CrossEncoderReranker(Reranker):
     - BAAI/bge-reranker-base: 中文优化，1.1GB（推荐）
     - BAAI/bge-reranker-large: 更大，效果更好，4.9GB
     - cross-encoder/ms-marco-MiniLM-L-6-v2: 英文为主，80MB
+
+    P0-1 优化：模块级单例 + torch.no_grad 推理加速
     """
 
     name = "cross_encoder_reranker"
+
+    # 模块级单例：同一模型名只加载一次，避免重复加载 1.1GB 模型
+    _model_cache: Dict[str, "CrossEncoder"] = {}
 
     def __init__(
         self,
@@ -157,18 +162,40 @@ class CrossEncoderReranker(Reranker):
         self._model = None
 
     def _load_model(self):
-        """加载模型"""
-        if self._model is None:
+        """加载模型（带模块级单例缓存）"""
+        if self._model is not None:
+            return True
+
+        # 检查单例缓存
+        if self.model_name in CrossEncoderReranker._model_cache:
+            self._model = CrossEncoderReranker._model_cache[self.model_name]
+            logger.info(f"复用已加载的 CrossEncoder 模型: {self.model_name}")
+            return True
+
+        # 首次加载
+        try:
+            from sentence_transformers import CrossEncoder
+            import os
+            # 离线模式：优先用本地缓存，避免 HF 连接
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+            self._model = CrossEncoder(self.model_name)
+            # 推理加速：关闭梯度计算
             try:
-                from sentence_transformers import CrossEncoder
-                self._model = CrossEncoder(self.model_name)
-                logger.info(f"加载 CrossEncoder 模型: {self.model_name}")
-            except ImportError:
-                logger.warning("sentence_transformers 未安装，无法使用 CrossEncoder")
-                return False
-            except Exception as e:
-                logger.error(f"加载 CrossEncoder 模型失败: {e}")
-                return False
+                import torch
+                self._model.model.eval()
+                logger.info(f"CrossEncoder 已设为 eval 模式 (torch.no_grad)")
+            except Exception:
+                pass
+            # 存入单例缓存
+            CrossEncoderReranker._model_cache[self.model_name] = self._model
+            logger.info(f"加载 CrossEncoder 模型: {self.model_name} (首次加载，已缓存)")
+        except ImportError:
+            logger.warning("sentence_transformers 未安装，无法使用 CrossEncoder")
+            return False
+        except Exception as e:
+            logger.error(f"加载 CrossEncoder 模型失败: {e}")
+            return False
         return True
 
     def rerank(

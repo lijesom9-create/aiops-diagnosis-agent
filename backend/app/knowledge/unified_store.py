@@ -296,6 +296,31 @@ class UnifiedKnowledgeStore:
             f"child_size={self.vector_store.size()}, parent_size={self._parent_store.size()}"
         )
 
+        # P0-2: 查询结果缓存（LRU + TTL，避免相同 query 重复检索）
+        self._query_cache: Dict[str, Dict[str, Any]] = {}  # key -> {"results": ..., "ts": ...}
+        self._query_cache_ttl: int = 300  # 5 分钟
+        self._query_cache_max: int = 128  # 最多缓存 128 个查询
+
+    def _cache_get(self, key: str) -> Optional[List[Dict]]:
+        """从缓存获取查询结果"""
+        import time
+        entry = self._query_cache.get(key)
+        if entry is None:
+            return None
+        if time.time() - entry["ts"] > self._query_cache_ttl:
+            del self._query_cache[key]
+            return None
+        return entry["results"]
+
+    def _cache_put(self, key: str, results: List[Dict]):
+        """写入缓存结果"""
+        import time
+        if len(self._query_cache) >= self._query_cache_max:
+            # 淘汰最旧的
+            oldest = min(self._query_cache.items(), key=lambda x: x[1]["ts"])
+            del self._query_cache[oldest[0]]
+        self._query_cache[key] = {"results": results, "ts": time.time()}
+
     @staticmethod
     def _create_vector_store(
         embedding_model: EmbeddingModel,
@@ -732,49 +757,72 @@ class UnifiedKnowledgeStore:
         Returns:
             List[Dict]: 父块搜索结果
         """
+        # P0-2: 查询缓存检查
+        import hashlib
+        cache_key_str = f"{query}|{top_k}|{rewrite_mode}|{candidate_multiplier}|{rrf_k}|{vector_weight}|{bm25_weight}|{source}|{user_id}|{org_id}"
+        cache_key = hashlib.md5(cache_key_str.encode()).hexdigest()
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            logger.debug(f"查询缓存命中: {query[:30]}...")
+            return cached
+
         # 0. 查询重写（支持 basic / enhanced / llm / enhanced_llm）
         queries = self._rewrite_query(query, rewrite_query, rewrite_mode)
 
-        # 1. 向量检索子块
-        vector_filters: Dict[str, Any] = {"chunk_type": "child"}
-        if source:
-            # 多字段过滤使用 $and（与具体后端无关）
-            vector_filters = {"$and": [{"chunk_type": "child"}, {"source": source}]}
+        # P0-3: 并行检索（向量 + BM25 同时执行）
+        from concurrent.futures import ThreadPoolExecutor
 
-        vector_results = self.vector_store.search(
-            query=query,
-            top_k=child_top_k * candidate_multiplier,
-            min_score=0.0,
-            filters=vector_filters,
-        )
+        def _vector_search():
+            """向量检索子块"""
+            vector_filters: Dict[str, Any] = {"chunk_type": "child"}
+            if source:
+                vector_filters = {"$and": [{"chunk_type": "child"}, {"source": source}]}
+            vector_results = self.vector_store.search(
+                query=query,
+                top_k=child_top_k * candidate_multiplier,
+                min_score=0.0,
+                filters=vector_filters,
+            )
+            children = []
+            for doc_id, score, metadata in vector_results:
+                if org_id and metadata.get("org_id") and metadata.get("org_id") != org_id:
+                    continue
+                if user_id and metadata.get("user_id") and metadata.get("user_id") != user_id:
+                    continue
+                children.append({"id": doc_id, "score": score, "metadata": metadata})
+            return children
 
-        vector_children = []
-        for doc_id, score, metadata in vector_results:
-            if org_id and metadata.get("org_id") and metadata.get("org_id") != org_id:
-                continue
-            if user_id and metadata.get("user_id") and metadata.get("user_id") != user_id:
-                continue
-            vector_children.append({
-                "id": doc_id,
-                "score": score,
-                "metadata": metadata,
-            })
-
-        # 2. BM25 检索子块
-        self._ensure_bm25_index()
-        bm25_children = []
-        if self._bm25.size > 0:
+        def _bm25_search():
+            """BM25 检索子块"""
+            self._ensure_bm25_index()
+            if self._bm25.size == 0:
+                return []
             all_scores: Dict[str, float] = {}
             for q in queries:
                 results = self._bm25.search(q, top_k=child_top_k * candidate_multiplier)
                 for doc_id, score in results:
                     all_scores[doc_id] = max(all_scores.get(doc_id, 0), score)
-
             sorted_docs = sorted(all_scores.items(), key=lambda x: x[1], reverse=True)[:child_top_k]
+            children = []
             for doc_id, score in sorted_docs:
                 try:
                     records = self.vector_store.get_by_ids([doc_id])
                     if records:
+                        meta = records[0].get("metadata", {})
+                        content = records[0].get("content", "")
+                        children.append({"id": doc_id, "score": score, "metadata": meta, "content": content})
+                except Exception:
+                    continue
+            return children
+
+        # 并行执行向量检索和 BM25 检索
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_v = executor.submit(_vector_search)
+            future_b = executor.submit(_bm25_search)
+            vector_children = future_v.result()
+            bm25_children = future_b.result()
+
+        # 3. 加权 RRF 融合子块结果
                         meta = records[0]["metadata"]
                         content = records[0]["content"]
                     else:
