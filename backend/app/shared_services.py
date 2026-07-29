@@ -29,14 +29,20 @@ class RAGRetrieverAdapter:
         self._rrf_k = settings.RAG_RRF_K
         self._vector_weight = settings.RAG_VECTOR_WEIGHT
         self._bm25_weight = settings.RAG_BM25_WEIGHT
+        self._top_k = settings.RAG_TOP_K
 
-    def search(self, query: str, top_k: int = 5) -> List[Any]:
+    def search(self, query: str, top_k: Optional[int] = None) -> List[Any]:
         """
         搜索知识库（使用 hybrid_search_parent_child 完整链路）
+
+        Args:
+            top_k: 返回结果数，None 时从 settings.RAG_TOP_K 读取
 
         Returns:
             带有 to_dict() 方法的对象列表
         """
+        if top_k is None:
+            top_k = self._top_k
         # 优先用 hybrid_search_parent_child（完整 RAG 链路）
         # 失败时降级到纯向量 search
         try:

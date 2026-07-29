@@ -207,7 +207,7 @@ class MemoryManager:
         include_archival: bool = True,
         include_rag: bool = True,
         max_history_turns: int = 10,
-        max_rag_results: int = 5,
+        max_rag_results: Optional[int] = None,
         max_archival_results: int = 3,
         rag_content_limit: Optional[int] = 200,
         max_context_tokens: Optional[int] = None,
@@ -233,6 +233,14 @@ class MemoryManager:
         Returns:
             str: 组装好的上下文
         """
+        # RAG top_k: None 时从 settings 读取
+        if max_rag_results is None:
+            try:
+                from ..core.config import settings
+                max_rag_results = getattr(settings, "RAG_TOP_K", 8)
+            except Exception:
+                max_rag_results = 8
+
         # P1-2: 解析 token 预算
         if max_context_tokens is None:
             try:
@@ -357,7 +365,7 @@ class MemoryManager:
         query: str,
         user_id: str,
         session_id: Optional[str] = None,
-        max_rag_results: int = 5,
+        max_rag_results: Optional[int] = None,
         max_context_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         """

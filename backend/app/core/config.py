@@ -60,8 +60,9 @@ class Settings(BaseSettings):
     RERANKER_MODEL_NAME: str = "BAAI/bge-reranker-base"
 
     # ========== RAG 检索链路推荐参数（基于参数扫描实验） ==========
-    # 检索 top_k：召回与 LLM 上下文成本的平衡（5 推荐，8 可获更高 recall）
-    RAG_TOP_K: int = 5
+    # 检索 top_k：召回与 LLM 上下文成本的平衡
+    # 扩大数据集实验：top_k=8 recall +0.094（0.712→0.805），NDCG +0.015，MRR +0.003
+    RAG_TOP_K: int = 8
     # 候选集倍数：向量/BM25 各返回 top_k * multiplier 个候选（3 最佳）
     RAG_CANDIDATE_MULTIPLIER: int = 3
     # RRF 融合参数 k 值（60 业界默认，有 reranker 时调参无效）
