@@ -440,7 +440,18 @@ class LangGraphAgent:
 
     async def run_stream(self, user_input: str, session_id: str = None, context: Dict = None, use_web_search: bool = False):
         """
-        流式运行 Agent
+        流式运行 Agent（token 级流式，P1-1 优化）
+
+        使用 LangGraph astream_events(v2) 捕获 LLM 的 token 流，
+        实现"逐字输出"的真实流式体验，同时保留工具调用事件。
+
+        事件类型：
+        - {"type": "start"}                      开始
+        - {"type": "tool_calls", "tools": [...]} 工具调用开始
+        - {"type": "tool_result", "name": ..., "content": ...} 工具结果
+        - {"type": "token", "content": "..."}    LLM token 流（核心）
+        - {"type": "reflection"}                  反思阶段
+        - {"type": "done", "tools_used": [...], "step_count": N} 完成
 
         Args:
             user_input: 用户输入
@@ -474,61 +485,113 @@ class LangGraphAgent:
             "max_steps": self.max_steps,
         }
 
+        # P1-1: token 级流式
+        # 跟踪当前是否在最终回答阶段（无 tool_calls 的 AIMessage）
+        # astream_events 会按顺序触发：
+        #   on_chat_model_start (LLM 调用开始)
+        #     on_chat_model_stream (token 流)  <-- 我们要的
+        #   on_chat_model_end (LLM 调用结束)
+        #   on_tool_start (工具调用开始)
+        #   on_tool_end (工具返回)
+        # 最后通过 aget_state 获取最终状态
+        final_state_values = None
+
         try:
-            # 使用 astream 流式执行
-            async for event in self.graph.astream(initial_state, config=config):
-                # 解析事件
-                for node_name, node_output in event.items():
-                    if node_name == "agent":
-                        # Agent 节点 - LLM 响应
-                        messages = node_output.get("messages", [])
-                        if messages:
-                            last_msg = messages[-1]
-                            if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
-                                # 工具调用
-                                tool_names = [tc.get('name', 'unknown') for tc in last_msg.tool_calls]
-                                yield {
-                                    "type": "tool_calls",
-                                    "tools": tool_names,
-                                    "step": node_output.get("step_count", 0),
-                                }
-                            elif hasattr(last_msg, 'content'):
-                                # 文本响应
-                                yield {
-                                    "type": "thinking",
-                                    "content": last_msg.content[:200] + "..." if len(last_msg.content) > 200 else last_msg.content,
-                                }
+            # 用 astream_events 捕获 LLM token
+            seen_tools_in_step = set()  # 当前 step 已发过 tool_calls 事件的工具
+            current_llm_content = ""    # 当前 LLM 调用的累积内容（用于判断是否为最终回答）
 
-                    elif node_name == "tools":
-                        # 工具执行结果
-                        messages = node_output.get("messages", [])
-                        if messages:
-                            for msg in messages:
-                                if hasattr(msg, 'content'):
-                                    yield {
-                                        "type": "tool_result",
-                                        "content": msg.content[:100] + "..." if len(msg.content) > 100 else msg.content,
-                                    }
+            async for event in self.graph.astream_events(
+                initial_state,
+                config=config,
+                version="v2",
+            ):
+                kind = event.get("event")
+                name = event.get("name", "")
+                data = event.get("data", {})
 
-                    elif node_name == "reflection":
-                        # 反思结果
+                # 1. LLM token 流（核心）
+                if kind == "on_chat_model_stream":
+                    chunk = data.get("chunk")
+                    if chunk is None:
+                        continue
+
+                    # 提取 token 内容
+                    token_text = ""
+                    if hasattr(chunk, "content") and chunk.content:
+                        token_text = chunk.content
+
+                    # 检查是否为 tool_calls（tool_calls 通常没有 content，而是有 tool_call_chunks）
+                    has_tool_calls = (
+                        hasattr(chunk, "tool_call_chunks")
+                        and chunk.tool_call_chunks
+                    )
+
+                    if token_text:
+                        current_llm_content += token_text
+                        yield {"type": "token", "content": token_text}
+
+                    # 工具调用 chunk（累积中，等 on_tool_start 统一发送）
+                    # 不在这里 yield tool_calls，避免重复
+
+                # 2. 工具调用开始
+                elif kind == "on_tool_start":
+                    tool_name = name
+                    if tool_name and tool_name not in seen_tools_in_step:
+                        seen_tools_in_step.add(tool_name)
                         yield {
-                            "type": "reflection",
-                            "content": "正在反思...",
+                            "type": "tool_calls",
+                            "tools": list(seen_tools_in_step),
                         }
 
-            # 最终结果
-            final_state = await self.graph.aget_state(config)
-            if final_state and final_state.values:
-                messages = final_state.values.get("messages", [])
-                if messages:
-                    last_msg = messages[-1]
+                # 3. 工具调用结束
+                elif kind == "on_tool_end":
+                    output = data.get("output")
+                    tool_content = ""
+                    if output is not None:
+                        if hasattr(output, "content"):
+                            tool_content = output.content or ""
+                        elif isinstance(output, str):
+                            tool_content = output
+                        else:
+                            tool_content = str(output)
+
+                    # 截断长工具结果
+                    if len(tool_content) > 200:
+                        tool_content = tool_content[:200] + "..."
+
                     yield {
-                        "type": "content",
-                        "content": last_msg.content if hasattr(last_msg, 'content') else "",
-                        "tools_used": final_state.values.get("tools_used", []),
-                        "step_count": final_state.values.get("step_count", 0),
+                        "type": "tool_result",
+                        "name": name,
+                        "content": tool_content,
                     }
+                    # 重置 seen_tools 进入下一轮
+                    seen_tools_in_step.clear()
+
+                # 4. 节点结束事件（用于标记 reflection 阶段）
+                elif kind == "on_chain_end" and name == "reflection":
+                    yield {"type": "reflection", "content": "正在反思..."}
+
+            # 获取最终状态
+            final_state_values = await self.graph.aget_state(config)
+            if final_state_values and final_state_values.values:
+                values = final_state_values.values
+                messages = values.get("messages", [])
+                tools_used = values.get("tools_used", [])
+                step_count = values.get("step_count", 0)
+
+                # 如果 token 流没有覆盖完整内容（例如 LLM 直接返回没走 stream）
+                # 用最终 state 的最后一条消息补齐
+                if messages and not current_llm_content:
+                    last_msg = messages[-1]
+                    if hasattr(last_msg, "content") and last_msg.content:
+                        yield {"type": "token", "content": last_msg.content}
+
+                yield {
+                    "type": "done",
+                    "tools_used": tools_used,
+                    "step_count": step_count,
+                }
 
         except Exception as e:
             logger.error(f"流式执行失败: {e}")
