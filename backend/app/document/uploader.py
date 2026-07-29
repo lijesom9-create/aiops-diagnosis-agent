@@ -3,6 +3,12 @@
 
 将解析后的文档分块存入统一知识库（UnifiedKnowledgeStore）。
 支持文件系统存储，保存原始文件。
+
+多模态 RAG：
+- MULTIMODAL_ENABLED=True 时，PDF/DOCX 解析会提取图片
+- 调用 VLM 生成图片 caption + OCR 提取图中文字
+- 调用 LLM 生成表格摘要
+- 图片子块通过 metadata.image_path 返回原图引用
 """
 
 import uuid
@@ -15,6 +21,8 @@ from .chunker import DocumentChunker
 from .struct_chunker import StructureAwareChunker
 from .parent_child_chunker import ParentChildChunker
 from .models import Chunk, DocumentElement
+from .image_store import ImageStore, get_image_store
+from .multimodal_processor import MultimodalProcessor, get_multimodal_processor
 from ..knowledge.unified_store import UnifiedKnowledgeStore, KnowledgeItem
 from ..storage.file_storage import FileStorage, get_file_storage
 
@@ -34,6 +42,8 @@ class DocumentUploader:
         child_max_chars: int = 300,
         child_overlap_chars: int = 50,
         collection_name: Optional[str] = None,  # 兼容旧测试
+        image_store: Optional[ImageStore] = None,
+        multimodal_processor: Optional[MultimodalProcessor] = None,
     ):
         self.parser = DocumentParser()
         self.chunker = DocumentChunker(
@@ -47,6 +57,8 @@ class DocumentUploader:
         self.child_overlap_chars = child_overlap_chars
         self.file_storage = file_storage or get_file_storage()
         self._collection_name = collection_name
+        self._image_store = image_store
+        self._multimodal_processor = multimodal_processor
 
         if knowledge_store is not None:
             self.knowledge_store = knowledge_store
@@ -59,6 +71,23 @@ class DocumentUploader:
             )
         else:
             self.knowledge_store = None
+
+    @property
+    def image_store(self) -> ImageStore:
+        if self._image_store is None:
+            self._image_store = get_image_store()
+        return self._image_store
+
+    @property
+    def multimodal_processor(self) -> MultimodalProcessor:
+        if self._multimodal_processor is None:
+            self._multimodal_processor = get_multimodal_processor()
+        return self._multimodal_processor
+
+    def _is_multimodal_enabled(self) -> bool:
+        """多模态是否启用（依赖 settings.MULTIMODAL_ENABLED 且 image_store 可用）"""
+        from ..core.config import settings
+        return bool(getattr(settings, "MULTIMODAL_ENABLED", False))
 
     async def upload(
         self,
@@ -118,12 +147,33 @@ class DocumentUploader:
         self, content, filename, title, document_id,
         course_id, user_id, topic_id, file_info,
     ) -> dict:
-        """使用新的结构化管道（ParserFactory + 可配置分块器）"""
-        parser = ParserFactory.get_parser(filename)
-        doc = parser.parse(content, filename)
+        """使用新的结构化管道（ParserFactory + 可配置分块器 + 多模态增强）"""
+        # 多模态模式下，把 image_store 注入到 DoclingParser，让解析阶段就保存图片
+        is_mm_enabled = self._is_multimodal_enabled()
+
+        parser = ParserFactory.get_parser(
+            filename,
+            image_store=self.image_store if is_mm_enabled else None,
+            extract_images=is_mm_enabled,
+        )
+        # parse 时传 document_id，让图片存到独立子目录
+        doc = parser.parse(content, filename, document_id=document_id)
 
         if not doc.elements:
             raise ValueError("文档内容为空或解析失败")
+
+        # 多模态增强：VLM 生成图片 caption + 表格摘要
+        if is_mm_enabled:
+            try:
+                doc = await self.multimodal_processor.process_document(
+                    doc=doc, document_id=document_id
+                )
+            except Exception as e:
+                logger.warning(
+                    f"多模态增强失败，继续走普通分块 pipeline: {e}"
+                )
+                # 失败时不阻断上传，图片子块仍会用 [图片] 占位
+                # 如果要求严格可抛 settings.MULTIMODAL_VLM_REQUIRED
 
         if self.chunking_strategy == "parent_child":
             chunker = ParentChildChunker(

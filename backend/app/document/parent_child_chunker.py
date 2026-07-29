@@ -196,10 +196,12 @@ class ParentChildChunker:
                 break
 
         # 构建父块文本：section 内所有元素拼接
+        # 多模态 RAG：图片元素用 caption 占位，避免父块文本缺失
         parent_text_parts: List[str] = []
         for element in section:
-            if element.text:
-                parent_text_parts.append(element.text)
+            text = self._element_display_text(element)
+            if text:
+                parent_text_parts.append(text)
         parent_text = "\n".join(parent_text_parts)
 
         # 子块切分
@@ -221,6 +223,29 @@ class ParentChildChunker:
         )
 
         return parent_chunk, child_chunks
+
+    @staticmethod
+    def _element_display_text(element: DocumentElement) -> str:
+        """
+        获取元素用于父块文本拼接的展示文本
+
+        多模态 RAG：
+        - 普通元素：直接用 text
+        - IMAGE 元素：用 image_desc（VLM caption）+ OCR 文本
+          没有描述时用占位符"[图片]"，避免父块丢失上下文
+        """
+        if element.type != ElementType.IMAGE:
+            return element.text or ""
+
+        parts = []
+        if element.image_desc:
+            parts.append(f"[图片描述] {element.image_desc}")
+        if element.ocr_text:
+            parts.append(f"[图片文字] {element.ocr_text}")
+        if not parts:
+            # 既没有 caption 也没有 OCR，至少留个占位
+            parts.append("[图片]")
+        return "\n".join(parts)
 
     def _split_children(
         self,
@@ -272,6 +297,48 @@ class ParentChildChunker:
         for element in section:
             # 标题不单独成子块
             if element.type in (ElementType.TITLE, ElementType.HEADING):
+                continue
+
+            # 多模态 RAG：IMAGE 元素独立成子块
+            # 子块文本使用 VLM caption + OCR 文本 + 关键词
+            # 元数据携带 image_path 供上层展示
+            if element.type == ElementType.IMAGE:
+                flush_child(buffer)
+
+                # 构造图片子块的检索文本
+                img_text_parts: List[str] = []
+                if element.image_desc:
+                    img_text_parts.append(element.image_desc)
+                if element.ocr_text:
+                    img_text_parts.append(f"图中文字：{element.ocr_text}")
+                if element.image_keywords:
+                    img_text_parts.append("关键词：" + "、".join(element.image_keywords))
+
+                img_text = "\n".join(img_text_parts) if img_text_parts else "[图片]"
+                if not img_text.strip():
+                    img_text = "[图片]"
+
+                # 超长 caption 切分
+                if len(img_text) > self.child_max_chars:
+                    parts = self._split_text(img_text)
+                else:
+                    parts = [img_text]
+
+                meta_extra = {
+                    "element_type": "image",
+                    "image_path": element.image_path,
+                    "image_type": element.image_type,
+                    "image_keywords": list(element.image_keywords) if element.image_keywords else [],
+                    "has_caption": bool(element.image_desc),
+                    "has_ocr": bool(element.ocr_text),
+                }
+                # 去掉 None 值，避免 metadata 序列化问题
+                meta_extra = {k: v for k, v in meta_extra.items() if v not in (None, [], "")}
+
+                for part in parts:
+                    flush_child([part], "image")
+                    if child_chunks:
+                        child_chunks[-1].metadata.update(meta_extra)
                 continue
 
             text = element.text or ""

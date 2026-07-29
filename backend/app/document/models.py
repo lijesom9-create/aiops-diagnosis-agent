@@ -56,8 +56,13 @@ class DocumentElement:
     # 类型专属字段
     text_as_html: Optional[str] = None      # TABLE 专用
     formula_latex: Optional[str] = None      # FORMULA 专用
-    image_base64: Optional[str] = None       # IMAGE 专用
-    image_desc: Optional[str] = None         # IMAGE 专用
+    image_base64: Optional[str] = None       # IMAGE 专用（保留兼容，不再推荐使用）
+    image_desc: Optional[str] = None         # IMAGE 专用：VLM 生成的 caption
+    # 多模态 RAG 新增字段
+    image_path: Optional[str] = None        # IMAGE 专用：ImageStore 返回的相对路径
+    image_keywords: List[str] = field(default_factory=list)  # IMAGE 专用：VLM 提取的关键词
+    image_type: Optional[str] = None        # IMAGE 专用：diagram|screenshot|chart|table|formula|photo|other
+    ocr_text: Optional[str] = None          # IMAGE 专用：OCR 提取的图中文字
 
     def to_chunk_dict(self) -> Dict[str, Any]:
         """转换为分块元数据字典"""
@@ -67,6 +72,14 @@ class DocumentElement:
             meta["text_as_html"] = self.text_as_html
         if self.formula_latex:
             meta["formula_latex"] = self.formula_latex
+        if self.image_path:
+            meta["image_path"] = self.image_path
+        if self.image_keywords:
+            meta["image_keywords"] = self.image_keywords
+        if self.image_type:
+            meta["image_type"] = self.image_type
+        if self.ocr_text:
+            meta["ocr_text"] = self.ocr_text
         return meta
 
 

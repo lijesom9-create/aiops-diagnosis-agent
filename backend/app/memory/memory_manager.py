@@ -293,12 +293,36 @@ class MemoryManager:
                     content = result.get("content", "")
                     if rag_content_limit is not None and rag_content_limit > 0:
                         content = content[:rag_content_limit]
-                    parts_with_meta.append({
-                        "name": f"rag_{i}",
-                        "content": f"[{i}] {title}\n{content}",
-                        "priority": 60 - i,  # 越靠前优先级越高
-                        "truncatable": True,
-                    })
+
+                    # 多模态 RAG：对图片类型的子块做特殊标注
+                    element_type = result.get("metadata", {}).get("element_type", "")
+                    image_path = result.get("metadata", {}).get("image_path", "")
+                    image_type = result.get("metadata", {}).get("image_type", "")
+
+                    if element_type == "image":
+                        # 图片块：caption 已在 content 中，补充"图片引用"标记
+                        # 让 LLM 知道这是一个图片描述而非纯文本
+                        type_label = f"[{image_type}图片]" if image_type else "[图片]"
+                        content_str = f"{type_label} {content}"
+                        if image_path:
+                            # image_path 仅供前端引用，不写进 LLM 上下文避免 token 浪费
+                            # 但保留在 part 元数据里供上游使用
+                            pass
+                        parts_with_meta.append({
+                            "name": f"rag_{i}",
+                            "content": f"[{i}] {title}\n{content_str}",
+                            "priority": 60 - i,
+                            "truncatable": True,
+                            "image_path": image_path,
+                            "image_type": image_type,
+                        })
+                    else:
+                        parts_with_meta.append({
+                            "name": f"rag_{i}",
+                            "content": f"[{i}] {title}\n{content}",
+                            "priority": 60 - i,  # 越靠前优先级越高
+                            "truncatable": True,
+                        })
 
         # P1-2: 按 token 预算筛选
         if unlimited:
@@ -327,6 +351,59 @@ class MemoryManager:
         # 拼接为最终字符串
         contents = [p["content"] for p in selected_parts if p.get("content")]
         return "\n\n".join(contents)
+
+    def build_context_with_metadata(
+        self,
+        query: str,
+        user_id: str,
+        session_id: Optional[str] = None,
+        max_rag_results: int = 5,
+        max_context_tokens: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        构建上下文并附带多模态元数据
+
+        与 build_context 相同，但额外返回：
+        - context: str 上下文字符串
+        - image_references: List[Dict] 命中的图片引用列表
+            [{ "path": str, "type": str, "title": str, "index": int }]
+            前端可据此请求图片展示接口
+
+        用于多模态 RAG 场景下，让聊天 API 同时返回文本答案和图片引用。
+        """
+        # 直接复用 build_context 的逻辑，但拦截 parts_with_meta
+        # 这里通过重新组装来获取 image_references（避免改动 build_context 签名）
+        # 实际生产可重构 build_context 内部，让两个方法共享同一收集逻辑
+        context_str = self.build_context(
+            query=query,
+            user_id=user_id,
+            session_id=session_id,
+            max_rag_results=max_rag_results,
+            max_context_tokens=max_context_tokens,
+        )
+
+        # 单独跑一遍 RAG 检索，提取图片引用（开销很小）
+        image_refs: List[Dict[str, Any]] = []
+        if self.rag_retriever:
+            try:
+                results = self.search_knowledge(query, max_rag_results)
+                for i, r in enumerate(results, 1):
+                    meta = r.get("metadata", {})
+                    if meta.get("element_type") == "image" and meta.get("image_path"):
+                        image_refs.append({
+                            "path": meta["image_path"],
+                            "type": meta.get("image_type", "other"),
+                            "title": meta.get("title", ""),
+                            "index": i,
+                            "keywords": meta.get("image_keywords", []),
+                        })
+            except Exception as e:
+                logger.debug(f"提取图片引用失败: {e}")
+
+        return {
+            "context": context_str,
+            "image_references": image_refs,
+        }
 
     def build_prompt(
         self,

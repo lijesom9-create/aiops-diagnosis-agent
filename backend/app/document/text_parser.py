@@ -5,7 +5,7 @@ Text/Markdown Parser - 轻量解析器
 """
 
 import re
-from typing import List
+from typing import List, Optional
 from pathlib import Path
 from loguru import logger
 
@@ -20,7 +20,12 @@ class TextParser:
 
     SUPPORTED_EXTENSIONS = {".txt", ".md", ".markdown"}
 
-    def parse(self, content: bytes, filename: str) -> StructuredDocument:
+    def parse(
+        self,
+        content: bytes,
+        filename: str,
+        document_id: Optional[str] = None,  # 兼容多模态 pipeline 调用（TextParser 不使用）
+    ) -> StructuredDocument:
         """解析文本文件为结构化文档"""
         text = self._decode(content)
         if not text.strip():

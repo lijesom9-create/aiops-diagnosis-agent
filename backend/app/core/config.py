@@ -82,6 +82,33 @@ class Settings(BaseSettings):
     # 设为 -1 表示不限制
     RAG_MAX_CONTEXT_TOKENS: int = 6000
 
+    # ========== 多模态 RAG ==========
+    # 总开关：是否启用多模态（图片 caption + 表格 summary）
+    # 关闭时上传管道跳过 VLM 调用，图片元素仅做 OCR
+    MULTIMODAL_ENABLED: bool = False
+
+    # VLM 提供商：openai | qwen | zhipu
+    # 留空时若 AI_MODEL 是 vision 模型则自动推断
+    VLM_PROVIDER: Optional[str] = None
+    # VLM 模型名（None 时使用 provider 默认值）
+    # 推荐：gpt-4o-mini（便宜）/ qwen-vl-max（中文最好）/ glm-4v-flash（智谱免费）
+    VLM_MODEL: Optional[str] = None
+    # VLM API Key（None 时降级到 AI_API_KEY）
+    VLM_API_KEY: Optional[str] = None
+    # VLM API base URL（None 时降级到 AI_BASE_URL 或 provider 默认）
+    VLM_BASE_URL: Optional[str] = None
+
+    # 是否在多模态上传时同时跑 OCR（图片中的文字提取）
+    # 推荐 True：截图/表格图片中的文字对检索很有价值
+    MULTIMODAL_USE_OCR: bool = True
+
+    # 图片 VLM 描述失败时是否阻断上传（False 时降级为 OCR-only）
+    MULTIMODAL_VLM_REQUIRED: bool = False
+
+    # 是否对表格元素也生成 LLM summary（与图片 caption 类似的策略）
+    # 启用后：父块保留原表格 Markdown/HTML，子块用 summary 提升召回
+    MULTIMODAL_TABLE_SUMMARY_ENABLED: bool = True
+
     # 外部搜索配置
     TAVILY_API_KEY: Optional[str] = None
     JINA_API_KEY: Optional[str] = None

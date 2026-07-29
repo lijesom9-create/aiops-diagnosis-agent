@@ -270,12 +270,19 @@ class ParserFactory:
             cls._PARSER_REGISTRY[ext.lower()] = parser_cls
 
     @classmethod
-    def get_parser(cls, filename: str):
+    def get_parser(
+        cls,
+        filename: str,
+        image_store=None,
+        extract_images: bool = True,
+    ):
         """
         获取解析器实例
 
         Args:
             filename: 文件名（用于判断格式）
+            image_store: 多模态模式下注入的 ImageStore（仅 PDF/DOCX 生效）
+            extract_images: 是否提取图片元素
 
         Returns:
             BaseParser: 解析器实例
@@ -291,7 +298,10 @@ class ParserFactory:
         from .text_parser import TextParser
 
         if ext in DoclingParser.SUPPORTED_EXTENSIONS:
-            return DoclingParser()
+            return DoclingParser(
+                image_store=image_store,
+                extract_images=extract_images,
+            )
         elif ext in TextParser.SUPPORTED_EXTENSIONS:
             return TextParser()
         else:

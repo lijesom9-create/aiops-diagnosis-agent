@@ -2,13 +2,13 @@
 Docling Parser - 基于 Docling 的结构化 PDF/DOCX 解析器
 
 通过 DoclingDocument 将 PDF/DOCX 解析为结构化 Element 列表。
-自动处理页眉页脚过滤、表格提取、标题层级。
+自动处理页眉页脚过滤、表格提取、标题层级、图片提取（多模态 RAG）。
 """
 
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional, Set
+from typing import Optional, Set, List
 from loguru import logger
 
 from .models import (
@@ -22,8 +22,19 @@ class DoclingParser:
 
     SUPPORTED_EXTENSIONS = {".pdf", ".docx"}
 
-    def __init__(self):
+    def __init__(
+        self,
+        image_store=None,
+        extract_images: bool = True,
+    ):
+        """
+        Args:
+            image_store: ImageStore 实例（None 时不提取图片）
+            extract_images: 是否提取图片元素
+        """
         self._converter = None
+        self._image_store = image_store
+        self._extract_images = extract_images
 
     def _get_converter(self):
         """延迟初始化 Docling converter（第一次使用时加载模型）"""
@@ -54,8 +65,21 @@ class DoclingParser:
         "FOOTNOTE": ElementType.PARAGRAPH,
     }
 
-    def parse(self, content: bytes, filename: str) -> StructuredDocument:
-        """解析 PDF/DOCX 文件为结构化文档"""
+    def parse(
+        self,
+        content: bytes,
+        filename: str,
+        document_id: Optional[str] = None,
+    ) -> StructuredDocument:
+        """
+        解析 PDF/DOCX 文件为结构化文档
+
+        Args:
+            content: 文件二进制
+            filename: 文件名（用于推断格式）
+            document_id: 文档 ID（多模态模式下，用于把图片存到独立子目录）
+                         多模态关闭或 image_store 未注入时此参数无影响
+        """
         if not content or not content.strip():
             logger.warning(f"DoclingParser: 空内容 {filename}")
             return StructuredDocument(
@@ -73,8 +97,9 @@ class DoclingParser:
             result = converter.convert(tmp_path)
             docling_doc = result.document
 
-            elements = []
+            elements: List[DocumentElement] = []
             heading_stack = [""] * 10
+            image_counter = 0  # 图片序号（用于命名）
 
             for item, level in docling_doc.iterate_items():
                 label = item.label
@@ -107,6 +132,20 @@ class DoclingParser:
                     except Exception:
                         pass
 
+                # 图片提取（多模态 RAG）
+                image_path: Optional[str] = None
+                if (
+                    elem_type == ElementType.IMAGE
+                    and self._extract_images
+                    and self._image_store is not None
+                    and document_id
+                ):
+                    image_path = self._extract_and_save_image(
+                        item, document_id=document_id, idx=image_counter
+                    )
+                    if image_path:
+                        image_counter += 1
+
                 element = DocumentElement(
                     type=elem_type,
                     text=text,
@@ -115,10 +154,14 @@ class DoclingParser:
                         heading_path=heading_path,
                     ),
                     text_as_html=text_as_html,
+                    image_path=image_path,
                 )
                 elements.append(element)
 
-            logger.info(f"DoclingParser: {filename} -> {len(elements)} elements")
+            logger.info(
+                f"DoclingParser: {filename} -> {len(elements)} elements "
+                f"(images_extracted={image_counter})"
+            )
 
             return StructuredDocument(
                 metadata=DocumentMetadata(
@@ -138,3 +181,50 @@ class DoclingParser:
                 os.unlink(tmp_path)
             except Exception:
                 pass
+
+    def _extract_and_save_image(
+        self,
+        item,
+        document_id: str,
+        idx: int,
+    ) -> Optional[str]:
+        """
+        从 Docling PictureItem 提取图片并保存到 ImageStore
+
+        Docling 不同版本暴露图片的 API：
+        - v2+ : item.image (PictureImageData) -> .pil_image
+        - 旧版：item.image.uri / item.image.data
+        """
+        try:
+            pil_image = None
+            # 路径 1: 新版 Docling 的 PictureItem.image.pil_image
+            if hasattr(item, "image") and item.image is not None:
+                img_obj = item.image
+                if hasattr(img_obj, "pil_image") and img_obj.pil_image is not None:
+                    pil_image = img_obj.pil_image
+                elif hasattr(img_obj, "data") and img_obj.data:
+                    # 字节流
+                    from io import BytesIO
+                    from PIL import Image
+                    pil_image = Image.open(BytesIO(img_obj.data))
+
+            if pil_image is None:
+                logger.debug(f"Docling 图片元素无可提取的图像数据 (idx={idx})")
+                return None
+
+            # 统一转 RGB（避免 mode=P/I 等保存失败）
+            if pil_image.mode not in ("RGB", "RGBA"):
+                pil_image = pil_image.convert("RGB")
+
+            image_id = f"img_{idx:04d}"
+            relative_path = self._image_store.save_pil_image(
+                pil_image=pil_image,
+                document_id=document_id,
+                image_id=image_id,
+                format="PNG",
+            )
+            return relative_path
+
+        except Exception as e:
+            logger.warning(f"提取并保存图片失败 (idx={idx}): {e}")
+            return None

@@ -310,6 +310,13 @@ async def delete_document(
             except Exception as e:
                 logger.warning(f"删除向量数据失败: {e}")
 
+        # 删除文档对应的图片（多模态 RAG）
+        try:
+            from ..document.image_store import get_image_store
+            get_image_store().delete_document_images(document_id)
+        except Exception as e:
+            logger.warning(f"删除文档图片失败: {e}")
+
         # 删除文档记录
         await db.delete_document(document_id)
 
@@ -325,6 +332,54 @@ async def delete_document(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"文档删除失败: {str(e)}"
         )
+
+
+# ========== 多模态 RAG：图片访问 ==========
+
+@router.get("/images/{document_id}/{image_name}")
+async def get_image(
+    document_id: str,
+    image_name: str,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """
+    获取文档中的图片（多模态 RAG）
+
+    路径参数：
+    - document_id: 文档 ID
+    - image_name: 图片文件名（如 img_0001.png）
+
+    返回图片二进制流，用于前端在聊天答案中展示原图引用。
+    """
+    # 简单的安全校验：禁止路径穿越
+    if "/" in image_name or "\\" in image_name or ".." in image_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="非法的图片名"
+        )
+
+    from ..document.image_store import get_image_store
+    from fastapi.responses import Response
+
+    relative_path = f"{document_id}/{image_name}"
+    image_bytes = get_image_store().read_bytes(relative_path)
+    if image_bytes is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="图片不存在"
+        )
+
+    # 推断 MIME
+    ext = image_name.rsplit(".", 1)[-1].lower() if "." in image_name else "png"
+    mime_map = {
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "webp": "image/webp",
+    }
+    media_type = mime_map.get(ext, "image/png")
+
+    return Response(content=image_bytes, media_type=media_type)
 
 
 # ========== 后台处理 ==========
