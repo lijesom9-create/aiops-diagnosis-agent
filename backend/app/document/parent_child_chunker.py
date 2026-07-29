@@ -10,6 +10,7 @@ Parent-Child Chunker - 父子文档分块器
 但基于 StructuredDocument 的元素结构进行语义边界保留。
 """
 
+import re
 import uuid
 from typing import List, Tuple
 from loguru import logger
@@ -56,6 +57,12 @@ class ParentChildChunker:
         if not doc.elements:
             return []
 
+        # 0. 噪声过滤：移除版权声明、页码、目录页等噪声元素
+        doc.elements = self._filter_noise_elements(doc.elements)
+
+        # 0.5 跨页表格合并：连续 TABLE 元素且页面号连续时合并
+        doc.elements = self._merge_cross_page_tables(doc.elements)
+
         # 1. 按 section 分组
         sections = self._group_into_sections(doc.elements)
 
@@ -73,6 +80,133 @@ class ParentChildChunker:
             f"{parent_count} parents, {child_count} children"
         )
         return all_chunks
+
+    # 噪声匹配模式
+    _NOISE_PATTERNS = [
+        re.compile(r'版权所有|Copyright|All\s+rights\s+reserved|保留所有权利', re.IGNORECASE),
+        re.compile(r'^第\s*\d+\s*页$|^Page\s+\d+$|^\d+\s*/\s*\d+$'),  # 页码
+    ]
+    _TOC_TITLES = {"目录", "目錕", "contents", "table of contents", "索引"}
+
+    def _filter_noise_elements(self, elements: List[DocumentElement]) -> List[DocumentElement]:
+        """过滤噪声元素：版权声明、页码、目录页条目"""
+        if not elements:
+            return elements
+
+        filtered: List[DocumentElement] = []
+        skip_toc = False  # 是否正在跳过目录页内容
+        removed = 0
+
+        for el in elements:
+            text = (el.text or "").strip()
+            if not text:
+                filtered.append(el)
+                continue
+
+            # 目录页检测：标题为"目录"时，跳过后续到下一个同级或更高级标题
+            if el.type in (ElementType.HEADING, ElementType.TITLE):
+                # 去掉 Markdown 标题前缀（# ## ###）
+                clean_title = re.sub(r'^#+\s*', '', text).strip().lower()
+                if clean_title in self._TOC_TITLES:
+                    skip_toc = True
+                    removed += 1
+                    continue
+                # 遇到非目录标题，停止跳过
+                if skip_toc:
+                    skip_toc = False
+
+            if skip_toc:
+                removed += 1
+                continue
+
+            # 版权声明 / 页码
+            is_noise = any(p.search(text) for p in self._NOISE_PATTERNS)
+            if is_noise:
+                removed += 1
+                continue
+
+            filtered.append(el)
+
+        if removed > 0:
+            logger.debug(f"噪声过滤: 移除 {removed} 个噪声元素，剩余 {len(filtered)} 个")
+
+        return filtered
+
+    @staticmethod
+    def _count_table_columns(element: DocumentElement) -> int:
+        """估算表格列数（通过 HTML 或 Markdown 文本）"""
+        if element.text_as_html:
+            # 数 <th> 标签（表头列数）
+            return element.text_as_html.count("<th>")
+        if element.text:
+            # 数第一行的 | 数量
+            first_line = element.text.split("\n")[0] if "\n" in element.text else element.text
+            return first_line.count("|") - 1 if first_line.count("|") > 1 else 0
+        return 0
+
+    def _merge_cross_page_tables(self, elements: List[DocumentElement]) -> List[DocumentElement]:
+        """合并跨页被截断的表格：连续 TABLE 元素且列数相同、页面号连续时合并"""
+        if len(elements) < 2:
+            return elements
+
+        merged: List[DocumentElement] = []
+        merged_count = 0
+
+        i = 0
+        while i < len(elements):
+            current = elements[i]
+
+            # 只处理 TABLE 类型
+            if current.type != ElementType.TABLE:
+                merged.append(current)
+                i += 1
+                continue
+
+            # 查看后续是否有可合并的 TABLE
+            while i + 1 < len(elements) and elements[i + 1].type == ElementType.TABLE:
+                nxt = elements[i + 1]
+                cur_cols = self._count_table_columns(current)
+                nxt_cols = self._count_table_columns(nxt)
+
+                # 列数相同且页面号连续（或缺失页面号）
+                cur_page = current.metadata.page_number or 0
+                nxt_page = nxt.metadata.page_number or 0
+                page_ok = (cur_page == 0 or nxt_page == 0 or nxt_page - cur_page <= 1)
+
+                if cur_cols > 0 and cur_cols == nxt_cols and page_ok:
+                    # 合并：text 拼接，text_as_html 去掉第二个表头后拼接
+                    current.text = (current.text or "") + "\n" + (nxt.text or "")
+                    if current.text_as_html and nxt.text_as_html:
+                        # 去掉第二个表格的 <thead>...</thead>
+                        nxt_body = nxt.text_as_html
+                        if "<thead>" in nxt_body:
+                            import re as _re
+                            nxt_body = _re.sub(r'<thead>.*?</thead>', '', nxt_body, flags=_re.DOTALL)
+                            # 补上 <tbody> 如果被去掉了
+                            if not nxt_body.startswith("<tbody>") and "<tbody>" in nxt_body:
+                                current.text_as_html = current.text_as_html.replace(
+                                    "</table>", nxt_body.replace("<table>", "").replace("</table>", "") + "</table>"
+                                )
+                            else:
+                                current.text_as_html = current.text_as_html.replace(
+                                    "</table>", nxt_body + "</table>"
+                                )
+                        else:
+                            current.text_as_html = current.text_as_html.replace(
+                                "</table>", nxt_body + "</table>"
+                            )
+                    merged_count += 1
+                    i += 1  # 跳过被合并的元素
+                else:
+                    break  # 不满足合并条件，退出内层循环
+
+            merged.append(current)
+            i += 1
+
+        if merged_count > 0:
+            logger.debug(f"跨页表格合并: 合并了 {merged_count} 个表格片段")
+
+        return merged
 
     def _group_into_sections(self, elements: List[DocumentElement]) -> List[List[DocumentElement]]:
         """

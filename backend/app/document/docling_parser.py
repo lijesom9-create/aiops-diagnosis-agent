@@ -36,6 +36,63 @@ class DoclingParser:
         self._image_store = image_store
         self._extract_images = extract_images
 
+    def _ocr_fallback(self, pdf_path: str):
+        """扫描版 PDF 的 OCR 降级：逐页渲染为图片 → OCR 提取文本"""
+        import tempfile
+        from .models import ElementMetadata
+
+        try:
+            import fitz  # PyMuPDF
+        except ImportError:
+            logger.warning("PyMuPDF 未安装，无法执行 OCR 降级")
+            return []
+
+        # 尝试加载 OCRProcessor
+        try:
+            from .ocr import OCRProcessor
+            ocr = OCRProcessor(engine="paddleocr")
+        except Exception:
+            try:
+                from .ocr import OCRProcessor
+                ocr = OCRProcessor(engine="tesseract")
+            except Exception as e:
+                logger.warning(f"OCR 引擎不可用，跳过 OCR 降级: {e}")
+                return []
+
+        doc = fitz.open(pdf_path)
+        elements = []
+
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            # 渲染页面为图片（200 DPI 适合 OCR）
+            pix = page.get_pixmap(dpi=200)
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_img:
+                pix.save(tmp_img.name)
+                img_path = tmp_img.name
+
+            try:
+                text = ocr.ocr_image(img_path)
+                if text and text.strip():
+                    # 按段落分割 OCR 文本
+                    for para in text.split("\n\n"):
+                        para = para.strip()
+                        if len(para) > 5:  # 过滤过短的噪声
+                            elements.append(DocumentElement(
+                                type=ElementType.PARAGRAPH,
+                                text=para,
+                                metadata=ElementMetadata(page_number=page_num + 1),
+                            ))
+            except Exception as e:
+                logger.debug(f"第 {page_num + 1} 页 OCR 失败: {e}")
+            finally:
+                try:
+                    os.unlink(img_path)
+                except Exception:
+                    pass
+
+        doc.close()
+        return elements
+
     def _get_converter(self):
         """延迟初始化 Docling converter（第一次使用时加载模型）"""
         if self._converter is None:
@@ -162,6 +219,18 @@ class DoclingParser:
                 f"DoclingParser: {filename} -> {len(elements)} elements "
                 f"(images_extracted={image_counter})"
             )
+
+            # 扫描版 PDF 检测：页数多但文本极少 → OCR 降级
+            page_count = len(docling_doc.pages)
+            total_chars = sum(len(e.text or "") for e in elements)
+            if ext == ".pdf" and page_count > 2 and total_chars < page_count * 50:
+                logger.warning(
+                    f"疑似扫描版PDF（{page_count}页，仅{total_chars}字符），启动OCR降级"
+                )
+                ocr_elements = self._ocr_fallback(tmp_path)
+                if ocr_elements:
+                    logger.info(f"OCR降级成功：提取到 {len(ocr_elements)} 个文本元素")
+                    elements = ocr_elements
 
             return StructuredDocument(
                 metadata=DocumentMetadata(

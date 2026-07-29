@@ -113,6 +113,26 @@ class TextParser:
                 i += 1
                 continue
 
+            # 表格检测：以 | 开头且下一行是分隔行（|---|---|）
+            if line.strip().startswith("|") and i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if re.match(r'^\|[\s:|-]+\|?$', next_line) and "---" in next_line:
+                    # 收集表格行
+                    table_lines = [line]
+                    j = i + 1
+                    while j < len(lines) and lines[j].strip().startswith("|"):
+                        table_lines.append(lines[j])
+                        j += 1
+                    table_text = "\n".join(table_lines)
+                    elements.append(DocumentElement(
+                        type=ElementType.TABLE,
+                        text=table_text,
+                        text_as_html=self._markdown_table_to_html(table_lines),
+                        metadata=ElementMetadata(heading_path=list(heading_path)),
+                    ))
+                    i = j
+                    continue
+
             # 列表项检测
             if re.match(r'^[\s]*[-*+]\s+', line) or re.match(r'^[\s]*\d+\.\s+', line):
                 elements.append(DocumentElement(
@@ -140,6 +160,37 @@ class TextParser:
             ))
 
         return elements
+
+    @staticmethod
+    def _markdown_table_to_html(table_lines: List[str]) -> str:
+        """把 Markdown 表格行列表转为 HTML 表格"""
+        def _parse_row(line: str) -> List[str]:
+            # 去掉首尾的 |，按 | 分割
+            cells = line.strip().strip("|").split("|")
+            return [c.strip() for c in cells]
+
+        if len(table_lines) < 2:
+            return ""
+
+        header = _parse_row(table_lines[0])
+        # 第二行是分隔行，跳过
+        rows = [_parse_row(line) for line in table_lines[2:]]
+
+        html_parts = ["<table>"]
+        # 表头
+        html_parts.append("<thead><tr>")
+        for cell in header:
+            html_parts.append(f"<th>{cell}</th>")
+        html_parts.append("</tr></thead>")
+        # 数据行
+        html_parts.append("<tbody>")
+        for row in rows:
+            html_parts.append("<tr>")
+            for cell in row:
+                html_parts.append(f"<td>{cell}</td>")
+            html_parts.append("</tr>")
+        html_parts.append("</tbody></table>")
+        return "".join(html_parts)
 
     def _parse_plain_text(self, text: str) -> List[DocumentElement]:
         """解析纯文本"""
