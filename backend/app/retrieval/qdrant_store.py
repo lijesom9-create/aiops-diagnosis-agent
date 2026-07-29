@@ -22,6 +22,25 @@ from .embeddings import EmbeddingModel
 from .chroma_store import ChromaDBVectorStore  # 复用 clean_markdown
 
 
+# ========== Local client 缓存 ==========
+# Qdrant local 模式不允许两个 QdrantClient 实例访问同一目录。
+# UnifiedKnowledgeStore 会创建子块和父块两个 store（同目录不同 collection），
+# 因此需要复用同一 client 实例避免 "already accessed by another instance" 锁冲突。
+_LOCAL_CLIENT_CACHE: Dict[str, Any] = {}
+
+
+def _get_or_create_local_client(persist_dir: str) -> Any:
+    """同一目录的 local client 复用，避免锁冲突"""
+    from qdrant_client import QdrantClient
+
+    abs_dir = os.path.abspath(persist_dir)
+    if abs_dir not in _LOCAL_CLIENT_CACHE:
+        os.makedirs(abs_dir, exist_ok=True)
+        _LOCAL_CLIENT_CACHE[abs_dir] = QdrantClient(path=abs_dir)
+        logger.debug(f"Qdrant local client 创建: {abs_dir}")
+    return _LOCAL_CLIENT_CACHE[abs_dir]
+
+
 class QdrantVectorStore:
     """
     Qdrant 向量存储
@@ -71,13 +90,13 @@ class QdrantVectorStore:
             logger.info(f"连接远程 Qdrant: {host}:{port}")
         else:
             # 本地持久化 Qdrant（local mode，基于 sqlite + mmap）
+            # 复用同一目录的 client 实例，避免父子 store 锁冲突
             persist_dir = persist_directory or os.path.join(
                 os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                 "data",
                 "qdrant_db",
             )
-            os.makedirs(persist_dir, exist_ok=True)
-            self._client = QdrantClient(path=persist_dir)
+            self._client = _get_or_create_local_client(persist_dir)
             logger.info(f"使用本地持久化 Qdrant: {persist_dir}")
 
         # HNSW 配置
