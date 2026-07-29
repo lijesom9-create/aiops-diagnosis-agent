@@ -823,30 +823,6 @@ class UnifiedKnowledgeStore:
             bm25_children = future_b.result()
 
         # 3. 加权 RRF 融合子块结果
-                        meta = records[0]["metadata"]
-                        content = records[0]["content"]
-                    else:
-                        meta = {}
-                        content = ""
-                except Exception:
-                    meta = {}
-                    content = ""
-
-                if meta.get("chunk_type") != "child":
-                    continue
-                if source and meta.get("source") != source:
-                    continue
-                if user_id and meta.get("user_id") and meta.get("user_id") != user_id:
-                    continue
-
-                bm25_children.append({
-                    "id": doc_id,
-                    "score": score,
-                    "metadata": meta,
-                    "content": content,
-                })
-
-        # 3. 加权 RRF 融合子块结果
         if bm25_children and vector_children:
             fused_children = self._rrf_fuse(
                 vector_children, bm25_children, k=rrf_k,
