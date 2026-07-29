@@ -759,15 +759,25 @@ class UnifiedKnowledgeStore:
         """
         # P0-2: 查询缓存检查
         import hashlib
+        import time as _time
+        from ..observability.metrics import get_metrics as _get_metrics
+
+        _metrics = _get_metrics()
+        _t_start = _time.time()
+
         cache_key_str = f"{query}|{top_k}|{rewrite_mode}|{candidate_multiplier}|{rrf_k}|{vector_weight}|{bm25_weight}|{source}|{user_id}|{org_id}"
         cache_key = hashlib.md5(cache_key_str.encode()).hexdigest()
         cached = self._cache_get(cache_key)
         if cached is not None:
+            _metrics.increment("rag_query_total")
+            _metrics.increment("rag_cache_hit_total")
             logger.debug(f"查询缓存命中: {query[:30]}...")
             return cached
 
         # 0. 查询重写（支持 basic / enhanced / llm / enhanced_llm）
+        _t0 = _time.time()
         queries = self._rewrite_query(query, rewrite_query, rewrite_mode)
+        _rewrite_ms = (_time.time() - _t0) * 1000
 
         # P0-3: 并行检索（向量 + BM25 同时执行）
         from concurrent.futures import ThreadPoolExecutor
@@ -816,13 +826,16 @@ class UnifiedKnowledgeStore:
             return children
 
         # 并行执行向量检索和 BM25 检索
+        _t1 = _time.time()
         with ThreadPoolExecutor(max_workers=2) as executor:
             future_v = executor.submit(_vector_search)
             future_b = executor.submit(_bm25_search)
             vector_children = future_v.result()
             bm25_children = future_b.result()
+        _retrieval_ms = (_time.time() - _t1) * 1000
 
         # 3. 加权 RRF 融合子块结果
+        _t2 = _time.time()
         if bm25_children and vector_children:
             fused_children = self._rrf_fuse(
                 vector_children, bm25_children, k=rrf_k,
@@ -832,6 +845,7 @@ class UnifiedKnowledgeStore:
             fused_children = vector_children
         else:
             fused_children = bm25_children
+        _fuse_ms = (_time.time() - _t2) * 1000
 
         if not fused_children:
             return []
@@ -882,6 +896,8 @@ class UnifiedKnowledgeStore:
         parent_results = self._apply_heading_path_filter(parent_results, query)
 
         # 7. Rerank（P0-2 修复：对父块重排，之前缺失）
+        _t3 = _time.time()
+        _reranker_used = False
         if self.reranker and parent_results:
             try:
                 from ..retrieval.base import RetrievalResult
@@ -909,12 +925,41 @@ class UnifiedKnowledgeStore:
                     }
                     for r in reranked
                 ]
+                _reranker_used = True
             except Exception as e:
                 logger.warning(f"Parent-child rerank 失败，使用原始排序: {e}")
+        _rerank_ms = (_time.time() - _t3) * 1000
 
         # 8. 按分数排序、过滤、截断
         parent_results.sort(key=lambda x: x["score"], reverse=True)
-        return [r for r in parent_results if r.get("score", 0) >= min_score][:top_k]
+        result = [r for r in parent_results if r.get("score", 0) >= min_score][:top_k]
+
+        # P1-3: 结构化日志 + 指标采集
+        _total_ms = (_time.time() - _t_start) * 1000
+        logger.info(
+            f"RAG 检索完成 | query={query[:30]!r} "
+            f"| rewrite={_rewrite_ms:.1f}ms retrieval={_retrieval_ms:.1f}ms "
+            f"fuse={_fuse_ms:.1f}ms rerank={_rerank_ms:.1f}ms total={_total_ms:.1f}ms "
+            f"| vector_hits={len(vector_children)} bm25_hits={len(bm25_children)} "
+            f"fused_children={len(fused_children)} parent_candidates={len(parent_results)} "
+            f"returned={len(result)} reranker={'on' if _reranker_used else 'off'}"
+        )
+        # 写入指标（便于后续聚合分析）
+        _metrics.increment("rag_query_total")
+        _metrics.observe("rag_rewrite_duration_ms", _rewrite_ms)
+        _metrics.observe("rag_retrieval_duration_ms", _retrieval_ms)
+        _metrics.observe("rag_fuse_duration_ms", _fuse_ms)
+        _metrics.observe("rag_rerank_duration_ms", _rerank_ms)
+        _metrics.observe("rag_total_duration_ms", _total_ms)
+        _metrics.observe("rag_vector_hits", len(vector_children))
+        _metrics.observe("rag_bm25_hits", len(bm25_children))
+        _metrics.observe("rag_parent_results", len(result))
+        if _reranker_used:
+            _metrics.increment("rag_reranker_used_total")
+        else:
+            _metrics.increment("rag_reranker_skipped_total")
+
+        return result
 
     def _apply_heading_path_filter(
         self,
