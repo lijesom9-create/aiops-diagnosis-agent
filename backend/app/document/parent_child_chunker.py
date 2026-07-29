@@ -208,6 +208,97 @@ class ParentChildChunker:
 
         return merged
 
+    # ========== 结构化元素描述生成 ==========
+
+    def _build_element_description(self, element: DocumentElement) -> str:
+        """为结构化元素生成描述前缀，增强向量化和 BM25 的语义匹配"""
+        if element.type == ElementType.TABLE:
+            return self._build_table_description(element)
+        elif element.type == ElementType.CODE:
+            return self._build_code_description(element)
+        elif element.type == ElementType.FORMULA:
+            return "[公式]"
+        return ""
+
+    @staticmethod
+    def _build_table_description(element: DocumentElement) -> str:
+        """从 HTML 或 Markdown 中提取表格结构信息，生成描述前缀"""
+        cols: List[str] = []
+        rows = 0
+
+        # 优先从 HTML 提取列名
+        if element.text_as_html:
+            ths = re.findall(r'<th>(.*?)</th>', element.text_as_html)
+            cols = [th.strip() for th in ths if th.strip()]
+            trs = re.findall(r'<tr>', element.text_as_html)
+            rows = max(len(trs) - 1, 0)  # 减去表头行
+
+        # 从 Markdown 提取（如果没有 HTML）
+        if not cols and element.text:
+            lines = element.text.strip().split("\n")
+            if lines and "|" in lines[0]:
+                cols = [c.strip() for c in lines[0].strip("|").split("|") if c.strip()]
+            if len(lines) > 2:
+                rows = len(lines) - 2  # 减去表头和分隔行
+
+        if not cols and rows == 0:
+            return "[表格]"
+
+        parts = ["[表格]"]
+        if cols and rows:
+            parts.append(f"这是一个{len(cols)}列{rows}行的表格，列名：{'/'.join(cols)}。")
+        elif cols:
+            parts.append(f"列名：{'/'.join(cols)}。")
+
+        return " ".join(parts)
+
+    @staticmethod
+    def _build_code_description(element: DocumentElement) -> str:
+        """从代码中提取语言和功能信息，生成描述前缀"""
+        text = element.text or ""
+        if not text.strip():
+            return "[代码]"
+
+        # 检测语言
+        lang = ""
+        first_line = text.split("\n")[0]
+        if first_line.startswith("# language:"):
+            lang = first_line.replace("# language:", "").strip()
+
+        # 提取函数名/类名
+        func_name = ""
+        for pattern in [
+            r'^def\s+(\w+)',
+            r'^class\s+(\w+)',
+            r'^function\s+(\w+)',
+            r'^public\s+(?:static\s+)?(?:void|class)\s+(\w+)',
+        ]:
+            m = re.search(pattern, text, re.MULTILINE)
+            if m:
+                func_name = m.group(1)
+                break
+
+        # 提取 docstring 第一行作为描述
+        comment = ""
+        doc = re.search(r'"""(.+?)"""', text, re.DOTALL) or re.search(r"'''(.+?)'''", text, re.DOTALL)
+        if doc:
+            comment = doc.group(1).strip().split("\n")[0][:60]
+        else:
+            # 尝试 # 注释
+            comment_match = re.search(r'^#\s*(.+)$', text, re.MULTILINE)
+            if comment_match and not comment_match.group(1).startswith("language:"):
+                comment = comment_match.group(1).strip()[:60]
+
+        # 组装（语言名首字母大写）
+        lang_label = f"[{lang.capitalize()}代码]" if lang else "[代码]"
+        desc_parts = [lang_label]
+        if func_name:
+            desc_parts.append(f"{func_name}")
+        if comment:
+            desc_parts.append(f"：{comment}")
+
+        return " ".join(desc_parts)
+
     def _group_into_sections(self, elements: List[DocumentElement]) -> List[List[DocumentElement]]:
         """
         将元素按 section 分组。
@@ -487,7 +578,18 @@ class ParentChildChunker:
                     meta_extra["text_as_html"] = element.text_as_html
                 if element.formula_latex:
                     meta_extra["formula_latex"] = element.formula_latex
-                flush_child([text], element.type.value)
+
+                # 结构化描述前缀：增强 embedding 和 BM25 的语义匹配
+                desc = self._build_element_description(element)
+                enriched_text = (desc + "\n" + text) if desc else text
+
+                # 超长元素切分（描述前缀只在第一部分保留）
+                if len(enriched_text) > self.child_max_chars:
+                    parts = self._split_text(enriched_text)
+                    for part in parts:
+                        flush_child([part], element.type.value)
+                else:
+                    flush_child([enriched_text], element.type.value)
                 # 把额外元数据附加到最后一个子块
                 if meta_extra and child_chunks:
                     child_chunks[-1].metadata.update(meta_extra)
