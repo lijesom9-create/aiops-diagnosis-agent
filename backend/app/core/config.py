@@ -75,6 +75,13 @@ class Settings(BaseSettings):
     # 父子分离存储（推荐 True：BM25 精度 +29pp）
     RAG_SEPARATE_PARENT_CHILD: bool = True
 
+    # ========== P1-2: 上下文 Token 预算控制 ==========
+    # LLM 上下文窗口 token 预算（不含用户查询和系统提示）
+    # DeepSeek/Qwen 32k 模型推荐 6000（给 RAG 留余地，剩余留给 LLM 输出）
+    # GPT-4o 128k 模型可放宽到 12000
+    # 设为 -1 表示不限制
+    RAG_MAX_CONTEXT_TOKENS: int = 6000
+
     # 外部搜索配置
     TAVILY_API_KEY: Optional[str] = None
     JINA_API_KEY: Optional[str] = None

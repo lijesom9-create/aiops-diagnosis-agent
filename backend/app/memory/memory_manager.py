@@ -210,6 +210,7 @@ class MemoryManager:
         max_rag_results: int = 5,
         max_archival_results: int = 3,
         rag_content_limit: Optional[int] = 200,
+        max_context_tokens: Optional[int] = None,
     ) -> str:
         """
         组装完整的上下文
@@ -226,47 +227,106 @@ class MemoryManager:
             max_rag_results: 最大 RAG 结果数
             max_archival_results: 最大档案结果数
             rag_content_limit: RAG 知识单条内容截断长度，None 或 -1 表示不截断
+            max_context_tokens: P1-2 上下文 token 预算（None 时从 settings 读取，-1 表示不限制）
+                超预算时按优先级（RAG > archival > recall > core）截断或丢弃
 
         Returns:
             str: 组装好的上下文
         """
-        parts = []
+        # P1-2: 解析 token 预算
+        if max_context_tokens is None:
+            try:
+                from ..core.config import settings
+                max_context_tokens = getattr(settings, "RAG_MAX_CONTEXT_TOKENS", 6000)
+            except Exception:
+                max_context_tokens = 6000
 
-        # 1. 核心记忆（Agent 人设 + 用户画像）
+        unlimited = (max_context_tokens is None) or (max_context_tokens < 0)
+
+        # 收集 parts（每个 part 是 dict，便于做预算控制）
+        parts_with_meta: List[Dict[str, Any]] = []
+
+        # 1. 核心记忆（Agent 人设 + 用户画像）—— 最高优先级，不可截断
         if include_core:
             core_context = self.core_memory.get_context(user_id)
             if core_context:
-                parts.append(core_context)
+                parts_with_meta.append({
+                    "name": "core",
+                    "content": core_context,
+                    "priority": 100,         # 最高，必保留
+                    "truncatable": False,
+                })
 
-        # 2. 回忆记忆（对话历史）
+        # 2. 回忆记忆（对话历史）—— 低优先级，最早可被丢弃
         if include_recall:
             history_context = self.recall_memory.get_context_string(
                 user_id, session_id, max_history_turns
             )
             if history_context:
-                parts.append(history_context)
+                parts_with_meta.append({
+                    "name": "history",
+                    "content": history_context,
+                    "priority": 20,         # 低优先级，超预算优先丢
+                    "truncatable": True,
+                })
 
-        # 3. 档案记忆（用户笔记、学习记录）
+        # 3. 档案记忆（用户笔记、学习记录）—— 中优先级
         if include_archival:
             archival_context = self.archival_memory.get_context_string(
                 user_id, query, max_archival_results
             )
             if archival_context:
-                parts.append(archival_context)
+                parts_with_meta.append({
+                    "name": "archival",
+                    "content": archival_context,
+                    "priority": 40,
+                    "truncatable": True,
+                })
 
-        # 4. RAG 知识（文档知识库）
+        # 4. RAG 知识（文档知识库）—— 高优先级（最新召回价值最高）
         if include_rag and self.rag_retriever:
             knowledge_results = self.search_knowledge(query, max_rag_results)
             if knowledge_results:
-                parts.append("## 知识库")
+                # 把每条 RAG 结果拆成独立 part（按 score 从高到低排序已由检索保证）
                 for i, result in enumerate(knowledge_results, 1):
                     title = result.get("metadata", {}).get("title", "")
                     content = result.get("content", "")
                     if rag_content_limit is not None and rag_content_limit > 0:
                         content = content[:rag_content_limit]
-                    parts.append(f"[{i}] {title}\n{content}")
+                    parts_with_meta.append({
+                        "name": f"rag_{i}",
+                        "content": f"[{i}] {title}\n{content}",
+                        "priority": 60 - i,  # 越靠前优先级越高
+                        "truncatable": True,
+                    })
 
-        return "\n\n".join(parts)
+        # P1-2: 按 token 预算筛选
+        if unlimited:
+            selected_parts = parts_with_meta
+            stats = {"total_tokens": 0, "truncated": 0, "dropped": 0}
+        else:
+            try:
+                from ..core.token_counter import fit_parts_to_budget
+                # 为用户查询和系统提示预留 token
+                reserved = max(500, len(query) // 2)
+                selected_parts, stats = fit_parts_to_budget(
+                    parts_with_meta,
+                    max_tokens=max_context_tokens,
+                    reserved_for_query=reserved,
+                )
+                if stats["dropped"] > 0 or stats["truncated"] > 0:
+                    logger.info(
+                        f"P1-2 上下文预算控制: total={stats['total_tokens']} tokens, "
+                        f"truncated={stats['truncated']}, dropped={stats['dropped']}"
+                    )
+            except Exception as e:
+                logger.warning(f"token 预算控制失败，使用全部上下文: {e}")
+                selected_parts = parts_with_meta
+                stats = {"total_tokens": 0, "truncated": 0, "dropped": 0}
+
+        # 拼接为最终字符串
+        contents = [p["content"] for p in selected_parts if p.get("content")]
+        return "\n\n".join(contents)
 
     def build_prompt(
         self,
