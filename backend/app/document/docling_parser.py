@@ -94,15 +94,31 @@ class DoclingParser:
         return elements
 
     def _get_converter(self):
-        """延迟初始化 Docling converter（第一次使用时加载模型）"""
+        """延迟初始化 Docling converter（第一次使用时加载模型）
+
+        关键：必须配置 generate_picture_images=True，否则 PictureItem.image 为 None，
+        图片提取失败（Docling Python API 默认不提取图片）。
+        """
         if self._converter is None:
             # 确保使用国内镜像
             os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
             os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-            from docling.document_converter import DocumentConverter
-            self._converter = DocumentConverter()
-            logger.info("DoclingParser: DocumentConverter 初始化完成")
+            from docling.document_converter import DocumentConverter, PdfFormatOption
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+
+            # 配置图片提取（默认 False，必须显式开启）
+            pipeline_options = PdfPipelineOptions()
+            pipeline_options.images_scale = 2.0  # 2x 分辨率（约 144 DPI），适合 VLM/OCR
+            pipeline_options.generate_picture_images = True
+
+            self._converter = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+                },
+            )
+            logger.info("DoclingParser: DocumentConverter 初始化完成（generate_picture_images=True）")
         return self._converter
 
     # DocItemLabel → ElementType 映射
@@ -198,7 +214,8 @@ class DoclingParser:
                     and document_id
                 ):
                     image_path = self._extract_and_save_image(
-                        item, document_id=document_id, idx=image_counter
+                        item, document_id=document_id, idx=image_counter,
+                        docling_doc=docling_doc,
                     )
                     if image_path:
                         image_counter += 1
@@ -256,18 +273,29 @@ class DoclingParser:
         item,
         document_id: str,
         idx: int,
+        docling_doc=None,
     ) -> Optional[str]:
         """
         从 Docling PictureItem 提取图片并保存到 ImageStore
 
-        Docling 不同版本暴露图片的 API：
-        - v2+ : item.image (PictureImageData) -> .pil_image
-        - 旧版：item.image.uri / item.image.data
+        Docling 2.x 的图片提取 API（必须配置 generate_picture_images=True）：
+        - 首选：item.get_image(docling_doc) → PIL.Image（v2+ 推荐）
+        - 降级：item.image.pil_image（旧版或已缓存的情况）
+        - 降级：item.image.data（字节流）
         """
         try:
             pil_image = None
-            # 路径 1: 新版 Docling 的 PictureItem.image.pil_image
-            if hasattr(item, "image") and item.image is not None:
+
+            # 路径 1（首选）: Docling 2.x 的 get_image(doc) API
+            # 需要 _get_converter 配置 generate_picture_images=True
+            if pil_image is None and docling_doc is not None and hasattr(item, "get_image"):
+                try:
+                    pil_image = item.get_image(docling_doc)
+                except Exception as e:
+                    logger.debug(f"get_image(doc) 失败 (idx={idx}): {e}")
+
+            # 路径 2（降级）: PictureItem.image.pil_image
+            if pil_image is None and hasattr(item, "image") and item.image is not None:
                 img_obj = item.image
                 if hasattr(img_obj, "pil_image") and img_obj.pil_image is not None:
                     pil_image = img_obj.pil_image

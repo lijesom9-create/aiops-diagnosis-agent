@@ -9,6 +9,12 @@ Embedding Models - 嵌入模型接口
 - OpenAIEmbedding: 基于 OpenAI 兼容 API 的嵌入（需要 API Key）
 """
 
+import os
+# 在 import sentence_transformers/huggingface_hub 之前就启用离线模式，
+# 避免每次加载本地模型都向 huggingface.co 发 HEAD 请求检查更新
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 import math
 import re
 from abc import ABC, abstractmethod
@@ -215,16 +221,12 @@ class SentenceTransformerEmbedding(EmbeddingModel):
     """
 
     def __init__(self, model_name: str = "BAAI/bge-small-zh-v1.5"):
-        import os
         from sentence_transformers import SentenceTransformer
 
-        # 设置离线模式，优先使用本地缓存
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
-        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-
         self.model_name = model_name
-        logger.info(f"正在加载 sentence-transformer 模型: {model_name} (离线模式)")
-        self._model = SentenceTransformer(model_name)
+        logger.info(f"正在加载 sentence-transformers 模型: {model_name} (离线模式)")
+        # 双保险：模块顶部已设 HF_HUB_OFFLINE，这里再显式传 local_files_only
+        self._model = SentenceTransformer(model_name, local_files_only=True)
         self._dimension = self._model.get_embedding_dimension()
         logger.info(f"模型加载完成，维度: {self._dimension}")
 

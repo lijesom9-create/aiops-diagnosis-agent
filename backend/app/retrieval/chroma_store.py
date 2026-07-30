@@ -196,6 +196,57 @@ class ChromaDBVectorStore:
             metadatas=metadatas or [{}] * len(doc_ids),
         )
 
+    def add_with_vector(
+        self,
+        doc_id: str,
+        vector: List[float],
+        content: str,
+        metadata: Optional[Dict] = None,
+    ) -> None:
+        """
+        添加文档（使用预计算的向量，不调用 embedding_model）
+
+        用于多模态向量：CLIP 图像向量直接写入，不经过文本 embedding
+        """
+        self._collection.add(
+            ids=[doc_id],
+            embeddings=[vector],
+            documents=[content],
+            metadatas=[metadata or {}],
+        )
+
+    def search_by_vector(
+        self,
+        query_vector: List[float],
+        top_k: int = 5,
+        min_score: float = 0.0,
+        filters: Optional[Dict] = None,
+    ) -> List[Tuple[str, float, Dict]]:
+        """
+        用预计算的向量做相似度搜索（不调用 embedding_model）
+
+        用于多模态检索：CLIP 文本向量查 CLIP 图像向量库
+        """
+        results = self._collection.query(
+            query_embeddings=[query_vector],
+            n_results=top_k,
+            where=filters,
+            include=["metadatas", "documents", "distances"],
+        )
+        output = []
+        if not results.get("ids") or not results["ids"][0]:
+            return output
+        for doc_id, distance, metadata, document in zip(
+            results["ids"][0],
+            results["distances"][0],
+            results["metadatas"][0],
+            results["documents"][0],
+        ):
+            similarity = 1.0 - distance / 2.0
+            if similarity >= min_score:
+                output.append((doc_id, similarity, {**metadata, "content": document}))
+        return output
+
     def _embed(self, content: str, clean_markdown: bool = True) -> List[float]:
         """
         生成文本向量

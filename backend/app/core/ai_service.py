@@ -90,6 +90,11 @@ class OpenAICompatibleProvider(AIModelProvider):
         self.timeout = 120.0  # 增加超时到120秒
         self._client: Optional[httpx.AsyncClient] = None
 
+        # 熔断器 + 限流器（按 model 名隔离，防止 DeepSeek 故障级联到其他 provider）
+        from .circuit_breaker import get_breaker, get_limiter
+        self._breaker = get_breaker(f"llm:{model}")
+        self._limiter = get_limiter(f"llm:{model}")
+
     async def _get_client(self) -> httpx.AsyncClient:
         """获取或创建 HTTP 客户端（复用连接池）"""
         if self._client is None or self._client.is_closed:
@@ -109,8 +114,18 @@ class OpenAICompatibleProvider(AIModelProvider):
             self._client = None
 
     async def chat(self, messages: List[Dict], tools: Optional[List[Dict]] = None) -> Dict:
-        """发送聊天请求，带重试机制"""
+        """发送聊天请求，带重试机制 + 熔断限流
 
+        熔断器在重试外层：整个重试流程都失败才算 1 次熔断失败
+        （重试本身已经处理了瞬时抖动，熔断器关注持续性故障）
+        """
+        from .circuit_breaker import ResilienceContext
+
+        async with ResilienceContext(self._breaker, self._limiter):
+            return await self._chat_with_retry(messages, tools)
+
+    async def _chat_with_retry(self, messages: List[Dict], tools: Optional[List[Dict]] = None) -> Dict:
+        """内部：带重试的 chat 调用（不含熔断限流）"""
         last_error = None
         for attempt in range(self.max_retries):
             try:
@@ -152,8 +167,41 @@ class OpenAICompatibleProvider(AIModelProvider):
         raise Exception(f"AI请求失败（已重试{self.max_retries}次）: {type(last_error).__name__}: {str(last_error)[:200]}")
 
     async def chat_stream(self, messages: List[Dict]) -> AsyncIterator[str]:
-        """流式聊天，带重试机制（连接阶段失败时重试）"""
+        """流式聊天，带重试机制 + 熔断限流
 
+        熔断器只在连接阶段生效：一旦开始流式输出就视为成功
+        （流式传输中断视为业务失败，由调用方处理）
+        """
+        from .circuit_breaker import CircuitOpenError, RateLimitExceededError
+
+        # 1. 熔断+限流检查（在生成第一个 token 之前）
+        await self._limiter.acquire()
+        await self._breaker.acquire()
+        _success_recorded = False
+
+        try:
+            async for chunk in self._chat_stream_with_retry(messages):
+                if not _success_recorded:
+                    # 第一个 chunk 成功输出 → 视为调用成功
+                    await self._breaker.record_success()
+                    _success_recorded = True
+                yield chunk
+            # 全部流式输出完成
+            if not _success_recorded:
+                await self._breaker.record_success()
+                _success_recorded = True
+        except CircuitOpenError:
+            raise  # 熔断自身异常直接传播
+        except RateLimitExceededError:
+            raise  # 限流自身异常直接传播
+        except Exception:
+            # 流式过程中失败且未记录过成功 → 记录熔断失败
+            if not _success_recorded:
+                await self._breaker.record_failure()
+            raise
+
+    async def _chat_stream_with_retry(self, messages: List[Dict]) -> AsyncIterator[str]:
+        """内部：带重试的流式 chat 调用（不含熔断限流）"""
         last_error = None
         for attempt in range(self.max_retries):
             try:

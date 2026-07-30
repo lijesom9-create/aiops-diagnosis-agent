@@ -31,12 +31,13 @@ class RAGRetrieverAdapter:
         self._bm25_weight = settings.RAG_BM25_WEIGHT
         self._top_k = settings.RAG_TOP_K
 
-    def search(self, query: str, top_k: Optional[int] = None) -> List[Any]:
+    def search(self, query: str, top_k: Optional[int] = None, chat_history: Optional[List[Dict]] = None) -> List[Any]:
         """
         搜索知识库（使用 hybrid_search_parent_child 完整链路）
 
         Args:
             top_k: 返回结果数，None 时从 settings.RAG_TOP_K 读取
+            chat_history: 对话历史（用于多轮对话改写）
 
         Returns:
             带有 to_dict() 方法的对象列表
@@ -55,6 +56,7 @@ class RAGRetrieverAdapter:
                 rrf_k=self._rrf_k,
                 vector_weight=self._vector_weight,
                 bm25_weight=self._bm25_weight,
+                chat_history=chat_history,
             )
         except Exception as e:
             logger.warning(f"hybrid_search_parent_child 失败，降级到纯向量检索: {e}")

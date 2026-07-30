@@ -217,6 +217,67 @@ class QdrantVectorStore:
             points=points,
         )
 
+    def add_with_vector(
+        self,
+        doc_id: str,
+        vector: List[float],
+        content: str,
+        metadata: Optional[Dict] = None,
+    ) -> None:
+        """添加文档（使用预计算向量，不调用 embedding_model）
+
+        用于多模态向量：CLIP 图像向量直接写入
+        """
+        from qdrant_client.models import PointStruct
+
+        meta = metadata or {}
+        payload = {**meta, "content": content, "_original_id": doc_id}
+        self._client.upsert(
+            collection_name=self.collection_name,
+            points=[
+                PointStruct(
+                    id=self._to_uuid(doc_id),
+                    vector=vector,
+                    payload=payload,
+                )
+            ],
+        )
+
+    def search_by_vector(
+        self,
+        query_vector: List[float],
+        top_k: int = 5,
+        min_score: float = 0.0,
+        filters: Optional[Dict] = None,
+    ) -> List[Tuple[str, float, Dict]]:
+        """用预计算向量做相似度搜索（不调用 embedding_model）
+
+        用于多模态检索：CLIP 文本向量查 CLIP 图像向量库
+        """
+        qdrant_filter = self._convert_filter(filters)
+        results = self._client.query_points(
+            collection_name=self.collection_name,
+            query=query_vector,
+            limit=top_k,
+            query_filter=qdrant_filter,
+            with_payload=True,
+            with_vectors=False,
+        ).points
+
+        output = []
+        for p in results:
+            payload = dict(p.payload or {})
+            original_id = payload.pop("_original_id", "")
+            content = payload.pop("content", "")
+            similarity = (float(p.score) + 1.0) / 2.0  # 与 search() 一致
+            if similarity >= min_score:
+                output.append((
+                    original_id,
+                    similarity,
+                    {**payload, "content": content},
+                ))
+        return output
+
     def upsert(
         self,
         doc_id: str,

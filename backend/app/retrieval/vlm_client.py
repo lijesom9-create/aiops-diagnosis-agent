@@ -90,6 +90,11 @@ class OpenAICompatibleVLM(VLMProvider):
         self.timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
 
+        # 熔断器 + 限流器（VLM 比 LLM 更贵更慢，独立隔离避免互相影响）
+        from ..core.circuit_breaker import get_breaker, get_limiter
+        self._breaker = get_breaker(f"vlm:{model}")
+        self._limiter = get_limiter(f"vlm:{model}")
+
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
@@ -99,7 +104,16 @@ class OpenAICompatibleVLM(VLMProvider):
         return self._client
 
     async def describe_image(self, image_bytes: bytes, mime_type: str = "image/png") -> Dict:
-        """调用 VLM API 描述图片"""
+        """调用 VLM API 描述图片（带熔断+限流保护）
+
+        失败时（含熔断/限流触发）返回 fallback 空结果，让上层用 OCR 兜底
+        """
+        from ..core.circuit_breaker import (
+            ResilienceContext,
+            CircuitOpenError,
+            RateLimitExceededError,
+        )
+
         # base64 编码
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         data_url = f"data:{mime_type};base64,{b64}"
@@ -128,14 +142,21 @@ class OpenAICompatibleVLM(VLMProvider):
         }
 
         url = f"{self.base_url}/chat/completions"
-        client = await self._get_client()
 
         try:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-            return self._parse_response(content)
+            async with ResilienceContext(self._breaker, self._limiter):
+                client = await self._get_client()
+                resp = await client.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"]
+                return self._parse_response(content)
+        except CircuitOpenError as e:
+            logger.warning(f"VLM 熔断中 model={self.model}: {e}")
+            return self._fallback(content=str(e))
+        except RateLimitExceededError as e:
+            logger.warning(f"VLM 限流 model={self.model}: {e}")
+            return self._fallback(content=str(e))
         except httpx.HTTPStatusError as e:
             logger.warning(
                 f"VLM API HTTP 错误 status={e.response.status_code} model={self.model}: "

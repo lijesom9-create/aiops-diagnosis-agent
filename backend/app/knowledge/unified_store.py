@@ -10,6 +10,7 @@ MongoDB 只存储元数据和状态，不存储知识内容。
 """
 
 import math
+import os
 import re
 import threading
 from typing import List, Dict, Any, Optional, Set
@@ -265,6 +266,10 @@ class UnifiedKnowledgeStore:
     ):
         self.embedding_model = embedding_model
         self._separate_parent_child = separate_parent_child
+        # 保存参数供 CLIP image_store 懒加载时复用
+        self._collection_name = collection_name
+        self._persist_directory = persist_directory
+        self._vector_store_backend = vector_store_backend
 
         # 子块向量库（向后兼容：self.vector_store 始终指向 child store）
         self.vector_store = self._create_vector_store(
@@ -290,6 +295,12 @@ class UnifiedKnowledgeStore:
         # BM25 倒排索引（内存持久化，启动时从子块向量库加载）
         self._bm25 = BM25Index()
         self._bm25_initialized = False
+
+        # CLIP 图像向量库（懒加载，仅当 MULTIMODAL_VECTOR_ENABLED=True 且模型可用时创建）
+        # 与文本向量库（self.vector_store）独立，存 CLIP 图像向量，供多模态检索
+        self._clip_image_store = None
+        self._clip_embedder = None
+        self._clip_enabled: Optional[bool] = None  # None=未探测, True/False=已探测
 
         logger.info(
             f"UnifiedKnowledgeStore 初始化完成 (parent_child_separated={separate_parent_child}), "
@@ -371,7 +382,145 @@ class UnifiedKnowledgeStore:
         self._rebuild_bm25_index()
         self._bm25_initialized = True
 
-    def _rewrite_query(self, query: str, rewrite_query: bool, rewrite_mode: str) -> List[str]:
+    # ========== CLIP 多模态向量（懒加载 + 优雅降级）==========
+
+    def _ensure_clip(self) -> bool:
+        """
+        懒加载 CLIP embedder + 图像向量库
+
+        Returns:
+            True 表示 CLIP 可用；False 表示不可用（已降级，后续不再尝试）
+        """
+        if self._clip_enabled is not None:
+            return self._clip_enabled
+
+        # 首次探测
+        try:
+            from ..core.config import settings
+            if not getattr(settings, "MULTIMODAL_VECTOR_ENABLED", False):
+                self._clip_enabled = False
+                return False
+        except Exception:
+            self._clip_enabled = False
+            return False
+
+        try:
+            from ..retrieval.clip_embedder import get_default_clip_embedder
+            self._clip_embedder = get_default_clip_embedder()
+            if not self._clip_embedder.is_available():
+                logger.info("CLIP 不可用（模型未下载），多模态向量检索已降级")
+                self._clip_enabled = False
+                return False
+
+            # 创建独立的 CLIP 图像向量库（collection_name 加 _clip_image 后缀）
+            # 注意：image_store 的 embedding_model 实际不会被用到
+            # （add_with_vector/search_by_vector 都直接传预计算向量）
+            self._clip_image_store = self._create_vector_store(
+                embedding_model=self.embedding_model,  # 占位，实际不用
+                collection_name=f"{self._collection_name}_clip_image",
+                persist_directory=self._persist_directory,
+                backend=self._vector_store_backend,
+            )
+            # 确保维度匹配（CLIP 模型维度 vs image_store 创建时的维度）
+            # 注意：如果维度不匹配，需要重建 collection
+            self._clip_enabled = True
+            logger.info(
+                f"CLIP 多模态向量已启用: dim={self._clip_embedder.dimension}, "
+                f"image_store_size={self._clip_image_store.size()}"
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"CLIP 初始化失败，降级为纯文本检索: {type(e).__name__}: {e}")
+            self._clip_enabled = False
+            return False
+
+    def _index_image_clip_vectors(self, items: List[KnowledgeItem]) -> int:
+        """
+        为图片子块生成 CLIP 图像向量并写入 image_store
+
+        在 add_batch 之后调用。遍历 items，找出 element_type=image 且有 image_path 的子块，
+        加载图片，用 CLIP 生成向量，写入 _clip_image_store。
+
+        Returns:
+            成功索引的图片数量
+        """
+        if not self._ensure_clip():
+            return 0
+
+        # 收集需要处理的图片子块
+        image_items = []
+        for item in items:
+            meta = item.metadata
+            if meta.get("chunk_type") != "parent" and meta.get("element_type") == "image":
+                image_path = meta.get("image_path")
+                if image_path:
+                    image_items.append((item, image_path))
+
+        if not image_items:
+            return 0
+
+        indexed = 0
+        for item, image_path in image_items:
+            try:
+                # 读取图片文件
+                if not os.path.exists(image_path):
+                    logger.debug(f"图片文件不存在，跳过 CLIP 索引: {image_path}")
+                    continue
+                with open(image_path, "rb") as f:
+                    image_bytes = f.read()
+
+                # 生成 CLIP 图像向量
+                vector = self._clip_embedder.embed_image(image_bytes)
+                if vector is None:
+                    continue
+
+                # 写入 image_store（用与子块相同的 doc_id，便于关联）
+                # content 用 caption 文本（便于调试和 fallback 显示）
+                meta = dict(item.metadata)
+                self._clip_image_store.add_with_vector(
+                    doc_id=item.id,
+                    vector=vector,
+                    content=item.content,
+                    metadata=meta,
+                )
+                indexed += 1
+            except Exception as e:
+                logger.warning(f"CLIP 索引图片失败 {image_path}: {type(e).__name__}: {e}")
+
+        if indexed > 0:
+            logger.info(f"CLIP 索引完成: {indexed}/{len(image_items)} 张图片")
+        return indexed
+
+    def _clip_search(self, query: str, top_k: int) -> List[tuple]:
+        """
+        CLIP 向量检索：query → CLIP text embedding → 查 image_store
+
+        Returns:
+            List[(doc_id, score, metadata)]，score 已归一化到 [0,1]
+        """
+        if not self._ensure_clip():
+            return []
+
+        try:
+            query_vector = self._clip_embedder.embed_text(query)
+            if query_vector is None:
+                return []
+            return self._clip_image_store.search_by_vector(
+                query_vector=query_vector,
+                top_k=top_k,
+                min_score=0.0,
+            )
+        except Exception as e:
+            logger.warning(f"CLIP 检索失败: {type(e).__name__}: {e}")
+            return []
+
+    def _rewrite_query(
+        self,
+        query: str,
+        rewrite_query: bool,
+        rewrite_mode: str,
+        chat_history: Optional[List[Dict]] = None,
+    ) -> List[str]:
         """
         统一查询重写入口
 
@@ -380,9 +529,23 @@ class UnifiedKnowledgeStore:
         - enhanced: 规则重写 + 同义词/缩写扩展（默认）
         - llm: 仅 LLM MultiQuery 重写，失败降级到 enhanced
         - enhanced_llm: 规则重写 + LLM MultiQuery 叠加（去重），失败降级到 enhanced
+        - conversation: 多轮对话改写（三层判断+LLM指代消解）→ 再走 enhanced
         """
         if not rewrite_query:
             return [query]
+
+        # 多轮对话改写：在 enhanced 之前做指代消解
+        if rewrite_mode == "conversation" and chat_history:
+            try:
+                from ..retrieval.conversation_rewriter import get_default_conversation_rewriter
+                rewriter = get_default_conversation_rewriter()
+                if rewriter.needs_rewrite(query, chat_history):
+                    query = rewriter.rewrite(query, chat_history)
+                    logger.debug(f"对话改写后查询: {query}")
+            except Exception as e:
+                logger.warning(f"对话改写失败，使用原始查询: {e}")
+            # 改写后继续走 enhanced
+            return QueryRewriter.enhanced_rewrite(query)
 
         if rewrite_mode in ("llm", "enhanced_llm"):
             try:
@@ -488,6 +651,13 @@ class UnifiedKnowledgeStore:
             child_contents.append(contents[i])
         if child_ids:
             self._bm25.add_batch(child_ids, child_contents)
+
+        # CLIP 多模态向量索引（仅对图片子块，CLIP 不可用时自动跳过）
+        try:
+            self._index_image_clip_vectors(items)
+        except Exception as e:
+            logger.debug(f"CLIP 索引跳过（不影响主流程）: {type(e).__name__}: {e}")
+
         logger.info(f"批量添加知识: {len(items)} 条 (parent={sum(1 for m in metadatas if m.get('chunk_type')=='parent')}, child={len(child_ids)})")
 
     def add_batch_with_dedup(
@@ -732,6 +902,7 @@ class UnifiedKnowledgeStore:
         candidate_multiplier: int = 3,
         vector_weight: float = 1.0,
         bm25_weight: float = 1.0,
+        chat_history: Optional[List[Dict]] = None,
     ) -> List[Dict[str, Any]]:
         """
         父子文档混合检索
@@ -765,7 +936,16 @@ class UnifiedKnowledgeStore:
         _metrics = _get_metrics()
         _t_start = _time.time()
 
-        cache_key_str = f"{query}|{top_k}|{rewrite_mode}|{candidate_multiplier}|{rrf_k}|{vector_weight}|{bm25_weight}|{source}|{user_id}|{org_id}"
+        # conversation 模式下需将 chat_history 纳入 cache key，否则不同对话历史会错误命中缓存
+        _history_hash = ""
+        if rewrite_mode == "conversation" and chat_history:
+            _history_str = "|".join(
+                f"{t.get('role','')}:{t.get('content','')[:80]}"
+                for t in chat_history[-6:]  # 只取最近 6 条避免 hash 过长
+            )
+            _history_hash = hashlib.md5(_history_str.encode()).hexdigest()[:8]
+
+        cache_key_str = f"{query}|{top_k}|{rewrite_mode}|{candidate_multiplier}|{rrf_k}|{vector_weight}|{bm25_weight}|{source}|{user_id}|{org_id}|{_history_hash}"
         cache_key = hashlib.md5(cache_key_str.encode()).hexdigest()
         cached = self._cache_get(cache_key)
         if cached is not None:
@@ -774,9 +954,9 @@ class UnifiedKnowledgeStore:
             logger.debug(f"查询缓存命中: {query[:30]}...")
             return cached
 
-        # 0. 查询重写（支持 basic / enhanced / llm / enhanced_llm）
+        # 0. 查询重写（支持 basic / enhanced / llm / enhanced_llm / conversation）
         _t0 = _time.time()
-        queries = self._rewrite_query(query, rewrite_query, rewrite_mode)
+        queries = self._rewrite_query(query, rewrite_query, rewrite_mode, chat_history=chat_history)
         _rewrite_ms = (_time.time() - _t0) * 1000
 
         # P0-3: 并行检索（向量 + BM25 同时执行）
@@ -827,24 +1007,58 @@ class UnifiedKnowledgeStore:
 
         # 并行执行向量检索和 BM25 检索
         _t1 = _time.time()
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             future_v = executor.submit(_vector_search)
             future_b = executor.submit(_bm25_search)
             vector_children = future_v.result()
             bm25_children = future_b.result()
         _retrieval_ms = (_time.time() - _t1) * 1000
 
-        # 3. 加权 RRF 融合子块结果
+        # CLIP 多模态向量检索（第三路，CLIP 不可用时返回空）
+        clip_children = []
+        if self._ensure_clip():
+            try:
+                clip_results = self._clip_search(query, top_k=child_top_k)
+                # 转换为 children 格式（与 vector/bm25 children 一致）
+                for doc_id, score, metadata in clip_results:
+                    if org_id and metadata.get("org_id") and metadata.get("org_id") != org_id:
+                        continue
+                    if user_id and metadata.get("user_id") and metadata.get("user_id") != user_id:
+                        continue
+                    clip_children.append({
+                        "id": doc_id,
+                        "score": score,
+                        "metadata": metadata,
+                    })
+            except Exception as e:
+                logger.warning(f"CLIP 检索失败（跳过）: {type(e).__name__}: {e}")
+
+        # 3. 加权 RRF 融合子块结果（vector + bm25 → text_fused）
         _t2 = _time.time()
         if bm25_children and vector_children:
-            fused_children = self._rrf_fuse(
+            text_fused = self._rrf_fuse(
                 vector_children, bm25_children, k=rrf_k,
                 weight_a=vector_weight, weight_b=bm25_weight,
             )
         elif vector_children:
-            fused_children = vector_children
+            text_fused = vector_children
         else:
-            fused_children = bm25_children
+            text_fused = bm25_children
+
+        # CLIP 结果融合：用 CLIP_FUSION_WEIGHT 加权，与 text_fused 二次 RRF
+        if clip_children and text_fused:
+            try:
+                from ..core.config import settings
+                clip_weight = getattr(settings, "CLIP_FUSION_WEIGHT", 0.3)
+            except Exception:
+                clip_weight = 0.3
+            # 文本权重 = 1 - clip_weight，确保 CLIP 不会主导排序
+            fused_children = self._rrf_fuse(
+                text_fused, clip_children, k=rrf_k,
+                weight_a=1.0 - clip_weight, weight_b=clip_weight,
+            )
+        else:
+            fused_children = text_fused if text_fused else clip_children
         _fuse_ms = (_time.time() - _t2) * 1000
 
         if not fused_children:

@@ -187,12 +187,17 @@ class MemoryManager:
         self,
         query: str,
         top_k: int = 5,
+        chat_history: Optional[List[Dict]] = None,
     ) -> List[Dict]:
-        """搜索知识库"""
+        """搜索知识库
+
+        Args:
+            chat_history: 对话历史（用于多轮对话改写）
+        """
         if not self.rag_retriever:
             return []
 
-        results = self.rag_retriever.search(query, top_k=top_k)
+        results = self.rag_retriever.search(query, top_k=top_k, chat_history=chat_history)
         return [r.to_dict() for r in results]
 
     # ========== 上下文组装 ==========
@@ -211,6 +216,7 @@ class MemoryManager:
         max_archival_results: int = 3,
         rag_content_limit: Optional[int] = 200,
         max_context_tokens: Optional[int] = None,
+        chat_history: Optional[List[Dict]] = None,
     ) -> str:
         """
         组装完整的上下文
@@ -293,7 +299,7 @@ class MemoryManager:
 
         # 4. RAG 知识（文档知识库）—— 高优先级（最新召回价值最高）
         if include_rag and self.rag_retriever:
-            knowledge_results = self.search_knowledge(query, max_rag_results)
+            knowledge_results = self.search_knowledge(query, max_rag_results, chat_history=chat_history)
             if knowledge_results:
                 # 把每条 RAG 结果拆成独立 part（按 score 从高到低排序已由检索保证）
                 for i, result in enumerate(knowledge_results, 1):
@@ -367,6 +373,7 @@ class MemoryManager:
         session_id: Optional[str] = None,
         max_rag_results: Optional[int] = None,
         max_context_tokens: Optional[int] = None,
+        chat_history: Optional[List[Dict]] = None,
     ) -> Dict[str, Any]:
         """
         构建上下文并附带多模态元数据
@@ -388,13 +395,14 @@ class MemoryManager:
             session_id=session_id,
             max_rag_results=max_rag_results,
             max_context_tokens=max_context_tokens,
+            chat_history=chat_history,
         )
 
         # 单独跑一遍 RAG 检索，提取图片引用（开销很小）
         image_refs: List[Dict[str, Any]] = []
         if self.rag_retriever:
             try:
-                results = self.search_knowledge(query, max_rag_results)
+                results = self.search_knowledge(query, max_rag_results, chat_history=chat_history)
                 for i, r in enumerate(results, 1):
                     meta = r.get("metadata", {})
                     if meta.get("element_type") == "image" and meta.get("image_path"):

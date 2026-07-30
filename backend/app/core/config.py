@@ -83,6 +83,27 @@ class Settings(BaseSettings):
     # 设为 -1 表示不限制
     RAG_MAX_CONTEXT_TOKENS: int = 6000
 
+    # ========== 多轮对话查询改写 (Conversation Query Rewriting) ==========
+    # 当 rewrite_mode=conversation 时生效，三层判断：
+    # 1) 规则判断（指代词/上下文依赖词/省略主语）→ 2) 历史判断（chat_history 存在性）
+    # → 3) LLM 改写（指代消解，生成独立完整查询）
+    # 最多使用多少轮对话历史（3 表示最近 3 轮 user+assistant 共 6 条消息）
+    CONVERSATION_REWRITE_MAX_HISTORY_TURNS: int = 3
+    # LLM 改写调用超时（秒），超时降级到原始 query
+    CONVERSATION_REWRITE_TIMEOUT: float = 10.0
+    # LLM 改写温度（低温度保证稳定性）
+    CONVERSATION_REWRITE_TEMPERATURE: float = 0.1
+
+    # ========== 熔断器 + 限流器（保护 LLM/VLM API 调用）==========
+    # 熔断阈值：连续失败多少次后熔断（CLOSED → OPEN）
+    CIRCUIT_FAILURE_THRESHOLD: int = 5
+    # 熔断冷却秒数（OPEN → HALF_OPEN 探测）
+    CIRCUIT_RESET_TIMEOUT: float = 30.0
+    # 限流速率：每秒最多多少个请求（令牌生成速率）
+    RATE_LIMIT_RPS: float = 2.0
+    # 限流桶容量：允许的瞬时突发量
+    RATE_LIMIT_CAPACITY: int = 5
+
     # ========== 多模态 RAG ==========
     # 总开关：是否启用多模态（图片 caption + 表格 summary）
     # 关闭时上传管道跳过 VLM 调用，图片元素仅做 OCR
@@ -109,6 +130,16 @@ class Settings(BaseSettings):
     # 是否对表格元素也生成 LLM summary（与图片 caption 类似的策略）
     # 启用后：父块保留原表格 Markdown/HTML，子块用 summary 提升召回
     MULTIMODAL_TABLE_SUMMARY_ENABLED: bool = True
+
+    # ========== 多模态向量（CLIP 图文对齐）==========
+    # 总开关：是否启用 CLIP 图像向量检索（与 VLM caption 文本检索并行，RRF 融合）
+    # 启用条件：本地已下载 CLIP 模型；未下载时自动降级为纯文本检索
+    MULTIMODAL_VECTOR_ENABLED: bool = False
+    # CLIP 模型名（推荐 OFFA-Sys/chinese-clip-vit-base-patch16 中文场景）
+    # 英文场景可用 openai/clip-vit-base-patch32
+    CLIP_MODEL_NAME: str = "OFA-Sys/chinese-clip-vit-base-patch16"
+    # CLIP 检索结果在 RRF 融合中的权重（0-1，越高越偏向图像召回）
+    CLIP_FUSION_WEIGHT: float = 0.3
 
     # 外部搜索配置
     TAVILY_API_KEY: Optional[str] = None
