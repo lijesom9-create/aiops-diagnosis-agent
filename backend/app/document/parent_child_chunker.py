@@ -20,6 +20,14 @@ from .models import (
 )
 
 
+# 装饰图判定关键词：caption 命中以下任一词时视为装饰图（品牌 logo / 水印 / 图标）
+# 来源：VLM 对品牌标识类图片的典型描述用词
+_DECORATIVE_CAPTION_KEYWORDS = [
+    "logo", "品牌标识", "品牌标志", "商标", "图标", "水印",
+    "品牌", "icon", "brand", "徽标", "标识图",
+]
+
+
 class ParentChildChunker:
     """父子文档分块器"""
 
@@ -59,6 +67,10 @@ class ParentChildChunker:
 
         # 0. 噪声过滤：移除版权声明、页码、目录页等噪声元素
         doc.elements = self._filter_noise_elements(doc.elements)
+
+        # 0.3 装饰图过滤：品牌 logo / 水印 / 图标等不携带检索语义的图片直接剔除
+        # 避免品牌名（如"黑马程序员"）污染检索结果
+        doc.elements = self._filter_decorative_images(doc.elements)
 
         # 0.5 跨页表格合并：连续 TABLE 元素且页面号连续时合并
         doc.elements = self._merge_cross_page_tables(doc.elements)
@@ -131,6 +143,61 @@ class ParentChildChunker:
             logger.debug(f"噪声过滤: 移除 {removed} 个噪声元素，剩余 {len(filtered)} 个")
 
         return filtered
+
+    def _filter_decorative_images(
+        self, elements: List[DocumentElement]
+    ) -> List[DocumentElement]:
+        """过滤装饰图：品牌 logo / 水印 / 图标等无检索价值的图片
+
+        判定规则（满足任一即剔除）：
+        1. image_type 为 "other" 或 "photo" 且 caption 命中装饰图关键词
+        2. caption 明确包含品牌标识类描述（如"品牌标识"、"logo"）
+
+        剔除后这些图片不进入父块/子块，避免品牌名等无关文字污染检索。
+        """
+        if not elements:
+            return elements
+
+        filtered: List[DocumentElement] = []
+        removed = 0
+        for el in elements:
+            if el.type == ElementType.IMAGE and self._is_decorative_image(el):
+                removed += 1
+                continue
+            filtered.append(el)
+
+        if removed > 0:
+            logger.info(
+                f"装饰图过滤: 移除 {removed} 个品牌 logo/水印/图标，剩余 {len(filtered)} 个元素"
+            )
+
+        return filtered
+
+    @staticmethod
+    def _is_decorative_image(element: DocumentElement) -> bool:
+        """判断图片是否为装饰图（品牌 logo / 水印 / 图标，无检索价值）
+
+        判定依据：
+        - image_type 为 "other" 或 "photo"（非内容型图片）
+        - caption 命中装饰图关键词列表
+
+        保守策略：只过滤明确标识为品牌/logo 的图片，
+        保留 diagram/screenshot/chart/table/formula/code 等内容型图片。
+        """
+        img_type = (element.image_type or "").lower().strip()
+        caption = (element.image_desc or "").lower()
+
+        # 只对非内容型图片做关键词检测
+        # diagram/screenshot/chart/table/formula/code 是内容型，保留
+        if img_type in ("diagram", "screenshot", "chart", "table", "formula", "code"):
+            return False
+
+        # image_type 为 other/photo/空 时，检查 caption 是否含品牌标识关键词
+        for kw in _DECORATIVE_CAPTION_KEYWORDS:
+            if kw in caption:
+                return True
+
+        return False
 
     @staticmethod
     def _count_table_columns(element: DocumentElement) -> int:

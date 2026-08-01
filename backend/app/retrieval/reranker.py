@@ -10,7 +10,7 @@ Reranker - 结果重排序
 
 import math
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from loguru import logger
 
 from .base import RetrievalResult
@@ -145,6 +145,7 @@ class CrossEncoderReranker(Reranker):
     - cross-encoder/ms-marco-MiniLM-L-6-v2: 英文为主，80MB
 
     P0-1 优化：模块级单例 + torch.no_grad 推理加速
+    P1 优化：相同 (query, doc) 对的打分缓存，避免重复推理
     """
 
     name = "cross_encoder_reranker"
@@ -155,11 +156,28 @@ class CrossEncoderReranker(Reranker):
     def __init__(
         self,
         model_name: str = "BAAI/bge-reranker-base",
-        max_length: int = 512,
+        max_length: int = 256,
+        enable_cache: bool = True,
+        cache_capacity: int = 1024,
+        use_onnx: bool = True,
     ):
+        """
+        Args:
+            use_onnx: 是否启用 ONNX Runtime 加速（CPU 推理快 2-3x，精度无损）
+                      首次加载会自动转换并缓存到磁盘，后续启动直接加载 ONNX 模型
+        """
         self.model_name = model_name
         self.max_length = max_length
         self._model = None
+        self._tokenizer = None  # ONNX 模式下单独使用
+        self._use_onnx = use_onnx
+        self._onnx_ready = False  # ONNX 模型是否加载成功
+        self._enable_cache = enable_cache
+        # (query_hash, content_hash) -> score
+        self._score_cache: Dict[tuple, float] = {}
+        self._cache_capacity = cache_capacity
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     def _load_model(self):
         """加载模型（带模块级单例缓存）"""
@@ -167,29 +185,105 @@ class CrossEncoderReranker(Reranker):
             return True
 
         # 检查单例缓存
-        if self.model_name in CrossEncoderReranker._model_cache:
-            self._model = CrossEncoderReranker._model_cache[self.model_name]
-            logger.info(f"复用已加载的 CrossEncoder 模型: {self.model_name}")
+        cache_key = f"{self.model_name}{'_onnx' if self._use_onnx else ''}"
+        if cache_key in CrossEncoderReranker._model_cache:
+            cached = CrossEncoderReranker._model_cache[cache_key]
+            self._model = cached["model"]
+            self._tokenizer = cached.get("tokenizer")
+            self._onnx_ready = cached.get("onnx", False)
+            logger.info(f"复用已加载的 CrossEncoder 模型: {cache_key}")
             return True
 
-        # 首次加载
+        # 首次加载：优先尝试 ONNX，失败降级到 PyTorch
+        if self._use_onnx:
+            try:
+                self._load_onnx_model(cache_key)
+                return True
+            except Exception as e:
+                logger.warning(f"ONNX 加载失败，降级到 PyTorch: {type(e).__name__}: {e}")
+
+        # PyTorch 降级路径
+        return self._load_pytorch_model(cache_key)
+
+    def _load_onnx_model(self, cache_key: str) -> bool:
+        """加载 ONNX 格式模型（首次自动转换并缓存到磁盘）"""
+        import os
+        from pathlib import Path
+        from transformers import AutoTokenizer
+
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+        # ONNX 模型缓存目录：./data/onnx_cache/<model_name>
+        model_dir_name = self.model_name.replace("/", "_")
+        onnx_dir = Path("./data/onnx_cache") / model_dir_name
+
+        # 首次：用 optimum 从 PyTorch 模型导出 ONNX
+        if not onnx_dir.exists():
+            logger.info(f"首次导出 ONNX 模型: {self.model_name} -> {onnx_dir}")
+            from optimum.onnxruntime import ORTModelForSequenceClassification
+
+            onnx_dir.mkdir(parents=True, exist_ok=True)
+            # export=True 会自动转换并保存到 onnx_dir
+            model = ORTModelForSequenceClassification.from_pretrained(
+                self.model_name,
+                export=True,
+                provider="CPUExecutionProvider",
+            )
+            model.save_pretrained(str(onnx_dir))
+            logger.info(f"ONNX 模型导出完成: {onnx_dir}")
+
+        # 加载已缓存的 ONNX 模型
+        from optimum.onnxruntime import ORTModelForSequenceClassification
+        # P0-2 优化：限制 ORT 线程数，避免并发时线程竞争
+        import os
+        os.environ.setdefault("ORT_NUM_THREADS", "2")
+        logger.info(f"加载 ONNX 模型: {onnx_dir}")
+        self._model = ORTModelForSequenceClassification.from_pretrained(
+            str(onnx_dir),
+            provider="CPUExecutionProvider",
+            use_io_binding=False,
+        )
+        # 设置 ORT session 线程数
+        try:
+            session = self._model.model  # 底层 ort.InferenceSession
+            session.set_intra_op_num_threads(2)
+            session.set_inter_op_num_threads(1)
+            logger.info("ONNX 线程数: intra=2, inter=1")
+        except Exception as e:
+            logger.debug(f"ORT线程设置跳过: {e}")
+        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self._onnx_ready = True
+
+        # 存入单例缓存
+        CrossEncoderReranker._model_cache[cache_key] = {
+            "model": self._model,
+            "tokenizer": self._tokenizer,
+            "onnx": True,
+        }
+        logger.info(f"ONNX CrossEncoder 加载完成: {self.model_name}")
+        return True
+
+    def _load_pytorch_model(self, cache_key: str) -> bool:
+        """PyTorch 降级加载路径"""
         try:
             from sentence_transformers import CrossEncoder
             import os
-            # 离线模式：优先用本地缓存，避免 HF 连接
             os.environ.setdefault("HF_HUB_OFFLINE", "1")
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
             self._model = CrossEncoder(self.model_name)
-            # 推理加速：关闭梯度计算
             try:
                 import torch
                 self._model.model.eval()
                 logger.info(f"CrossEncoder 已设为 eval 模式 (torch.no_grad)")
             except Exception:
                 pass
-            # 存入单例缓存
-            CrossEncoderReranker._model_cache[self.model_name] = self._model
-            logger.info(f"加载 CrossEncoder 模型: {self.model_name} (首次加载，已缓存)")
+            CrossEncoderReranker._model_cache[cache_key] = {
+                "model": self._model,
+                "tokenizer": None,
+                "onnx": False,
+            }
+            logger.info(f"加载 PyTorch CrossEncoder 模型: {self.model_name} (首次加载，已缓存)")
         except ImportError:
             logger.warning("sentence_transformers 未安装，无法使用 CrossEncoder")
             return False
@@ -197,6 +291,32 @@ class CrossEncoderReranker(Reranker):
             logger.error(f"加载 CrossEncoder 模型失败: {e}")
             return False
         return True
+
+    def _predict_pairs(self, pairs: List[Tuple[str, str]]) -> List[float]:
+        """
+        对 (query, content) 对批量打分
+
+        ONNX 模式：用 tokenizer 编码 + ONNX 模型推理（快 2-3x）
+        PyTorch 模式：直接调用 CrossEncoder.predict()
+        """
+        if self._onnx_ready and self._tokenizer is not None:
+            # ONNX 推理路径
+            import torch
+            encoded = self._tokenizer(
+                pairs,
+                padding=True,
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
+            with torch.no_grad():
+                outputs = self._model(**encoded)
+            # logits 是 (batch, 1) 或 (batch, 2)，取最后一列
+            logits = outputs.logits.squeeze(-1)
+            return logits.tolist()
+        else:
+            # PyTorch 推理路径（CrossEncoder.predict 内部处理 tokenizer）
+            return self._model.predict(pairs)
 
     def rerank(
         self,
@@ -225,15 +345,45 @@ class CrossEncoderReranker(Reranker):
             return sorted(results, key=lambda r: r.score, reverse=True)[:limit]
 
         try:
-            # 构建查询对
-            pairs = [(query, r.content[:self.max_length]) for r in results]
+            import hashlib
 
-            # 计算分数（CrossEncoder 输出 logits，用 sigmoid 映射到 [0,1]）
-            raw_scores = self._model.predict(pairs)
-            scores = [1.0 / (1.0 + math.exp(-s)) for s in raw_scores]
+            # 构建查询对，并检查缓存
+            query_hash = hashlib.md5(query.encode("utf-8")).hexdigest()[:8] if self._enable_cache else None
+            pairs = []
+            cached_scores: List[Optional[float]] = [None] * len(results)
+            miss_indices = []
+
+            for i, r in enumerate(results):
+                content_trunc = r.content[:self.max_length]
+                if self._enable_cache and query_hash is not None:
+                    content_hash = hashlib.md5(content_trunc.encode("utf-8")).hexdigest()[:8]
+                    cache_key = (query_hash, content_hash)
+                    cached = self._score_cache.get(cache_key)
+                    if cached is not None:
+                        cached_scores[i] = cached
+                        self._cache_hits += 1
+                        continue
+                pairs.append((query, content_trunc))
+                miss_indices.append(i)
+
+            # 仅对未命中的批量推理
+            scores = []
+            if pairs:
+                raw_scores = self._predict_pairs(pairs)
+                new_scores = [1.0 / (1.0 + math.exp(-s)) for s in raw_scores]
+                # 回填缓存
+                for idx, score in zip(miss_indices, new_scores):
+                    cached_scores[idx] = score
+                    self._cache_misses += 1
+                    if self._enable_cache and query_hash is not None:
+                        content_trunc = results[idx].content[:self.max_length]
+                        content_hash = hashlib.md5(content_trunc.encode("utf-8")).hexdigest()[:8]
+                        cache_key = (query_hash, content_hash)
+                        if len(self._score_cache) < self._cache_capacity:
+                            self._score_cache[cache_key] = score
 
             # 排序
-            scored_results = list(zip(scores, results))
+            scored_results = list(zip(cached_scores, results))
             scored_results.sort(key=lambda x: x[0], reverse=True)
 
             # 更新分数

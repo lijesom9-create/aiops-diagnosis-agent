@@ -4,11 +4,12 @@
 定义 LangGraph Agent 使用的工具。
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from langchain_core.tools import tool
 from loguru import logger
 import time
 import hashlib
+import threading
 
 
 # 全局变量，用于存储工具依赖
@@ -16,39 +17,336 @@ _retriever = None
 _knowledge_store = None
 
 
+# ========== 引用溯源 buffer ==========
+# 模块级缓冲区：search_knowledge 工具执行时写入结构化检索结果，
+# Agent 的 _call_agent 在工具执行后读取并清空。
+#
+# 原因：LangGraph 1.1.x 的 ToolNode 调用 tool.invoke()，
+# 而 .invoke() 对 response_format="content_and_artifact" 只返回 content 字符串，
+# artifact 丢失。因此用 buffer 作为可靠传递机制。
+#
+# 并发性说明：LangGraph 单 session 内图执行是顺序的（_call_agent → ToolNode → _call_agent），
+# buffer 在 _call_agent 开头被读取并清空，不会跨请求累积。
+# 多 session 并发时可能存在极小窗口的竞态，对学习项目可接受。
+_retrieval_buffer: List[Dict] = []
+_retrieval_buffer_lock = threading.Lock()
+
+
+def pop_retrieval_buffer() -> List[Dict]:
+    """读取并清空检索结果缓冲区（供 Agent._call_agent 调用）"""
+    with _retrieval_buffer_lock:
+        result = list(_retrieval_buffer)
+        _retrieval_buffer.clear()
+    return result
+
+
+def _append_retrieval_buffer(docs: List[Dict]) -> None:
+    """向缓冲区追加检索结果（供 search_knowledge 工具调用）"""
+    with _retrieval_buffer_lock:
+        _retrieval_buffer.extend(docs)
+
+
+# ========== 检索质量评估与低质量重试 ==========
+#
+# 当首次检索结果过少或最高分过低时，用 LLM 生成不同角度的替代查询重试一次。
+# 设计理由：
+# - 用户提问角度可能和文档表述角度不一致（如"怎么备份" vs "mysqldump 用法"）
+# - LLM 能做同义词扩展和概念泛化，弥补关键词/向量检索的盲区
+# - 只在质量低时触发（max_score < 0.35 或结果 < 2），避免额外延迟
+
+# 触发重试的质量阈值
+_LOW_SCORE_THRESHOLD = 0.35
+_MIN_RESULT_COUNT = 2
+
+
+def _evaluate_retrieval_quality(results: List[Dict]) -> bool:
+    """评估检索结果质量是否达标
+
+    Args:
+        results: 检索结果列表
+
+    Returns:
+        True 表示质量达标，False 表示需要重试
+    """
+    if not results or len(results) < _MIN_RESULT_COUNT:
+        return False
+    max_score = max(r.get("score", 0) for r in results)
+    return max_score >= _LOW_SCORE_THRESHOLD
+
+
+def _generate_alternative_query(query: str) -> Optional[str]:
+    """用 LLM 生成不同角度的替代查询（同义词扩展/概念泛化）
+
+    只在 _query_rewriter_llm 可用时调用。失败时返回 None，静默降级。
+
+    Args:
+        query: 原始查询
+
+    Returns:
+        替代查询，或 None（LLM 不可用/生成失败）
+    """
+    if not _query_rewriter_llm:
+        return None
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        messages = [
+            SystemMessage(content=(
+                "将用户的查询改写为不同角度的搜索关键词，用于知识库二次检索。"
+                "要求：\n"
+                "1. 用同义词或更专业的术语替换原词（如'备份'→'mysqldump/物理备份/逻辑备份'）\n"
+                "2. 如果原查询是口语化表述，改写为文档中可能出现的正式表述\n"
+                "3. 只输出一个改写后的查询，不要解释，不要引号"
+            )),
+            HumanMessage(content=query),
+        ]
+        resp = _query_rewriter_llm.invoke(messages)
+        alt = (resp.content or "").strip().strip('"\'').strip()
+        # 改写结果不能和原查询完全相同
+        if alt and alt != query:
+            return alt
+    except Exception as e:
+        logger.debug(f"生成替代查询失败（静默降级）: {e}")
+    return None
+
+
+def _merge_search_results(results1: List[Dict], results2: List[Dict], limit: int) -> List[Dict]:
+    """合并两次检索结果，去重并按分数排序
+
+    去重键：doc_id + content 前 100 字符
+    """
+    seen: set = set()
+    merged: List[Dict] = []
+    for doc in results1 + results2:
+        key = (doc.get("doc_id", ""), doc.get("content", "")[:100])
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(doc)
+    merged.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return merged[:limit]
+
+
+# ========== 对话上下文管理（多轮对话指代消解） ==========
+# 模块级对话上下文：存储最近几轮对话文本，供 search_knowledge 做查询重写。
+#
+# 工作流：
+# 1. Agent._call_agent 在调用 LLM 前，调用 set_conversation_context(messages)
+# 2. search_knowledge 工具执行时，读取 _conversation_context 做指代消解
+# 3. 如果用户查询含指代词（如"它的路由"），用 LLM 根据对话历史重写为完整查询
+#
+# 设计理由：
+# - LangGraph 的 ToolNode 调用 tool.invoke() 时不传 state，工具拿不到对话历史
+# - 用模块级变量传递是最简方案（类似 _retrieval_buffer 的模式）
+# - 只存储最近 6 条消息的文本摘要，内存占用极小
+
+_conversation_context: List[str] = []
+# 查询重写用的 LLM（由 Agent 初始化时注入）
+_query_rewriter_llm = None
+# 查询重写缓存（避免相同 query+context 重复调用 LLM）
+_query_rewrite_cache: Dict[str, str] = {}
+_query_rewrite_cache_lock = threading.Lock()
+
+# ========== 当前用户身份（权限隔离） ==========
+# 与 _conversation_context 同理：ToolNode 调用 tool.invoke() 时不传 state，
+# 用模块级变量传递 user_id，供 search_knowledge 做文档权限过滤。
+# _call_agent 在调用 LLM 前调用 set_current_user_id(user_id)，
+# search_knowledge 执行时读取该值传给 hybrid_search_parent_child。
+_current_user_id: Optional[str] = None
+
+
+def set_current_user_id(user_id: Optional[str]) -> None:
+    """设置当前用户 ID（供 search_knowledge 做文档权限过滤）
+
+    由 Agent._call_agent 在每次调用 LLM 前设置。
+    传入 None 表示不限制（如系统级调用）。
+    """
+    global _current_user_id
+    _current_user_id = user_id
+    logger.debug(f"set_current_user_id: {user_id}")
+
+
+def set_conversation_context(messages) -> None:
+    """设置对话上下文（供 search_knowledge 做指代消解）
+
+    从 LangGraph state["messages"] 中提取最近 6 条消息的文本，
+    存储为 ["user: xxx", "assistant: yyy", ...] 格式。
+
+    Args:
+        messages: LangGraph state["messages"] 列表
+    """
+    global _conversation_context
+    _conversation_context = []
+    # 只取最近 6 条消息（约 3 轮对话），避免上下文过长
+    recent = list(messages[-6:]) if messages else []
+    for msg in recent:
+        role = "user"
+        msg_type = getattr(msg, "type", "")
+        if msg_type == "ai" or msg_type == "assistant":
+            role = "assistant"
+        elif msg_type == "human" or msg_type == "user":
+            role = "user"
+        content = getattr(msg, "content", "")
+        if content and isinstance(content, str):
+            # 每条消息最多取 200 字符，控制重写 prompt 大小
+            _conversation_context.append(f"{role}: {content[:200]}")
+
+
+def set_query_rewriter_llm(llm) -> None:
+    """设置查询重写用的 LLM（由 Agent.__init__ 注入）"""
+    global _query_rewriter_llm
+    _query_rewriter_llm = llm
+
+
+# 触发查询重写的指代词/省略语（出现这些词时才考虑重写）
+_REWRITE_TRIGGERS = {
+    "它", "它们", "这个", "那个", "这些", "那些", "其", "该", "此",
+    "上面", "前面", "刚才", "上述", "前述",
+    "怎么用", "怎么实现", "是什么", "原理是什么", "有啥用",
+    "继续", "再说说", "详细说说", "展开说说",
+}
+
+
+def _needs_query_rewrite(query: str) -> bool:
+    """规则判断：查询是否需要重写（是否含指代词/省略语）
+
+    Args:
+        query: 用户查询
+
+    Returns:
+        True 表示需要考虑重写
+    """
+    if not query:
+        return False
+    # 查询过短（<5 字符）且不含明确实体时，可能是追问
+    if len(query) < 5:
+        return True
+    # 含指代词/省略语
+    for trigger in _REWRITE_TRIGGERS:
+        if trigger in query:
+            return True
+    return False
+
+
+def _rewrite_query_with_context(query: str) -> str:
+    """根据对话上下文重写查询（消解指代词）
+
+    三级判断（避免不必要的 LLM 调用）：
+    1. 无对话上下文 → 跳过（首轮对话或上下文未设置）
+    2. 规则判断：查询不含指代词/省略语 → 跳过（完整查询不需要重写）
+    3. LLM 重写：有指代词 + 有上下文 → 用 LLM 根据对话历史重写
+
+    Args:
+        query: 原始查询
+
+    Returns:
+        重写后的查询（重写失败时返回原查询，静默降级）
+    """
+    # 第一级：无对话上下文，直接返回
+    if not _conversation_context:
+        return query
+
+    # 第二级：规则判断是否需要重写
+    if not _needs_query_rewrite(query):
+        return query
+
+    # 第三级：用 LLM 重写
+    # 先查缓存（相同 query + context 不重复调用）
+    context_hash = hashlib.md5(
+        "|".join(_conversation_context).encode()
+    ).hexdigest()[:8]
+    cache_key = f"{query}::{context_hash}"
+    with _query_rewrite_cache_lock:
+        if cache_key in _query_rewrite_cache:
+            cached = _query_rewrite_cache[cache_key]
+            logger.debug(f"查询重写缓存命中: '{query}' → '{cached}'")
+            return cached
+
+    # LLM 重写
+    if not _query_rewriter_llm:
+        logger.debug("查询重写 LLM 未初始化，跳过")
+        return query
+
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        # 构建重写 prompt（轻量，限制输出长度）
+        context_str = "\n".join(_conversation_context[-4:])  # 最近 2 轮
+        rewrite_prompt = f"""根据对话历史，将用户的追问重写为完整的独立查询。
+
+要求：
+1. 把指代词（它、这个、那个等）替换为对话中的具体实体
+2. 补全省略的主语或宾语
+3. 保持原意，不要添加额外信息
+4. 直接输出重写后的查询，不要加任何解释或引号
+
+对话历史：
+{context_str}
+
+用户追问：{query}
+
+重写后的查询："""
+
+        messages = [
+            SystemMessage(content="你是一个查询重写助手，只输出重写后的查询文本。"),
+            HumanMessage(content=rewrite_prompt),
+        ]
+
+        # 同步调用 LLM（search_knowledge 是同步工具）
+        response = _query_rewriter_llm.invoke(messages)
+        rewritten = (response.content or "").strip().strip('"\'').strip()
+
+        # 重写结果为空或与原查询相同，不使用
+        if not rewritten or rewritten == query:
+            logger.debug(f"查询重写无变化: '{query}'")
+            return query
+
+        # 限制重写结果长度（避免 LLM 生成过长文本）
+        if len(rewritten) > 200:
+            rewritten = rewritten[:200]
+
+        # 缓存
+        with _query_rewrite_cache_lock:
+            _query_rewrite_cache[cache_key] = rewritten
+            # 缓存淘汰：超过 100 条时清空一半
+            if len(_query_rewrite_cache) > 100:
+                _query_rewrite_cache.clear()
+                _query_rewrite_cache[cache_key] = rewritten
+
+        logger.info(f"查询重写: '{query}' → '{rewritten}'")
+        return rewritten
+
+    except Exception as e:
+        logger.debug(f"查询重写失败（静默降级）: {e}")
+        return query
+
+
 class ToolCache:
-    """工具结果缓存"""
+    """工具结果缓存
+
+    底层使用可插拔缓存层（app.core.cache）：
+    - 配置了 REDIS_URL → RedisCache（多 worker 共享）
+    - 未配置或连接失败 → MemoryCache（进程内）
+    """
 
     def __init__(self, ttl: int = 300):  # 默认 5 分钟过期
-        self._cache: Dict[str, Any] = {}
-        self._ttl = ttl
-
-    def _make_key(self, func_name: str, *args, **kwargs) -> str:
-        """生成缓存键"""
-        key_str = f"{func_name}:{args}:{sorted(kwargs.items())}"
-        return hashlib.md5(key_str.encode()).hexdigest()
+        from ..core.cache import get_cache
+        self._backend = get_cache(ttl)
 
     def get(self, func_name: str, *args, **kwargs) -> Optional[Any]:
         """获取缓存"""
-        key = self._make_key(func_name, *args, **kwargs)
-        if key in self._cache:
-            result, timestamp = self._cache[key]
-            if time.time() - timestamp < self._ttl:
-                logger.debug(f"缓存命中: {func_name}")
-                return result
-            else:
-                del self._cache[key]
-        return None
+        result = self._backend.get(func_name, *args, **kwargs)
+        if result is not None:
+            logger.debug(f"缓存命中: {func_name}")
+        return result
 
     def set(self, func_name: str, result: Any, *args, **kwargs):
         """设置缓存"""
-        key = self._make_key(func_name, *args, **kwargs)
-        self._cache[key] = (result, time.time())
+        self._backend.set(func_name, result, *args, **kwargs)
         logger.debug(f"缓存设置: {func_name}")
 
     def clear(self):
         """清空缓存"""
-        self._cache.clear()
+        self._backend.clear()
 
 
 # 全局缓存实例
@@ -70,49 +368,107 @@ def set_knowledge_store(store):
 @tool
 def search_knowledge(query: str, limit: int = 5) -> str:
     """
-    搜索用户的私有知识库
+    搜索企业知识库
 
-    仅用于查询用户上传的文档、笔记、资料等私有知识库内容。
-    使用混合检索（关键词 + 语义 + RRF 融合）从本地知识库中搜索。
-
-    不适用于通用知识问题（如编程概念、框架原理、常见术语解释等），
-    这类问题应该直接由 AI 用训练知识回答。
+    使用混合检索（关键词 + 语义 + RRF 融合）从知识库中搜索文档内容。
+    自动按当前用户身份过滤，只返回该用户有权访问的文档（公共文档 + 本人私有文档）。
 
     适用于：
-    - 查找用户上传的文档内容
-    - 搜索用户私有知识库
-    - 获取用户资料中的参考资料
+    - 技术问题（API用法、配置方法、操作步骤）
+    - 运维操作（备份、部署、监控）
+    - 流程规范（上线流程、代码规范）
+    - 架构设计、故障排查
+    - 任何涉及企业内部文档的问题
 
     Args:
         query: 搜索关键词
         limit: 返回结果数量
 
     Returns:
-        str: 搜索结果
+        str: 搜索结果（带 [N] 编号，供 LLM 内联引用）
     """
-    global _retriever, _knowledge_store, _tool_cache
+    global _retriever, _knowledge_store, _tool_cache, _current_user_id
 
-    # 检查缓存
-    cached = _tool_cache.get("search_knowledge", query, limit)
+    # 多轮对话指代消解：根据对话上下文重写查询
+    # 例如：用户追问"它的路由怎么定义？" → 重写为"FastAPI 的路由怎么定义？"
+    rewritten_query = _rewrite_query_with_context(query)
+    # 后续检索和缓存都使用重写后的查询
+    search_query = rewritten_query if rewritten_query != query else query
+
+    # 检查缓存（缓存键含 user_id，避免跨用户泄漏）
+    cached = _tool_cache.get("search_knowledge", search_query, limit, _current_user_id or "")
     if cached is not None:
+        # 缓存命中时，结构化数据也要写入 buffer（供 Agent 生成 citations）
+        if isinstance(cached, (tuple, list)):  # list: Redis JSON 反序列化后
+            text, artifact = cached
+            _append_retrieval_buffer(artifact)
+            return text
         return cached
 
     try:
         if _knowledge_store:
             # 使用混合检索（BM25 + Vector + RRF 融合 + 查询重写）
+            # search_query 已经经过对话指代消解，rewrite_query=True 再做 RAG 层三级重写
+            # 传入 user_id 做文档权限过滤（公共文档 + 本人私有文档）
             results = _knowledge_store.hybrid_search_parent_child(
-                query, top_k=limit, rewrite_query=True
+                search_query, top_k=limit, rewrite_query=True,
+                user_id=_current_user_id,
             )
+
+            # 检索质量评估：结果过少或最高分过低时，用 LLM 生成替代查询重试一次
+            # 设计：用户提问角度可能和文档表述不一致，LLM 做同义词扩展/概念泛化弥补
+            if not _evaluate_retrieval_quality(results):
+                alt_query = _generate_alternative_query(search_query)
+                if alt_query:
+                    logger.info(f"检索质量低，替代查询重试: '{search_query}' -> '{alt_query}'")
+                    alt_results = _knowledge_store.hybrid_search_parent_child(
+                        alt_query, top_k=limit, rewrite_query=False,  # 替代 query 已是 LLM 重写的
+                        user_id=_current_user_id,
+                    )
+                    if alt_results:
+                        results = _merge_search_results(results or [], alt_results, limit)
+
             if results:
+                from ..core.sanitizer import sanitize_text
                 formatted = []
+                artifact = []  # 结构化引用数据，写入 buffer 供 Agent 生成 citations
                 for i, r in enumerate(results[:limit], 1):
                     title = r.get("title", "未知")
-                    content = r.get("content", "")[:300]
+                    # 放宽截断到 600 字符，保留更多上下文（父块内容）
+                    content = r.get("content", "")[:600]
+                    # 源头脱敏：防止敏感信息（手机号/身份证/API Key 等）进入 LLM context
+                    content = sanitize_text(content)
                     score = r.get("score", 0)
-                    formatted.append(f"{i}. **{title}** (相关度: {score:.2f})\n{content}")
-                result = "\n\n".join(formatted)
-                _tool_cache.set("search_knowledge", result, query, limit)
-                return result
+                    meta = r.get("metadata", {})
+                    heading_path = meta.get("heading_path_str", "") or " > ".join(meta.get("heading_path", []))
+
+                    # 给 LLM 的文本：带 [N] 编号，引导内联引用
+                    formatted.append(
+                        f"[{i}] **{title}** (相关度: {score:.2f})\n"
+                        f"章节: {heading_path}\n"
+                        f"{content}"
+                    )
+
+                    # 结构化数据：写入 buffer 供 Agent 生成 citations
+                    artifact.append({
+                        "index": i,
+                        "doc_id": meta.get("document_id", ""),
+                        "title": title,
+                        "heading_path": heading_path,
+                        "score": round(score, 4),
+                        "content": content,
+                        "image_path": meta.get("image_path"),
+                        "source": "knowledge_base",
+                    })
+
+                text = "\n\n".join(formatted) + "\n\n---\n请在回答中使用 [1]、[2] 等编号引用上述来源。"
+                # 写入 buffer（供 Agent._call_agent 读取）
+                _append_retrieval_buffer(artifact)
+                # 缓存 (text, artifact) 元组（缓存命中时重放 artifact 到 buffer）
+                # 缓存键含 user_id，与缓存检查一致，避免跨用户泄漏
+                _tool_cache.set("search_knowledge", (text, artifact), search_query, limit, _current_user_id or "")
+                return text
+
             return "未找到相关知识"
 
         return "知识库未初始化"
@@ -305,165 +661,6 @@ def generate_content(prompt: str, style: str = "technical") -> str:
 
 
 @tool
-def rag_search(query: str, limit: int = 5) -> str:
-    """
-    RAG 检索
-
-    使用混合检索（关键词 + 向量 + BM25）搜索知识库。
-    适用于：
-    - 精确问答
-    - 文档检索
-    - 知识查找
-
-    Args:
-        query: 搜索查询
-        limit: 返回结果数量
-
-    Returns:
-        str: 检索结果（包含引用）
-    """
-    global _knowledge_store
-
-    try:
-        import asyncio
-
-        if not _knowledge_store:
-            return "知识库未初始化"
-
-        # 使用混合检索
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        asyncio.run,
-                        _knowledge_store.hybrid_search_parent_child(query, top_k=limit)
-                    )
-                    results = future.result(timeout=30)
-            else:
-                results = asyncio.run(
-                    _knowledge_store.hybrid_search_parent_child(query, top_k=limit)
-                )
-        except Exception:
-            results = asyncio.run(
-                _knowledge_store.hybrid_search_parent_child(query, top_k=limit)
-            )
-
-        if not results:
-            return "未找到相关信息"
-
-        # 格式化结果（包含引用）
-        formatted = []
-        for i, r in enumerate(results[:limit], 1):
-            title = r.get("title", "未知")
-            content = r.get("content", "")[:300]
-            source = r.get("source", "unknown")
-            score = r.get("score", 0.0)
-
-            # 添加引用标记
-            formatted.append(f"[{i}] **{title}** (来源: {source}, 相关度: {score:.2f})\n{content}")
-
-        return "\n\n".join(formatted)
-
-    except Exception as e:
-        logger.error(f"RAG 检索失败: {e}")
-        return f"检索失败: {str(e)}"
-
-
-@tool
-def summarize_documents(query: str, max_docs: int = 5) -> str:
-    """
-    总结文档
-
-    搜索并总结相关文档内容。适用于：
-    - 快速了解某个主题
-    - 获取文档摘要
-    - 整理信息
-
-    Args:
-        query: 主题查询
-        max_docs: 最大文档数
-
-    Returns:
-        str: 总结内容
-    """
-    global _knowledge_store
-
-    try:
-        import asyncio
-        from ..core.ai_service import ai_service
-
-        if not _knowledge_store:
-            return "知识库未初始化"
-
-        # 搜索相关文档
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        asyncio.run,
-                        _knowledge_store.hybrid_search_parent_child(query, top_k=max_docs)
-                    )
-                    results = future.result(timeout=30)
-            else:
-                results = asyncio.run(
-                    _knowledge_store.hybrid_search_parent_child(query, top_k=max_docs)
-                )
-        except Exception:
-            results = asyncio.run(
-                _knowledge_store.hybrid_search_parent_child(query, top_k=max_docs)
-            )
-
-        if not results:
-            return "未找到相关文档"
-
-        # 构建总结提示
-        docs_text = "\n\n".join([
-            f"文档 {i+1}: {r.get('title', '未知')}\n{r.get('content', '')[:500]}"
-            for i, r in enumerate(results)
-        ])
-
-        prompt = f"""请总结以下文档的核心内容：
-
-主题：{query}
-
-文档内容：
-{docs_text}
-
-请提供：
-1. 核心要点（3-5 个）
-2. 关键概念
-3. 总结（100-200 字）
-"""
-
-        messages = [
-            {"role": "system", "content": "你是一个专业的文档总结专家。"},
-            {"role": "user", "content": prompt},
-        ]
-
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, ai_service.chat(messages))
-                    response = future.result(timeout=60)
-            else:
-                response = asyncio.run(ai_service.chat(messages))
-        except Exception:
-            response = asyncio.run(ai_service.chat(messages))
-
-        return response.get("content", "总结失败")
-
-    except Exception as e:
-        logger.error(f"文档总结失败: {e}")
-        return f"总结失败: {str(e)}"
-
-
-@tool
 def get_user_profile(user_id: str) -> str:
     """
     获取用户画像
@@ -567,8 +764,6 @@ def create_tools() -> list:
         web_search,
         crawl_webpage,
         generate_content,
-        rag_search,
-        summarize_documents,
         get_user_profile,
         save_memory,
         search_memory,

@@ -1,14 +1,14 @@
 """
 认证和授权模块
 JWT token管理和用户认证
+支持双模式：httpOnly cookie（主） + Authorization 头（兼容）
 """
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import jwt
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends, HTTPException, status, Request
 from pydantic import BaseModel, Field
 from loguru import logger
 from enum import Enum
@@ -20,9 +20,6 @@ from .database import db
 
 # 密码加密上下文
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# JWT Bearer认证
-security = HTTPBearer()
 
 
 # 数据模型
@@ -89,8 +86,39 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return encoded_jwt
 
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> UserResponse:
-    """获取当前用户（依赖注入）"""
+def get_user_id_from_request(request: Request) -> Optional[str]:
+    """从请求中提取 user_id（轻量级，不查数据库）
+
+    用于限流等不需要完整用户信息的场景。
+    优先从 cookie 读取 token，fallback 到 Authorization 头。
+
+    Args:
+        request: FastAPI 请求对象
+
+    Returns:
+        user_id 或 None（未认证/token 无效）
+    """
+    token = request.cookies.get("access_token")
+    if not token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        return payload.get("sub")
+    except Exception:
+        return None
+
+
+async def get_current_user(request: Request) -> UserResponse:
+    """获取当前用户（依赖注入）
+
+    双模式认证：
+    1. 优先从 httpOnly cookie 读取 token（主模式，防 XSS）
+    2. fallback 到 Authorization: Bearer 头（兼容模式，过渡期使用）
+    """
 
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -98,9 +126,21 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+    # 1. 优先从 cookie 读取 token
+    token = request.cookies.get("access_token")
+
+    # 2. fallback 到 Authorization 头（双模式兼容期）
+    if not token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+
+    if not token:
+        raise credentials_exception
+
     try:
         # 解码JWT
-        payload = jwt.decode(credentials.credentials, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         user_id: str = payload.get("sub")
         org_id: str = payload.get("org_id", "")
 

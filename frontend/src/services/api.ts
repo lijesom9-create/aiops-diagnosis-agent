@@ -12,35 +12,31 @@ import type {
 } from '@/types';
 
 // 创建axios实例
+// baseURL 通过 Vite 环境变量配置：
+//   - 开发环境 (.env.development): VITE_API_BASE_URL=/api（走 vite 代理）
+//   - 生产环境 (.env.production): VITE_API_BASE_URL=/api（走 nginx 反代）或完整域名
+// withCredentials: true 让浏览器自动发送 httpOnly cookie（认证 token）
 const api: AxiosInstance = axios.create({
-  baseURL: '/api',
+  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   timeout: 120000,  // Teaching Agent 可能需要较长时间
+  withCredentials: true,  // 自动携带 httpOnly cookie
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// 请求拦截器：添加token
-api.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('access_token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
-  }
-);
+// 请求拦截器：cookie 由浏览器自动管理，无需手动添加 Authorization 头
 
-// 响应拦截器：处理错误
+// 响应拦截器：处理 401 未授权（cookie 过期或无效）
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem('access_token');
-      window.location.href = '/login';
+      // cookie 由后端管理，前端只需跳转到登录页
+      // 页面刷新后 authStore 会重新初始化，checkAuth 会验证 cookie 有效性
+      if (!window.location.pathname.startsWith('/login')) {
+        window.location.href = '/login';
+      }
     }
     return Promise.reject(error);
   }
@@ -54,6 +50,9 @@ export const authApi = {
   login: (data: LoginRequest): Promise<AxiosResponse<Token>> =>
     api.post('/auth/login', data),
 
+  logout: (): Promise<AxiosResponse<{ message: string }>> =>
+    api.post('/auth/logout'),
+
   getMe: (): Promise<AxiosResponse<User>> =>
     api.get('/auth/me'),
 
@@ -61,280 +60,25 @@ export const authApi = {
     api.get('/auth/verify'),
 };
 
-// Teaching Agent API
-export interface TeachingResponse {
-  response: string;
-  skill_used: string;
-  session_id: string;
-  metadata?: Record<string, any>;
-  state_summary?: StateSummary;
-  lifecycle?: LifecycleInfo;
-  observability?: ObservabilityInfo;
-  learning_report?: LearningReport;
-}
-
-export interface StateSummary {
-  user_id: string;
-  profile?: {
-    major?: string;
-    year?: string;
-    learning_style?: string;
-  };
-  learning?: {
-    total_topics: number;
-    weak_topics_count: number;
-    strong_topics_count: number;
-    accuracy: number;
-    total_questions: number;
-    error_count: number;
-    unreviewed_errors: number;
-  };
-  behavior?: {
-    preferred_style: string;
-    prefers_examples: boolean;
-    likes_encouragement: boolean;
-  };
-  emotion?: {
-    confidence: string;
-    frustration: string;
-    engagement: string;
-    emotion_summary: string;
-  };
-  goal?: {
-    active_goals: number;
-    current_topic?: string;
-  };
-  session?: {
-    is_in_session: boolean;
-    current_session_id?: string;
-    total_sessions: number;
-  };
-  // 兼容旧格式
-  current_topic?: string;
-  total_topics: number;
-  weak_topics_count: number;
-  strong_topics_count: number;
-  accuracy: number;
-  total_questions: number;
-  error_count: number;
-}
-
-export interface LifecycleInfo {
-  agent_id: string;
-  status: string;
-  waiting_reason?: string;
-  error_message?: string;
-  retry_count: number;
-  max_retries: number;
-  created_at: string;
-  updated_at: string;
-  version: number;
-}
-
-export interface ObservabilityInfo {
-  trace: TraceStep[];
-  summary: string;
-}
-
-export interface TraceStep {
-  timestamp: string;
-  stage: string;
-  data: Record<string, any>;
-}
-
-export interface LearningReport {
-  user_id: string;
-  insights: LearningInsight[];
-  summary: string;
-  recommendations: string[];
-  metrics_snapshot?: Record<string, any>;
-  generated_at: string;
-}
-
 export interface LearningInsight {
-  id: string;
-  eval_ids: string[];
-  user_id: string;
+  id?: string;
+  eval_ids?: string[];
+  user_id?: string;
   category: string;
   finding: string;
   suggestion: string;
   confidence: number;
 }
 
-// 会话相关类型
-export interface SessionInfo {
-  session_id: string;
-  title: string;
-  created_at: string;
-  updated_at: string;
+export interface LearningReport {
+  user_id: string;
+  summary: string;
+  insights: LearningInsight[];
+  recommendations: string[];
+  metrics_snapshot?: Record<string, unknown>;
+  generated_at?: string;
 }
 
-export interface MessageInfo {
-  role: 'user' | 'assistant';
-  content: string;
-  skill_used?: string;
-  timestamp: string;
-}
-
-export const teachingApi = {
-  chat: (message: string, sessionId?: string): Promise<AxiosResponse<TeachingResponse>> =>
-    api.post('/teaching/chat', { message, session_id: sessionId }),
-
-  getState: (): Promise<AxiosResponse<StateSummary>> =>
-    api.get('/teaching/state'),
-
-  resetContext: (): Promise<AxiosResponse<{ message: string }>> =>
-    api.post('/teaching/reset'),
-
-  // 会话管理
-  createSession: (title?: string): Promise<AxiosResponse<{ session_id: string; title: string }>> =>
-    api.post('/teaching/sessions', { title: title || '新对话' }),
-
-  listSessions: (): Promise<AxiosResponse<{ sessions: SessionInfo[] }>> =>
-    api.get('/teaching/sessions'),
-
-  getSessionMessages: (sessionId: string, limit?: number): Promise<AxiosResponse<{ messages: MessageInfo[] }>> =>
-    api.get(`/teaching/sessions/${sessionId}/messages`, { params: { limit: limit || 50 } }),
-};
-
-/**
- * SSE 流式聊天
- * 使用 fetch + ReadableStream 消费 Server-Sent Events
- */
-export interface StreamCallbacks {
-  onStart?: (data: { skill: string; session_id: string }) => void;
-  onChunk?: (content: string) => void;
-  onDone?: (metadata: Record<string, any>) => void;
-  onError?: (message: string) => void;
-}
-
-export async function chatStream(
-  message: string,
-  sessionId: string | undefined,
-  callbacks: StreamCallbacks,
-): Promise<void> {
-  const token = localStorage.getItem('access_token');
-  const response = await fetch('/api/teaching/chat/stream', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ message, session_id: sessionId }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-
-  const reader = response.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data: ')) continue;
-
-        try {
-          const data = JSON.parse(trimmed.slice(6));
-          switch (data.type) {
-            case 'start':
-              callbacks.onStart?.(data);
-              break;
-            case 'chunk':
-              callbacks.onChunk?.(data.content);
-              break;
-            case 'done':
-              callbacks.onDone?.(data.metadata);
-              break;
-            case 'error':
-              callbacks.onError?.(data.message);
-              break;
-          }
-        } catch {
-          // 忽略解析错误
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-/**
- * V2 SSE 流式聊天（Agent-Centric 架构）
- * LLM 为中心，自主决策调用工具
- */
-export async function chatStreamV2(
-  message: string,
-  sessionId: string | undefined,
-  callbacks: StreamCallbacks,
-): Promise<void> {
-  const token = localStorage.getItem('access_token');
-  const response = await fetch('/api/teaching/v2/chat/stream', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ message, session_id: sessionId }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-
-  const reader = response.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data: ')) continue;
-
-        try {
-          const data = JSON.parse(trimmed.slice(6));
-          switch (data.type) {
-            case 'start':
-              callbacks.onStart?.(data);
-              break;
-            case 'chunk':
-              callbacks.onChunk?.(data.content);
-              break;
-            case 'done':
-              callbacks.onDone?.(data.metadata);
-              break;
-            case 'error':
-              callbacks.onError?.(data.message);
-              break;
-          }
-        } catch {
-          // 忽略解析错误
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
 
 // ========== 学习主题 API ==========
 
@@ -461,21 +205,6 @@ export interface EvaluationSummary {
   average_score: number;
   latest_score: number | null;
   improvement_trend: string;
-}
-
-export interface LearningInsight {
-  category: string;
-  finding: string;
-  suggestion: string;
-  confidence: number;
-}
-
-export interface LearningReport {
-  user_id: string;
-  summary: string;
-  insights: LearningInsight[];
-  recommendations: string[];
-  metrics_snapshot?: Record<string, any>;
 }
 
 export const evaluationApi = {
@@ -718,39 +447,6 @@ export interface ChatRequest {
   use_rag?: boolean;
 }
 
-export interface ChatResponse {
-  answer: string;
-  sources: Array<{ title: string; content: string }>;
-  session_id: string;
-  metadata: Record<string, any>;
-}
-
-export interface HistoryMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: string;
-}
-
-export const chatApi = {
-  sendMessage: (message: string, sessionId?: string, useWebSearch?: boolean): Promise<ChatResponse> =>
-    api.post('/langgraph/chat', { message, session_id: sessionId, use_web_search: useWebSearch || false }).then(res => ({
-      answer: res.data.content,
-      sources: res.data.citations || [],
-      session_id: res.data.session_id || sessionId || 'default',
-      metadata: { tools_used: res.data.tools_used, step_count: res.data.step_count },
-    })),
-
-  getHistory: (sessionId?: string, limit?: number): Promise<{ session_id: string; messages: HistoryMessage[]; total: number }> =>
-    api.get('/chat/history', { params: { session_id: sessionId, limit: limit || 20 } }).then(res => res.data),
-
-  clearHistory: (sessionId?: string): Promise<{ message: string }> =>
-    api.delete('/chat/history', { params: { session_id: sessionId } }).then(res => res.data),
-
-  getSessions: (): Promise<{ sessions: Array<{ session_id: string; created_at: string; updated_at: string; turn_count: number }> }> =>
-    api.get('/chat/sessions').then(res => res.data),
-};
-
 // ========== 文档管理 API (新版) ==========
 
 export interface DocumentInfo {
@@ -761,15 +457,18 @@ export interface DocumentInfo {
   chunk_count: number;
   char_count: number;
   created_at: string;
+  category: string;
+  tags: string[];
 }
 
 export const documentsApiNew = {
-  list: (): Promise<{ documents: DocumentInfo[]; total: number }> =>
-    api.get('/documents/').then(res => res.data),
+  list: (category?: string): Promise<{ documents: DocumentInfo[]; total: number }> =>
+    api.get('/documents/', { params: category ? { category } : {} }).then(res => res.data),
 
-  upload: (file: File): Promise<{ document_id: string; filename: string; status: string }> => {
+  upload: (file: File, category: string = 'other'): Promise<{ document_id: string; filename: string; status: string }> => {
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('category', category);
     return api.post('/documents/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }).then(res => res.data);
@@ -827,6 +526,186 @@ export const memoryApi = {
 
   clearAll: (): Promise<{ message: string; stats: Record<string, number> }> =>
     api.delete('/memory/clear').then(res => res.data),
+};
+
+// ========== LangGraph Agent API（流式聊天 + 会话管理） ==========
+
+/** 引用溯源数据结构（匹配后端 citations） */
+export interface Citation {
+  index: number;
+  doc_id: string;
+  title: string;
+  heading_path: string;
+  score: number;
+  source: string;
+  image_path?: string | null;
+}
+
+/** 会话列表项（匹配后端 SessionItem） */
+export interface LangGraphSession {
+  session_id: string;
+  user_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+/** 消息项（匹配后端 MessageItem） */
+export interface LangGraphMessage {
+  role: string;
+  content: string;
+  tools_used?: string[] | null;
+  timestamp?: string | null;
+}
+
+/** SSE 流式事件回调 */
+export interface LangGraphStreamCallbacks {
+  onStart?: (sessionId: string) => void;
+  onToken?: (content: string) => void;
+  onToolCalls?: (tools: string[]) => void;
+  onToolResult?: (name: string, content: string) => void;
+  onReflection?: (content: string) => void;
+  onDone?: (data: { tools_used: string[]; step_count: number; citations: Citation[]; session_id: string; sanitized_content?: string }) => void;
+  onError?: (message: string) => void;
+}
+
+/**
+ * LangGraph 流式聊天
+ * 调用 /api/langgraph/chat/stream，消费 SSE 事件
+ */
+export async function langgraphChatStream(
+  message: string,
+  sessionId: string | undefined,
+  useWebSearch: boolean,
+  callbacks: LangGraphStreamCallbacks,
+): Promise<void> {
+  // 使用 AbortController 实现超时（fetch 不继承 axios 的 timeout 配置）
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+  let response: Response;
+  try {
+    response = await fetch('/api/langgraph/chat/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',  // 自动携带 httpOnly cookie
+      body: JSON.stringify({
+        message,
+        session_id: sessionId,
+        use_web_search: useWebSearch,
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('请求超时，请稍后重试');
+    }
+    throw err;
+  }
+
+  if (!response.ok) {
+    clearTimeout(timeoutId);
+    throw new Error(`HTTP ${response.status}`);
+  }
+
+  // 校验 body 是否存在（非空断言不安全）
+  if (!response.body) {
+    clearTimeout(timeoutId);
+    throw new Error('响应体为空');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+
+        try {
+          const data = JSON.parse(trimmed.slice(6));
+          switch (data.type) {
+            case 'start':
+              callbacks.onStart?.(data.session_id);
+              break;
+            case 'token':
+              callbacks.onToken?.(data.content || '');
+              break;
+            case 'tool_calls':
+              callbacks.onToolCalls?.(data.tools || []);
+              break;
+            case 'tool_result':
+              callbacks.onToolResult?.(data.name || '', data.content || '');
+              break;
+            case 'reflection':
+              callbacks.onReflection?.(data.content || '');
+              break;
+            case 'done':
+              callbacks.onDone?.({
+                tools_used: data.tools_used || [],
+                step_count: data.step_count || 0,
+                citations: data.citations || [],
+                session_id: data.session_id || '',
+                sanitized_content: data.sanitized_content,
+              });
+              break;
+            case 'error':
+              callbacks.onError?.(data.content || '未知错误');
+              break;
+          }
+        } catch {
+          // 忽略 JSON 解析错误
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    reader.releaseLock();
+  }
+}
+
+/** LangGraph 会话管理 API */
+export const langgraphApi = {
+  /** 创建新会话 */
+  createSession: (title?: string): Promise<LangGraphSession> =>
+    api.post('/langgraph/sessions', { title: title || '新对话' }).then(res => res.data),
+
+  /** 列出当前用户所有会话 */
+  listSessions: (limit?: number): Promise<{ sessions: LangGraphSession[]; total: number }> =>
+    api.get('/langgraph/sessions', { params: limit ? { limit } : {} }).then(res => res.data),
+
+  /** 获取会话消息历史 */
+  getSessionMessages: (sessionId: string, limit?: number): Promise<{ session_id: string; messages: LangGraphMessage[]; total: number }> =>
+    api.get(`/langgraph/sessions/${sessionId}/messages`, { params: { limit: limit || 100 } }).then(res => res.data),
+
+  /** 重命名会话标题 */
+  updateSession: (sessionId: string, title: string): Promise<LangGraphSession> =>
+    api.patch(`/langgraph/sessions/${sessionId}`, { title }).then(res => res.data),
+
+  /** 删除会话 */
+  deleteSession: (sessionId: string): Promise<{ message: string; session_id: string }> =>
+    api.delete(`/langgraph/sessions/${sessionId}`).then(res => res.data),
+
+  /** 提交答案反馈 */
+  submitFeedback: (data: { session_id: string; message_content: string; rating: 'positive' | 'negative'; comment?: string }): Promise<{ feedback_id: string; message: string }> =>
+    api.post('/langgraph/feedback', data).then(res => res.data),
+
+  /** 获取反馈统计 */
+  getFeedbackStats: (): Promise<{ total: number; positive: number; negative: number; satisfaction_rate: number }> =>
+    api.get('/langgraph/feedback/stats').then(res => res.data),
 };
 
 export default api;

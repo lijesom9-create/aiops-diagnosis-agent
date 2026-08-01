@@ -1,5 +1,5 @@
 /**
- * 注册页面
+ * 注册页面 — 极简风格
  */
 
 import { useState } from 'react';
@@ -23,7 +23,6 @@ export default function RegisterPage() {
     clearError();
     setLocalError('');
 
-    // 验证密码
     if (password !== confirmPassword) {
       setLocalError('两次输入的密码不一致');
       return;
@@ -35,169 +34,158 @@ export default function RegisterPage() {
     }
 
     try {
-      await register({ username, password, email, role });
+      await register({ username, password, email, role, org_name: `个人_${username}` });
       navigate('/');
-    } catch (error) {
-      // 错误已在store中处理
+    } catch {
+      // 错误已在 store 中处理
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-      <div className="w-full max-w-md">
-        {/* Logo */}
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-blue-600 mb-2">🎓</h1>
-          <h2 className="text-2xl font-bold text-gray-900">注册账号</h2>
-          <p className="text-gray-600 mt-2">创建你的学习账号，开始智能学习之旅</p>
+    <div className="min-h-screen flex items-center justify-center bg-zinc-50 px-4">
+      <div className="w-full max-w-sm">
+        {/* 标题 */}
+        <div className="mb-8">
+          <h1 className="text-xl font-semibold text-zinc-900 tracking-tight">创建账号</h1>
+          <p className="mt-1.5 text-[13px] text-zinc-500">注册以开始使用</p>
         </div>
 
-        {/* 注册表单 */}
-        <div className="card">
-          <form onSubmit={handleSubmit} className="space-y-5">
-            {/* 错误提示 */}
-            {(error || localError) && (
-              <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
-                {error || localError}
-              </div>
-            )}
-
-            {/* 用户名 */}
-            <div>
-              <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-2">
-                用户名
-              </label>
-              <input
-                id="username"
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="input"
-                placeholder="请输入用户名"
-                required
-                disabled={isLoading}
-              />
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {(error || localError) && (
+            <div className="px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[13px] text-red-600">
+              {error || localError}
             </div>
+          )}
 
-            {/* 邮箱 */}
-            <div>
-              <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
-                邮箱
-              </label>
-              <input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="input"
-                placeholder="请输入邮箱"
-                required
-                disabled={isLoading}
-              />
-            </div>
-
-            {/* 角色选择 */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                角色
-              </label>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setRole('student')}
-                  className={`p-3 rounded-lg border-2 transition-colors ${
-                    role === 'student'
-                      ? 'border-blue-500 bg-blue-50 text-blue-700'
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
-                >
-                  <div className="text-2xl mb-1">👨‍🎓</div>
-                  <div className="font-medium">学生</div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRole('teacher')}
-                  className={`p-3 rounded-lg border-2 transition-colors ${
-                    role === 'teacher'
-                      ? 'border-blue-500 bg-blue-50 text-blue-700'
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
-                >
-                  <div className="text-2xl mb-1">👨‍🏫</div>
-                  <div className="font-medium">教师</div>
-                </button>
-              </div>
-            </div>
-
-            {/* 密码 */}
-            <div>
-              <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-2">
-                密码
-              </label>
-              <div className="relative">
-                <input
-                  id="password"
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="input pr-10"
-                  placeholder="请输入密码（至少6位）"
-                  required
-                  minLength={6}
-                  disabled={isLoading}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
-                >
-                  {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
-                </button>
-              </div>
-            </div>
-
-            {/* 确认密码 */}
-            <div>
-              <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 mb-2">
-                确认密码
-              </label>
-              <input
-                id="confirmPassword"
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                className="input"
-                placeholder="请再次输入密码"
-                required
-                disabled={isLoading}
-              />
-            </div>
-
-            {/* 注册按钮 */}
-            <button
-              type="submit"
-              className="btn-primary w-full flex items-center justify-center space-x-2"
+          <div>
+            <label htmlFor="username" className="block text-[13px] font-medium text-zinc-700 mb-1.5">
+              用户名
+            </label>
+            <input
+              id="username"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="input"
+              placeholder="请输入用户名"
+              required
               disabled={isLoading}
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 size={20} className="animate-spin" />
-                  <span>注册中...</span>
-                </>
-              ) : (
-                <span>注册</span>
-              )}
-            </button>
-          </form>
-
-          {/* 登录链接 */}
-          <div className="mt-6 text-center text-sm text-gray-600">
-            已有账号？{' '}
-            <Link to="/login" className="text-blue-600 hover:text-blue-700 font-medium">
-              立即登录
-            </Link>
+              autoFocus
+            />
           </div>
-        </div>
+
+          <div>
+            <label htmlFor="email" className="block text-[13px] font-medium text-zinc-700 mb-1.5">
+              邮箱
+            </label>
+            <input
+              id="email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="input"
+              placeholder="请输入邮箱"
+              required
+              disabled={isLoading}
+            />
+          </div>
+
+          {/* 角色选择 */}
+          <div>
+            <label className="block text-[13px] font-medium text-zinc-700 mb-1.5">
+              角色
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setRole('student')}
+                className={`px-3 py-2 rounded-lg text-[13px] font-medium border transition-colors ${
+                  role === 'student'
+                    ? 'border-zinc-900 bg-zinc-900 text-white'
+                    : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'
+                }`}
+              >
+                学生
+              </button>
+              <button
+                type="button"
+                onClick={() => setRole('teacher')}
+                className={`px-3 py-2 rounded-lg text-[13px] font-medium border transition-colors ${
+                  role === 'teacher'
+                    ? 'border-zinc-900 bg-zinc-900 text-white'
+                    : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'
+                }`}
+              >
+                教师
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor="password" className="block text-[13px] font-medium text-zinc-700 mb-1.5">
+              密码
+            </label>
+            <div className="relative">
+              <input
+                id="password"
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="input pr-9"
+                placeholder="至少 6 位"
+                required
+                minLength={6}
+                disabled={isLoading}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor="confirmPassword" className="block text-[13px] font-medium text-zinc-700 mb-1.5">
+              确认密码
+            </label>
+            <input
+              id="confirmPassword"
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              className="input"
+              placeholder="再次输入密码"
+              required
+              disabled={isLoading}
+            />
+          </div>
+
+          <button
+            type="submit"
+            className="btn-primary w-full"
+            disabled={isLoading}
+          >
+            {isLoading ? (
+              <>
+                <Loader2 size={15} className="animate-spin" />
+                <span>注册中</span>
+              </>
+            ) : (
+              <span>注册</span>
+            )}
+          </button>
+        </form>
+
+        <p className="mt-6 text-center text-[13px] text-zinc-500">
+          已有账号？{' '}
+          <Link to="/login" className="text-zinc-900 font-medium hover:underline underline-offset-2">
+            登录
+          </Link>
+        </p>
       </div>
     </div>
   );

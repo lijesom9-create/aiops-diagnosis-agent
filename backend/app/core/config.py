@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     # 应用基础配置
     APP_NAME: str = "教育培训Agent"
     APP_VERSION: str = "1.0.0"
+    # 运行环境：development | production
+    # production 模式下会强制校验 SECRET_KEY、收窄 CORS、禁用 DEBUG
+    ENV: str = "development"
     DEBUG: bool = False
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -25,7 +28,7 @@ class Settings(BaseSettings):
     MONGODB_DB_NAME: str = "education_agent"
 
     # JWT配置
-    SECRET_KEY: str = ""  # 将在运行时自动生成
+    SECRET_KEY: str = ""  # development 模式下自动生成；production 模式下必须显式设置
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
@@ -103,6 +106,8 @@ class Settings(BaseSettings):
     RATE_LIMIT_RPS: float = 2.0
     # 限流桶容量：允许的瞬时突发量
     RATE_LIMIT_CAPACITY: int = 5
+    # API 请求限流：每用户每分钟最大请求数（聊天接口）
+    RATE_LIMIT_RPM: int = 30
 
     # ========== 多模态 RAG ==========
     # 总开关：是否启用多模态（图片 caption + 表格 summary）
@@ -168,21 +173,66 @@ class Settings(BaseSettings):
     # CORS配置（逗号分隔的字符串）
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 
-    @field_validator("SECRET_KEY", mode="before")
+    @field_validator("ENV", mode="before")
     @classmethod
-    def generate_secret_key(cls, v: str) -> str:
-        """如果 SECRET_KEY 为空，则自动生成随机密钥"""
-        if not v or v == "your-secret-key-change-in-production":
-            # 自动生成随机密钥（每次启动都不同，适合开发环境）
-            # 生产环境必须通过环境变量设置固定密钥
-            # HS256 要求密钥至少 32 字节，token_urlsafe(48) 解码后约 36 字节
+    def normalize_env(cls, v: str) -> str:
+        """规范化 ENV 字段"""
+        v = (v or "development").strip().lower()
+        if v not in ("development", "production", "test"):
+            raise ValueError(f"ENV 必须是 development/production/test，当前值: {v}")
+        return v
+
+    @field_validator("VECTOR_STORE_BACKEND", mode="after")
+    @classmethod
+    def validate_vector_store(cls, v: str, info) -> str:
+        """生产环境强制使用 qdrant（项目硬约束）；开发环境允许 chroma/qdrant"""
+        env = info.data.get("ENV", "development")
+        v = (v or "").strip().lower()
+        if v not in ("chroma", "qdrant"):
+            raise ValueError(f"VECTOR_STORE_BACKEND 必须是 chroma 或 qdrant，当前值: {v}")
+        if env == "production" and v != "qdrant":
+            raise ValueError("生产环境必须使用 qdrant 作为向量存储后端（项目硬约束）")
+        return v
+
+    @field_validator("SECRET_KEY", mode="after")
+    @classmethod
+    def validate_secret_key(cls, v: str, info) -> str:
+        """SECRET_KEY 校验：
+        - production: 必须显式设置且长度 >= 32 字节，禁止使用占位符
+        - development: 为空或占位符时自动生成随机密钥（每次启动不同，仅本地用）
+        """
+        env = info.data.get("ENV", "development")
+        placeholder = "your-secret-key-change-in-production"
+
+        if env == "production":
+            if not v or v == placeholder:
+                raise ValueError(
+                    "生产环境必须通过 SECRET_KEY 环境变量显式设置一个固定密钥，"
+                    "不能为空或使用占位符（否则每次重启会导致所有 JWT 失效）"
+                )
+            if len(v) < 32:
+                raise ValueError("生产环境 SECRET_KEY 至少 32 字节，建议用 `python -c \"import secrets; print(secrets.token_urlsafe(48))\"` 生成")
+            return v
+
+        # development: 自动生成
+        if not v or v == placeholder:
             return secrets.token_urlsafe(48)
         return v
 
     @property
+    def is_production(self) -> bool:
+        """是否为生产环境"""
+        return self.ENV == "production"
+
+    @property
+    def is_development(self) -> bool:
+        """是否为开发环境（含测试环境，二者安全策略一致）"""
+        return self.ENV in ("development", "test")
+
+    @property
     def cors_origins_list(self) -> List[str]:
         """将逗号分隔的字符串转换为列表"""
-        return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -1,190 +1,178 @@
 /**
- * 全局样式
- * 使用Tailwind CSS
+ * 全局样式 — 极简设计系统
+ * 原则：中性灰为主，黑色强调，大量留白，无花哨效果
  */
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* 自定义基础样式 */
+/* ========== 基础重置 ========== */
 @layer base {
   body {
-    @apply bg-gray-50 text-gray-900 antialiased;
+    @apply bg-white text-zinc-900 antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 
-  /* 滚动条样式 */
+  /* 滚动条 — 极细、中性 */
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 4px;
+    height: 4px;
   }
-
   ::-webkit-scrollbar-track {
-    @apply bg-gray-100;
+    background: transparent;
   }
-
   ::-webkit-scrollbar-thumb {
-    @apply bg-gray-300 rounded-full;
+    @apply bg-zinc-200 rounded-full;
   }
-
   ::-webkit-scrollbar-thumb:hover {
-    @apply bg-gray-400;
+    @apply bg-zinc-300;
   }
 }
 
-/* 自定义组件样式 */
+/* ========== 组件样式 ========== */
 @layer components {
-  /* 按钮样式 */
+  /* 按钮 */
   .btn {
-    @apply px-4 py-2 rounded-lg font-medium transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium
+           transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed
+           focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-1;
   }
 
   .btn-primary {
-    @apply btn bg-blue-500 text-white hover:bg-blue-600 active:bg-blue-700;
+    @apply btn bg-zinc-900 text-white hover:bg-zinc-800 active:bg-zinc-950;
   }
 
   .btn-secondary {
-    @apply btn bg-gray-200 text-gray-700 hover:bg-gray-300 active:bg-gray-400;
+    @apply btn bg-white text-zinc-700 border border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300;
   }
 
   .btn-danger {
-    @apply btn bg-red-500 text-white hover:bg-red-600 active:bg-red-700;
+    @apply btn bg-red-600 text-white hover:bg-red-700;
   }
 
-  /* 输入框样式 */
+  .btn-ghost {
+    @apply btn bg-transparent text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900;
+  }
+
+  /* 输入框 */
   .input {
-    @apply w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200;
+    @apply w-full px-3.5 py-2 text-sm bg-white border border-zinc-200 rounded-lg
+           transition-colors duration-150 placeholder:text-zinc-400
+           focus:outline-none focus:border-zinc-400 focus:ring-0;
   }
 
-  /* 卡片样式 */
+  textarea.input {
+    @apply resize-none leading-relaxed;
+  }
+
+  /* 卡片 */
   .card {
-    @apply bg-white rounded-xl shadow-sm border border-gray-200 p-6;
+    @apply bg-white border border-zinc-200 rounded-xl;
   }
 
-  /* 消息气泡样式 */
-  .message-bubble {
-    @apply max-w-[80%] px-4 py-3 rounded-2xl;
+  /* 标签 */
+  .tag {
+    @apply inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-md;
+  }
+  .tag-default {
+    @apply tag bg-zinc-100 text-zinc-600;
+  }
+  .tag-success {
+    @apply tag bg-green-50 text-green-700;
+  }
+  .tag-warning {
+    @apply tag bg-amber-50 text-amber-700;
+  }
+  .tag-error {
+    @apply tag bg-red-50 text-red-700;
   }
 
+  /* 消息布局 — 无气泡，用留白分隔 */
   .message-user {
-    @apply message-bubble bg-blue-500 text-white ml-auto;
+    @apply bg-zinc-50 border border-zinc-200 rounded-lg px-4 py-2.5 text-sm;
   }
-
   .message-assistant {
-    @apply message-bubble bg-white text-gray-900 border border-gray-200;
+    @apply text-sm leading-relaxed;
   }
 
-  /* 打字动画 */
+  /* 打字指示器 */
   .typing-indicator {
-    @apply flex space-x-1;
+    @apply flex items-center gap-1 text-zinc-400;
   }
-
   .typing-indicator span {
-    @apply w-2 h-2 bg-gray-400 rounded-full animate-bounce;
+    @apply w-1 h-1 bg-zinc-400 rounded-full animate-bounce;
   }
-
-  .typing-indicator span:nth-child(2) {
-    animation-delay: 0.1s;
-  }
-
-  .typing-indicator span:nth-child(3) {
-    animation-delay: 0.2s;
-  }
+  .typing-indicator span:nth-child(2) { animation-delay: 0.1s; }
+  .typing-indicator span:nth-child(3) { animation-delay: 0.2s; }
 }
 
-/* 动画 */
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
+/* ========== 动画 ========== */
 .animate-fade-in {
-  animation: fadeIn 0.3s ease-out;
+  animation: fadeIn 0.2s ease-out;
+}
+.animate-slide-up {
+  animation: slideUp 0.2s ease-out;
 }
 
-/* Markdown样式 */
+/* ========== Markdown 样式 ========== */
+.markdown-content {
+  @apply text-sm leading-relaxed text-zinc-800;
+}
+.markdown-content > *:first-child {
+  @apply mt-0;
+}
+.markdown-content > *:last-child {
+  @apply mb-0;
+}
 .markdown-content h1,
 .markdown-content h2,
 .markdown-content h3 {
-  @apply font-bold mt-4 mb-2;
+  @apply font-semibold text-zinc-900 mt-5 mb-2;
 }
-
-.markdown-content h1 {
-  @apply text-2xl;
-}
-
-.markdown-content h2 {
-  @apply text-xl;
-}
-
-.markdown-content h3 {
-  @apply text-lg;
-}
-
+.markdown-content h1 { @apply text-lg; }
+.markdown-content h2 { @apply text-base; }
+.markdown-content h3 { @apply text-sm; }
 .markdown-content p {
   @apply mb-3;
 }
-
 .markdown-content ul,
 .markdown-content ol {
-  @apply pl-6 mb-3;
+  @apply pl-4 mb-3 space-y-1;
 }
-
-.markdown-content ul {
-  @apply list-disc;
-}
-
-.markdown-content ol {
-  @apply list-decimal;
-}
-
+.markdown-content ul { @apply list-disc; }
+.markdown-content ol { @apply list-decimal; }
 .markdown-content li {
-  @apply mb-1;
+  @apply leading-relaxed;
 }
-
 .markdown-content code {
-  @apply bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono;
+  @apply bg-zinc-100 text-zinc-800 px-1 py-0.5 rounded text-[0.85em] font-mono;
 }
-
 .markdown-content pre {
-  @apply bg-gray-900 text-gray-100 p-4 rounded-lg mb-3 overflow-x-auto;
+  @apply bg-zinc-900 text-zinc-100 p-3.5 rounded-lg mb-3 overflow-x-auto text-[13px] leading-relaxed;
 }
-
 .markdown-content pre code {
-  @apply bg-transparent p-0;
+  @apply bg-transparent p-0 text-inherit;
 }
-
 .markdown-content blockquote {
-  @apply border-l-4 border-gray-300 pl-4 italic text-gray-600 mb-3;
+  @apply border-l-2 border-zinc-200 pl-3 text-zinc-500 italic mb-3;
 }
-
 .markdown-content table {
-  @apply w-full border-collapse mb-3;
+  @apply w-full border-collapse mb-3 text-[13px];
 }
-
 .markdown-content th,
 .markdown-content td {
-  @apply border border-gray-300 px-4 py-2;
+  @apply border border-zinc-200 px-3 py-1.5 text-left;
 }
-
 .markdown-content th {
-  @apply bg-gray-100 font-semibold;
+  @apply bg-zinc-50 font-medium text-zinc-700;
 }
-
 .markdown-content a {
-  @apply text-blue-500 hover:underline;
+  @apply text-zinc-900 underline underline-offset-2 hover:text-zinc-600;
 }
-
 .markdown-content strong {
-  @apply font-bold;
+  @apply font-semibold text-zinc-900;
 }
-
-.markdown-content em {
-  @apply italic;
+.markdown-content hr {
+  @apply border-zinc-200 my-4;
 }

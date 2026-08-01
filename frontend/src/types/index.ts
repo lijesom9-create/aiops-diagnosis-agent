@@ -26,6 +26,7 @@ export interface RegisterRequest {
   password: string;
   email: string;
   role?: string;
+  org_name?: string;
 }
 
 // API响应

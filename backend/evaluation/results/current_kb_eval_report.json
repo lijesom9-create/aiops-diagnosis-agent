@@ -1,0 +1,216 @@
+{
+  "retrieval": {
+    "overall": {
+      "mean_recall": 0.983,
+      "median_recall": 1.0,
+      "min_recall": 0.8,
+      "max_recall": 1.0
+    },
+    "by_domain": {
+      "agent": {
+        "mean_recall": 0.96,
+        "count": 5
+      },
+      "rag": {
+        "mean_recall": 1.0,
+        "count": 3
+      },
+      "fastapi": {
+        "mean_recall": 1.0,
+        "count": 4
+      }
+    },
+    "per_query": [
+      {
+        "query": "什么是智能体？它有哪些基本要素？",
+        "domain": "agent",
+        "recall": 1.0,
+        "latency_ms": 16812.5,
+        "returned": 8
+      },
+      {
+        "query": "智能体的传统分类有哪些？",
+        "domain": "agent",
+        "recall": 1.0,
+        "latency_ms": 13525.5,
+        "returned": 8
+      },
+      {
+        "query": "大语言模型驱动的新范式下智能体有什么特点？",
+        "domain": "agent",
+        "recall": 1.0,
+        "latency_ms": 12636.7,
+        "returned": 8
+      },
+      {
+        "query": "如何构建一个 Agent 框架？需要哪些核心组件？",
+        "domain": "agent",
+        "recall": 0.8,
+        "latency_ms": 13147.4,
+        "returned": 8
+      },
+      {
+        "query": "Agent 的记忆系统是如何工作的？",
+        "domain": "agent",
+        "recall": 1.0,
+        "latency_ms": 11684.0,
+        "returned": 8
+      },
+      {
+        "query": "什么是上下文工程？它在智能体中起什么作用？",
+        "domain": "rag",
+        "recall": 1.0,
+        "latency_ms": 10418.4,
+        "returned": 8
+      },
+      {
+        "query": "智能体通信协议有哪些？它们如何工作？",
+        "domain": "rag",
+        "recall": 1.0,
+        "latency_ms": 11837.7,
+        "returned": 8
+      },
+      {
+        "query": "Agentic-RL 是什么？和传统 RL 有什么区别？",
+        "domain": "rag",
+        "recall": 1.0,
+        "latency_ms": 7323.2,
+        "returned": 8
+      },
+      {
+        "query": "FastAPI 是什么？它有什么优势？",
+        "domain": "fastapi",
+        "recall": 1.0,
+        "latency_ms": 10768.0,
+        "returned": 8
+      },
+      {
+        "query": "如何在 FastAPI 中定义路由和路径参数？",
+        "domain": "fastapi",
+        "recall": 1.0,
+        "latency_ms": 9941.9,
+        "returned": 8
+      },
+      {
+        "query": "FastAPI 依赖注入怎么用？",
+        "domain": "fastapi",
+        "recall": 1.0,
+        "latency_ms": 10807.1,
+        "returned": 8
+      },
+      {
+        "query": "FastAPI 中如何使用 Pydantic 进行请求体验证？",
+        "domain": "fastapi",
+        "recall": 1.0,
+        "latency_ms": 10322.1,
+        "returned": 8
+      }
+    ]
+  },
+  "generation": {
+    "overall": {
+      "avg_keyword_recall": 0.858,
+      "avg_context_overlap": 0.93,
+      "citation_rate": 1.0,
+      "avg_citation_count": 6.75
+    },
+    "per_query": [
+      {
+        "query": "什么是智能体？它有哪些基本要素？",
+        "answer": "根据检索结果，智能体（Agent）是能够通过**传感器**感知其所处**环境**，并**自主**地通过**执行器**采取**行动**以实现特定目标的实体[1]。\n\n智能体的基本要素包括四个：\n1. **环境（Environment）**：智能体所处的外部世界[1]。\n2. **传感器（Sensors）**：用于感知环境状态[1]。\n3. **执行器（Actuators）**：用于采取行动[1]。\n",
+        "keyword_recall": 1.0,
+        "has_citation": true,
+        "citation_count": 5,
+        "context_overlap": 0.946
+      },
+      {
+        "query": "智能体的传统分类有哪些？",
+        "answer": "根据检索到的上下文，智能体的传统分类主要有以下几个维度：\n\n1. **基于内部决策架构的分类**：涵盖从简单的**反应式**智能体，到引入内部模型的**模型式**智能体，再到更具前瞻性的**基于目标**和**基于效用**的智能体。此外，**学习能力**是一种可赋予上述所有类型的元能力[1]。\n\n2. **基于时间与反应性的分类**：关注智能体是追求速度的**反应性**，还是追求最优解的**规划性*",
+        "keyword_recall": 1.0,
+        "has_citation": true,
+        "citation_count": 3,
+        "context_overlap": 0.987
+      },
+      {
+        "query": "大语言模型驱动的新范式下智能体有什么特点？",
+        "answer": "基于检索结果，大语言模型驱动的新范式下智能体的主要特点包括：\n\n1. **核心决策机制不同**：其核心引擎基于预训练的大语言模型（如GPT），而非工程师的显式编程，行为更加灵活和通用[1]。\n2. **知识来源隐式且广泛**：知识来源于海量数据上的预训练，获得了隐式的世界模型，无需手动构建知识库[1]。\n3. **具备涌现能力**：能展现出上下文学习（如零样本或少量样本学习）和思维链推理等未经直接",
+        "keyword_recall": 0.75,
+        "has_citation": true,
+        "citation_count": 6,
+        "context_overlap": 0.897
+      },
+      {
+        "query": "如何构建一个 Agent 框架？需要哪些核心组件？",
+        "answer": "构建一个 Agent 框架需要以下核心组件：\n\n1. **统一的消息格式**：定义 `Message` 类，用于标准化智能体与模型之间的信息传递，包括角色（user/assistant/system/tool）和内容等字段[5]。\n2. **配置管理**：提供 `Config` 类，实现中心化的配置管理，便于调整框架行为[1][5]。\n3. **Agent 抽象基类**：定义统一的执行接口（如 `",
+        "keyword_recall": 0.8,
+        "has_citation": true,
+        "citation_count": 11,
+        "context_overlap": 0.907
+      },
+      {
+        "query": "Agent 的记忆系统是如何工作的？",
+        "answer": "Agent 的记忆系统通过分层设计和模块化协作来工作，主要包含以下流程：\n\n1. **记忆形成流程**：参考人类认知模型，分为编码、存储、检索、整合和遗忘五个阶段，形成闭环管理系统[2]。\n2. **核心组件**：包括`MemoryTool`（用户接口层）和`MemoryManager`（核心逻辑层），`MemoryTool`专注于参数处理，`MemoryManager`负责调度协调[1]。\n3.",
+        "keyword_recall": 1.0,
+        "has_citation": true,
+        "citation_count": 6,
+        "context_overlap": 0.94
+      },
+      {
+        "query": "什么是上下文工程？它在智能体中起什么作用？",
+        "answer": "上下文工程是在推理阶段，策划与维护进入模型上下文窗口的“最优信息集合”的策略，它不仅是提示工程的自然演进，还包括管理工具、外部数据、消息历史等整个上下文状态[1]。在智能体中，上下文工程的作用是确保智能体在长时间、多轮推理中保持连贯性、准确性和目标导向，通过压缩整合、结构化笔记、子代理架构等方法对抗“上下文污染”和性能退化[3][4]。",
+        "keyword_recall": 0.667,
+        "has_citation": true,
+        "citation_count": 3,
+        "context_overlap": 0.913
+      },
+      {
+        "query": "智能体通信协议有哪些？它们如何工作？",
+        "answer": "基于检索结果，智能体通信协议主要有三种：MCP、A2A 和 ANP。它们的工作方式如下：\n\n1.  **MCP (Model Context Protocol)**：作为**智能体与工具之间的桥梁**，提供统一的工具访问接口，并强调“上下文共享”，让智能体与工具之间共享丰富的上下文信息，以增强单个智能体的能力，例如访问文件系统、数据库等[1][4]。\n\n2.  **A2A (Agent-to-Ag",
+        "keyword_recall": 1.0,
+        "has_citation": true,
+        "citation_count": 6,
+        "context_overlap": 0.958
+      },
+      {
+        "query": "Agentic-RL 是什么？和传统 RL 有什么区别？",
+        "answer": "Agentic RL 是将大型语言模型（LLM）视为可学习策略，嵌入在感知-决策-执行的顺序决策循环中的新范式。它通过强化学习优化智能体在多步任务中的表现，旨在提升推理、工具使用、记忆、规划、自我改进和感知等六大核心能力[1][2][4]。\n\n与传统 RL（如基于偏好的强化微调 PBRFT）的核心区别包括：\n- **任务性质**：从单轮对话优化扩展到多步序贯决策[2]。\n- **状态空间**：从静",
+        "keyword_recall": 0.667,
+        "has_citation": true,
+        "citation_count": 11,
+        "context_overlap": 0.991
+      },
+      {
+        "query": "FastAPI 是什么？它有什么优势？",
+        "answer": "FastAPI 是一个现代化的 Python Web 框架，性能优秀且易于开发[4][6]。它的优势包括：\n\n- **高性能**：框架性能出色，适合构建高并发应用[4]。\n- **依赖注入系统**：支持代码复用、解耦和易于测试，可自动注入请求参数、数据库连接等通用逻辑[1][2]。\n- **模块化设计**：便于代码维护和扩展[6]。\n- **支持异步和中间件**：可统一处理日志、身份认证等逻辑[1",
+        "keyword_recall": 0.75,
+        "has_citation": true,
+        "citation_count": 8,
+        "context_overlap": 0.957
+      },
+      {
+        "query": "如何在 FastAPI 中定义路由和路径参数？",
+        "answer": "在 FastAPI 中定义路由和路径参数的方法如下：\n\n1. **路由定义**：使用 Python 装饰器模式，通过 `@app.get()`、`@app.post()` 等装饰器定义路由[1][2]。例如：\n   ```python\n   @app.get(\"/book/{id}\")\n   async def get_book(id: int):\n       return {\"id\": id,",
+        "keyword_recall": 1.0,
+        "has_citation": true,
+        "citation_count": 11,
+        "context_overlap": 0.852
+      },
+      {
+        "query": "FastAPI 依赖注入怎么用？",
+        "answer": "FastAPI 依赖注入的核心用法是创建一个可重用的函数或类作为“依赖项”，然后在路径操作函数中声明该参数，FastAPI 会自动调用依赖项并将结果注入到函数中。具体应用包括：\n\n- **处理请求参数**：提取和验证路径参数、查询参数、请求体[1]。\n- **共享数据库连接**：管理数据库会话的创建、使用和关闭[1]。\n- **共享业务逻辑**：抽取多个路由公用的代码，减少重复[1]。\n- **安",
+        "keyword_recall": 0.667,
+        "has_citation": true,
+        "citation_count": 5,
+        "context_overlap": 0.944
+      },
+      {
+        "query": "FastAPI 中如何使用 Pydantic 进行请求体验证？",
+        "answer": "在 FastAPI 中，使用 Pydantic 进行请求体验证主要通过在路由函数的参数中声明 Pydantic 模型来实现。具体步骤如下：\n\n1. **定义 Pydantic 模型**：继承 `BaseModel`，定义字段及其类型，例如 `class TripPlanRequest(BaseModel)`（[1]）或 `class Question(BaseModel)`（[3]）。\n\n2. *",
+        "keyword_recall": 1.0,
+        "has_citation": true,
+        "citation_count": 6,
+        "context_overlap": 0.867
+      }
+    ]
+  }
+}

@@ -101,6 +101,7 @@ chromadb/
 
 # AI assistant config
 .claude/
+.workbuddy/
 
 # Evaluation error logs
 *.err

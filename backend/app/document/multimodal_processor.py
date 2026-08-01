@@ -20,7 +20,7 @@ Multimodal Processor - 多模态 RAG 文档处理器
 """
 
 import asyncio
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from pathlib import Path
 from loguru import logger
 
@@ -121,15 +121,33 @@ class MultimodalProcessor:
             f"(images={len(image_elements)}, tables={len(table_elements)})"
         )
 
-        # 并发处理图片
+        # 图片预处理：装饰图过滤 + 内容哈希去重（业界 Tiered Image Processing）
+        # 只对唯一图片调 VLM，重复图复用 caption，节省 API 调用
         if image_elements:
+            unique_elements, duplicate_groups = self._preprocess_images(image_elements)
+        else:
+            unique_elements, duplicate_groups = [], []
+
+        # 并发处理唯一图片（VLM caption + OCR）
+        # 用 Semaphore 限制并发，配合令牌桶限流器避免大量请求被拒
+        if unique_elements:
+            sem = asyncio.Semaphore(5)
+
+            async def _process_with_sem(el: DocumentElement) -> None:
+                async with sem:
+                    await self._process_image_element(el, document_id)
+
             await asyncio.gather(
-                *[
-                    self._process_image_element(el, document_id)
-                    for el in image_elements
-                ],
+                *[_process_with_sem(el) for el in unique_elements],
                 return_exceptions=True,
             )
+
+        # 重复图复用原始图片的 caption / OCR / keywords（不重复调 VLM）
+        for dup_el, ref_el in duplicate_groups:
+            dup_el.image_desc = ref_el.image_desc
+            dup_el.image_keywords = list(ref_el.image_keywords) if ref_el.image_keywords else []
+            dup_el.image_type = ref_el.image_type
+            dup_el.ocr_text = ref_el.ocr_text
 
         # 并发处理表格
         if table_elements:
@@ -150,6 +168,69 @@ class MultimodalProcessor:
             f"tables {success_tbl}/{len(table_elements)} summarized"
         )
         return doc
+
+    def _preprocess_images(
+        self,
+        image_elements: List[DocumentElement],
+    ) -> Tuple[List[DocumentElement], List[Tuple[DocumentElement, DocumentElement]]]:
+        """图片预处理：装饰图过滤 + 内容哈希去重
+
+        业界分层图片处理（Tiered Image Processing）最佳实践：
+        1. 尺寸/宽高比过滤：剔除 logo、图标、分隔线等装饰元素（免费）
+        2. 内容哈希去重：跨页重复图片（如页眉 logo）只处理一次，复用 caption（省 API）
+
+        装饰图直接跳过（不调 VLM），分块时显示 [图片] 占位。
+        重复图复用第一张的 caption/ocr_text/keywords。
+
+        Returns:
+            (unique_elements, duplicate_groups)
+            - unique_elements: 需要调 VLM 的唯一图片
+            - duplicate_groups: [(重复element, 原始element)]，复用原始的 caption
+        """
+        import hashlib
+        from io import BytesIO
+        from PIL import Image
+
+        MIN_SIZE = 80       # 最小尺寸（px）：小于此值视为 logo/图标
+        MAX_RATIO = 10.0    # 最大宽高比：超过此值视为分隔线/边框
+
+        hash_to_element: Dict[str, DocumentElement] = {}
+        unique_elements: List[DocumentElement] = []
+        duplicate_groups: List[Tuple[DocumentElement, DocumentElement]] = []
+        skipped_decorative = 0
+
+        for el in image_elements:
+            image_bytes = self.image_store.read_bytes(el.image_path)
+            if image_bytes is None:
+                continue
+
+            # 1. 尺寸 + 宽高比过滤（装饰图：logo/图标/分隔线）
+            try:
+                img = Image.open(BytesIO(image_bytes))
+                w, h = img.size
+                if w < MIN_SIZE or h < MIN_SIZE:
+                    skipped_decorative += 1
+                    continue
+                ratio = max(w, h) / max(min(w, h), 1)
+                if ratio > MAX_RATIO:
+                    skipped_decorative += 1
+                    continue
+            except Exception as e:
+                logger.debug(f"图片尺寸读取失败，保留处理: {e}")
+
+            # 2. 内容哈希去重（跨页重复的 logo/页眉页脚图）
+            img_hash = hashlib.md5(image_bytes).hexdigest()
+            if img_hash in hash_to_element:
+                duplicate_groups.append((el, hash_to_element[img_hash]))
+            else:
+                hash_to_element[img_hash] = el
+                unique_elements.append(el)
+
+        logger.info(
+            f"图片预处理: {len(image_elements)} 张 -> 唯一 {len(unique_elements)} 张 "
+            f"(过滤装饰图 {skipped_decorative}, 去重 {len(duplicate_groups)})"
+        )
+        return unique_elements, duplicate_groups
 
     async def _process_image_element(
         self,
@@ -176,13 +257,17 @@ class MultimodalProcessor:
         }
         mime = mime_map.get(ext, "image/png")
 
-        # VLM 生成 caption
+        # VLM 生成 caption + text_in_image（图中文字/代码转录）
         vlm = self.vlm_provider
         if vlm is not None:
             try:
                 result = await vlm.describe_image(image_bytes, mime_type=mime)
                 if result.get("caption"):
                     element.image_desc = result["caption"]
+                # VLM 转录的图中文字直接作为 ocr_text（语义一致，复用字段）
+                # 这是图片型课件的关键：让代码截图/文字截图的内容可被检索
+                if result.get("text_in_image"):
+                    element.ocr_text = result["text_in_image"]
                 if result.get("keywords"):
                     element.image_keywords = list(result["keywords"])[:8]
                 if result.get("image_type"):
@@ -194,8 +279,8 @@ class MultimodalProcessor:
         else:
             logger.debug(f"VLM 未配置，跳过 caption: {image_path}")
 
-        # OCR 提取图中文字（可选）
-        if getattr(settings, "MULTIMODAL_USE_OCR", True):
+        # OCR 兜底：仅当 VLM 未提取到图中文字时执行（分层处理，避免重复调用）
+        if not element.ocr_text and getattr(settings, "MULTIMODAL_USE_OCR", True):
             ocr_text = await self._run_ocr(image_bytes)
             if ocr_text:
                 element.ocr_text = ocr_text

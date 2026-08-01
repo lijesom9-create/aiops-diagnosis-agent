@@ -1,38 +1,66 @@
-# Web框架
+# Web 框架
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-python-multipart==0.0.6
+python-multipart==0.0.6  # FastAPI 表单/文件上传（UploadFile/Form）所需
 
-# 数据库
-pymongo==4.6.1
-motor==3.3.2  # 异步MongoDB驱动
+# 数据库（MongoDB）
+pymongo==4.6.1  # motor 的底层驱动
+motor==3.3.2  # 异步 MongoDB 驱动
 
-# 认证和安全
+# 认证与安全
 PyJWT==2.11.0
 passlib[bcrypt]==1.7.4
-bcrypt==4.0.1  # pin bcrypt version for passlib compatibility
+bcrypt==4.0.1  # pin 版本以兼容 passlib 1.7.4
+email-validator==2.3.0  # pydantic.EmailStr 所需
 
-# AI模型（支持多个提供商）
+# AI 模型 / LLM
 anthropic==0.18.1
-openai==1.12.0
-httpx==0.25.2
+openai==1.109.1  # 锁定版本避免 pip 回溯
+httpx==0.28.1  # 异步 HTTP 客户端（AI/VLM API 调用）
+tiktoken==0.13.0  # token 计数
+
+# LangChain / LangGraph
+langchain-openai==0.1.13  # 锁定版本避免 pip 回溯
+langchain-core==0.2.43
+langchain-text-splitters==0.2.4  # 文档分块
+langgraph==0.4.5
+langgraph-checkpoint-sqlite==2.0.11  # LangGraph SQLite 持久化检查点
+aiosqlite==0.22.1  # 异步 SQLite（AsyncSqliteSaver 所需）
+
+# 向量数据库与语义嵌入
+chromadb==1.5.9
+sentence-transformers==5.6.1  # Embedding 与 CrossEncoder 重排器
+qdrant-client==1.18.0  # Qdrant 向量库
+
+# 机器学习 / 重排器 / CLIP
+torch==2.13.0+cpu  # 模型推理（CPU 版本，配合 --extra-index-url 使用）
+transformers==4.57.6  # CLIP / AutoTokenizer
+optimum[onnxruntime]==2.1.0  # ONNX 推理加速（CrossEncoder 重排器）
+numpy==2.5.1
 
 # 文档解析
-pypdf>=4.0.0
-python-docx>=1.1.0
+pypdf==6.14.2  # PDF 解析
+python-docx==1.2.0  # Word 文档解析
+PyMuPDF==1.28.0  # fitz，PDF 解析与渲染
+docling==2.117.0  # 高级文档解析
+pdfplumber==0.11.10  # PDF 表格解析
+pillow==12.3.0  # PIL，图片处理
+chardet==7.4.3  # 文本编码检测
+
+# 中文 NLP 分词
+jieba==0.42.1  # 中文分词（BM25/检索/记忆模块）
+
+# 缓存
+redis==8.1.0  # 可选缓存与限流后端
 
 # 工具库
-python-dotenv==1.0.0
-pydantic==2.5.2
-pydantic-settings==2.1.0
-numpy>=1.24.0
+pydantic==2.13.4
+pydantic-settings==2.14.2  # docling 需要兼容版本
+python-dotenv==1.0.0  # pydantic-settings env_file 支持
 
-# WebSocket支持
-websockets==12.0
-
-# 日志和监控
+# 日志
 loguru==0.7.2
 
-# 开发工具
+# 测试
 pytest==7.4.3
 pytest-asyncio==0.23.2

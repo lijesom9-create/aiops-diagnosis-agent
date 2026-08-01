@@ -14,12 +14,53 @@ Qdrant Vector Store - 基于 Qdrant 的向量存储
 import os
 import hashlib
 import uuid
+import functools
+import time
+import sqlite3
 from typing import List, Dict, Optional, Tuple, Set, Any
 
 from loguru import logger
 
 from .embeddings import EmbeddingModel
 from .chroma_store import ChromaDBVectorStore  # 复用 clean_markdown
+
+
+# ========== Qdrant 操作重试装饰器 ==========
+# 只重试连接/锁相关异常（sqlite 锁冲突、网络断连），不重试逻辑错误
+# 指数退避：0.5s → 1s → 2s，最多 3 次
+
+_RETRYABLE_EXC = (
+    sqlite3.OperationalError,  # local 模式：database is locked
+    ConnectionError,           # server 模式：连接断开
+    TimeoutError,              # 超时
+    OSError,                   # 网络相关 IO 错误
+)
+
+
+def _retry_qdrant(max_retries: int = 3, base_delay: float = 0.5):
+    """Qdrant 操作重试装饰器：只重试连接/锁相关异常"""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exc = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except _RETRYABLE_EXC as e:
+                    last_exc = e
+                    if attempt < max_retries:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(
+                            f"Qdrant {func.__name__} 失败（第 {attempt + 1}/{max_retries} 次），"
+                            f"{delay:.1f}s 后重试: {type(e).__name__}: {e}"
+                        )
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"Qdrant {func.__name__} 重试 {max_retries} 次后仍失败: {e}")
+                        raise
+            raise last_exc  # type: ignore[misc]
+        return wrapper
+    return decorator
 
 
 # ========== Local client 缓存 ==========
@@ -187,6 +228,7 @@ class QdrantVectorStore:
             ],
         )
 
+    @_retry_qdrant()
     def add_batch(
         self,
         doc_ids: List[str],
@@ -243,6 +285,7 @@ class QdrantVectorStore:
             ],
         )
 
+    @_retry_qdrant()
     def search_by_vector(
         self,
         query_vector: List[float],
@@ -514,6 +557,7 @@ class QdrantVectorStore:
         logger.info(f"Qdrant 批量添加完成: {stats}")
         return stats
 
+    @_retry_qdrant()
     def _upsert_points(
         self,
         doc_ids: List[str],
@@ -571,6 +615,7 @@ class QdrantVectorStore:
             return None
         return Filter(must=conditions)
 
+    @_retry_qdrant()
     def search(
         self,
         query: str,

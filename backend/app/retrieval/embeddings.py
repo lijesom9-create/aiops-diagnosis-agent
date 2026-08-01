@@ -258,6 +258,8 @@ def create_embedding_model(
     base_url: Optional[str] = None,
     use_local_embedding: bool = True,
     local_model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    enable_cache: bool = True,
+    cache_dir: Optional[str] = None,
 ) -> EmbeddingModel:
     """
     创建嵌入模型工厂
@@ -266,21 +268,34 @@ def create_embedding_model(
     1. API 嵌入（如果配置了 API Key 和 model_name）
     2. 本地 sentence-transformers（默认启用）
     3. TF-IDF 降级方案
+
+    Args:
+        enable_cache: 是否启用 embedding 缓存（默认 True）
+        cache_dir: 磁盘缓存目录，默认 ./data/embedding_cache
     """
     if api_key and model_name:
         logger.info(f"使用 API 嵌入模型: {model_name}")
-        return OpenAIEmbedding(
+        base = OpenAIEmbedding(
             api_key=api_key,
             model=model_name,
             base_url=base_url or "https://api.openai.com/v1",
         )
-
-    if use_local_embedding:
+    elif use_local_embedding:
         try:
             logger.info(f"使用本地 sentence-transformer 模型: {local_model_name}")
-            return SentenceTransformerEmbedding(model_name=local_model_name)
+            base = SentenceTransformerEmbedding(model_name=local_model_name)
         except Exception as e:
             logger.warning(f"本地嵌入模型加载失败，降级为 TF-IDF: {e}")
+            base = TFIDFModel(max_features=5000)
+    else:
+        logger.info("使用本地 TF-IDF 模型")
+        base = TFIDFModel(max_features=5000)
 
-    logger.info("使用本地 TF-IDF 模型")
-    return TFIDFModel(max_features=5000)
+    # 默认启用缓存：查询 embedding 是热点路径，缓存可省 50-100ms/次
+    if enable_cache:
+        from .embedding_cache import CachedEmbeddingModel
+        if cache_dir is None:
+            cache_dir = "./data/embedding_cache"
+        return CachedEmbeddingModel(base, cache_dir=cache_dir)
+
+    return base

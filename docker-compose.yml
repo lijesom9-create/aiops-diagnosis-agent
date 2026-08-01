@@ -1,4 +1,17 @@
-version: '3.8'
+# ===========================================
+# 基础配置（通用）
+# 启动方式：
+#   开发环境：docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   生产环境：docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# 环境变量从 backend/.env 文件读取（需先配置）：
+#   开发：cp backend/.env.development.example backend/.env
+#   生产：cp backend/.env.production.example backend/.env
+#
+# Docker 网络中服务间用容器名访问：
+#   MongoDB: mongodb:27017
+#   Redis:   redis:6379
+# ===========================================
 
 services:
   # 前端服务
@@ -22,35 +35,39 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    env_file:
+      - ./backend/.env
     environment:
+      # 覆盖 .env 中的本地地址，用 Docker 网络中的容器名
       - MONGODB_URL=mongodb://mongodb:27017
-      - MONGODB_DB_NAME=education_agent
-      # SECRET_KEY: 生产环境必须设置，否则每次启动自动生成新密钥
-      - SECRET_KEY=${SECRET_KEY:-}
-      # AI模型配置
-      - AI_MODEL=${AI_MODEL:-deepseek/chat}
-      - AI_API_KEY=${AI_API_KEY}
-      - AI_BASE_URL=${AI_BASE_URL}
-      - DEBUG=${DEBUG:-false}
+      - REDIS_URL=redis://redis:6379/0
+      # 启用 HuggingFace 离线模式（使用挂载的本地缓存）
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
     depends_on:
       mongodb:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/live"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 60s
+    volumes:
+      # 绑定挂载本地数据目录（含 Qdrant 向量库、embedding 缓存、ONNX 缓存等）
+      - ./backend/data:/app/data
+      - ./backend/uploads:/app/uploads
+      # 挂载本地 HuggingFace 模型缓存（bge-small-zh-v1.5 / bge-reranker-base 等）
+      - ${USERPROFILE}/.cache/huggingface:/home/appuser/.cache/huggingface
     networks:
       - education-network
     restart: unless-stopped
 
-  # MongoDB数据库
+  # MongoDB 数据库
   mongodb:
     image: mongo:7
-    ports:
-      # 仅在需要外部访问时暴露，生产环境建议去掉
-      - "27017:27017"
     volumes:
       - mongodb-data:/data/db
     healthcheck:
@@ -63,9 +80,26 @@ services:
       - education-network
     restart: unless-stopped
 
+  # Redis 缓存（检索缓存 + 限流 + 查询重写缓存）
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - education-network
+    restart: unless-stopped
+
 networks:
   education-network:
     driver: bridge
 
 volumes:
   mongodb-data:
+  redis-data:

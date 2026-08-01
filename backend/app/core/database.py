@@ -306,17 +306,17 @@ class Database:
         status: Optional[str] = None,
         limit: int = 100
     ) -> List[dict]:
-        """获取用户的所有文档"""
+        """获取用户的所有文档（包括公共文档）"""
         await self.connect()
         if self._use_mongo:
-            query = {"user_id": user_id}
+            query = {"$or": [{"user_id": user_id}, {"is_public": True}]}
             if status:
-                query["status"] = status
+                query = {"$and": [query, {"status": status}]}
             cursor = self._mongo.documents.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
             docs = await cursor.to_list(limit)
             return clean_mongo_docs(docs)
 
-        result = [d for d in self._documents if d.get("user_id") == user_id]
+        result = [d for d in self._documents if d.get("user_id") == user_id or d.get("is_public")]
         if status:
             result = [d for d in result if d.get("status") == status]
         return sorted(
@@ -503,7 +503,12 @@ class Database:
             return clean_mongo_doc(doc)
         for s in self._sessions:
             if s.get("session_id") == session_id:
-                return {k: v for k, v in s.items() if k != "messages"}
+                # 统一转换 datetime → ISO 字符串（与 get_user_sessions 一致）
+                result = {k: v for k, v in s.items() if k != "messages"}
+                for key in ("created_at", "updated_at"):
+                    if isinstance(result.get(key), datetime):
+                        result[key] = result[key].isoformat()
+                return result
         return None
 
     async def update_session_title(self, session_id: str, title: str) -> None:
@@ -561,31 +566,58 @@ class Database:
         return []
 
     async def get_user_sessions(self, user_id: str, limit: int = 20) -> List[dict]:
+        """获取用户的所有会话（含 message_count，不含消息体）
+
+        Args:
+            user_id: 用户 ID
+            limit: 返回数量上限
+
+        Returns:
+            List[dict]: 会话列表，按 updated_at 降序，每项含 message_count
+        """
         await self.connect()
         if self._use_mongo:
-            cursor = self._mongo.chat_sessions.find(
-                {"user_id": user_id},
-                {"_id": 0, "messages": 0}  # 排除 _id 和消息体
-            )
+            # 用 aggregation 计算消息数量，避免拉取整个 messages 数组
+            cursor = self._mongo.chat_sessions.aggregate([
+                {"$match": {"user_id": user_id}},
+                {"$project": {
+                    "_id": 0,
+                    "session_id": 1,
+                    "user_id": 1,
+                    "title": 1,
+                    "created_at": 1,
+                    "updated_at": 1,
+                    "message_count": {"$size": {"$ifNull": ["$messages", []]}},
+                }},
+                {"$sort": {"updated_at": -1}},
+                {"$limit": limit},
+            ])
             sessions = await cursor.to_list(limit)
         else:
-            sessions = [
-                {k: v for k, v in s.items() if k != "messages"}
-                for s in self._sessions if s.get("user_id") == user_id
-            ]
+            sessions = []
+            for s in self._sessions:
+                if s.get("user_id") != user_id:
+                    continue
+                sessions.append({
+                    "session_id": s.get("session_id"),
+                    "user_id": s.get("user_id"),
+                    "title": s.get("title", "新对话"),
+                    "created_at": s.get("created_at"),
+                    "updated_at": s.get("updated_at"),
+                    "message_count": len(s.get("messages", [])),
+                })
 
-        def _sort_key(x):
-            val = x.get("updated_at", "")
-            if isinstance(val, datetime):
-                return val.isoformat()
-            return str(val) if val else ""
-
-        # 添加 message_count 并清理 datetime
+        # 清理 datetime → ISO 字符串（统一响应格式）
         for s in sessions:
             if isinstance(s.get("updated_at"), datetime):
                 s["updated_at"] = s["updated_at"].isoformat()
             if isinstance(s.get("created_at"), datetime):
                 s["created_at"] = s["created_at"].isoformat()
+
+        # 内存模式已排序，MongoDB 模式由 aggregation 排序；这里统一兜底排序
+        def _sort_key(x):
+            val = x.get("updated_at", "")
+            return val if isinstance(val, str) else str(val)
 
         return sorted(sessions, key=_sort_key, reverse=True)[:limit]
 
@@ -604,6 +636,27 @@ class Database:
             if s.get("session_id") == session_id:
                 return len(s.get("messages", []))
         return 0
+
+    async def delete_session(self, session_id: str) -> bool:
+        """删除会话（含全部消息）
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            bool: 是否删除成功
+        """
+        await self.connect()
+        if self._use_mongo:
+            result = await self._mongo.chat_sessions.delete_one(
+                {"session_id": session_id}
+            )
+            return result.deleted_count > 0
+        original_len = len(self._sessions)
+        self._sessions = [
+            s for s in self._sessions if s.get("session_id") != session_id
+        ]
+        return len(self._sessions) < original_len
 
     # ========== 学习进度操作 ==========
 

@@ -12,3 +12,9 @@ dist/
 build/
 .pytest_cache
 .mypy_cache
+data/
+uploads/
+evaluation/
+tests/
+docs/
+*.log

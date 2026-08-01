@@ -26,17 +26,20 @@ from ..core.config import settings
 
 
 # 用于图片理解的统一 prompt（中文友好，强调检索可用性）
+# 关键改进：增加 text_in_image 字段，让 VLM 转录图片中的文字/代码（对图片型课件至关重要）
 _DEFAULT_VISION_PROMPT = """请仔细分析这张图片，输出 JSON 格式结果（不要 markdown 代码块），字段：
 {
-  "caption": "图片内容的中文详细描述，50-150字。包含：图片类型（流程图/架构图/截图/表格/图表等）、核心内容、关键信息、与其他元素的关系（如有）",
+  "caption": "图片内容的中文详细描述，50-200字。包含：图片类型（流程图/架构图/代码截图/文字截图/表格/图表等）、核心内容、关键信息、与其他元素的关系（如有）",
+  "text_in_image": "如果图片中包含文字、代码、公式、标签等可读内容，请尽可能完整、准确地逐字转录（保留代码缩进和换行格式）。如果图片中没有可读文字，此处为空字符串",
   "keywords": ["关键词1", "关键词2", "关键词3"],
-  "image_type": "diagram|screenshot|chart|table|formula|photo|other"
+  "image_type": "diagram|screenshot|chart|table|formula|code|photo|other"
 }
 
 要求：
-1. caption 要包含足够的信息量，能独立支撑后续检索
-2. keywords 3-5 个，是图片核心语义
-3. 不要输出 JSON 以外的内容"""
+1. 【最重要】如果图片是代码截图、文字截图、幻灯片等包含文字的内容，text_in_image 必须尽量完整转录图中所有可见文字，这是检索的关键
+2. caption 要包含足够的信息量，能独立支撑后续检索
+3. keywords 3-5 个，是图片核心语义
+4. 不要输出 JSON 以外的内容"""
 
 
 class VLMProvider(ABC):
@@ -53,7 +56,8 @@ class VLMProvider(ABC):
 
         Returns:
             {
-                "caption": str,
+                "caption": str,           # 图片内容描述
+                "text_in_image": str,     # 图中文字/代码转录（无文字时为空）
                 "keywords": List[str],
                 "image_type": str,
                 "raw_response": str,
@@ -93,7 +97,9 @@ class OpenAICompatibleVLM(VLMProvider):
         # 熔断器 + 限流器（VLM 比 LLM 更贵更慢，独立隔离避免互相影响）
         from ..core.circuit_breaker import get_breaker, get_limiter
         self._breaker = get_breaker(f"vlm:{model}")
-        self._limiter = get_limiter(f"vlm:{model}")
+        # VLM 批量图片处理需要较高吞吐：等待令牌补充而非直接拒绝（max_wait=30s）
+        # 否则并发图片处理时令牌桶瞬间耗尽，大量请求返回 fallback 空 caption
+        self._limiter = get_limiter(f"vlm:{model}", rate=3.0, capacity=10, max_wait=30.0)
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -172,6 +178,7 @@ class OpenAICompatibleVLM(VLMProvider):
         """解析 VLM 返回，容错处理"""
         result = {
             "caption": "",
+            "text_in_image": "",
             "keywords": [],
             "image_type": "other",
             "raw_response": content,
@@ -194,6 +201,7 @@ class OpenAICompatibleVLM(VLMProvider):
         try:
             parsed = json.loads(text)
             result["caption"] = str(parsed.get("caption", "")).strip()
+            result["text_in_image"] = str(parsed.get("text_in_image", "")).strip()
             kws = parsed.get("keywords", [])
             if isinstance(kws, list):
                 result["keywords"] = [str(k) for k in kws][:8]
@@ -210,6 +218,7 @@ class OpenAICompatibleVLM(VLMProvider):
         """失败降级：返回空 caption，上层走 OCR 兜底"""
         return {
             "caption": "",
+            "text_in_image": "",
             "keywords": [],
             "image_type": "other",
             "raw_response": content,

@@ -12,6 +12,7 @@ import RegisterPage from '@/components/Auth/RegisterPage';
 import ChatPage from '@/components/Chat/ChatPage';
 import DocumentsPage from '@/components/Documents/DocumentsPage';
 import MemoryPage from '@/components/Memory/MemoryPage';
+import ToastContainer from '@/components/Common/ToastContainer';
 
 // 受保护的路由
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -63,6 +64,8 @@ function App() {
         {/* 404 */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      {/* 全局 Toast 通知 */}
+      <ToastContainer />
     </Router>
   );
 }

@@ -1,0 +1,43 @@
+version: '3.8'
+
+# ===========================================
+# 生产环境 override
+# 启动：docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# 强制要求（启动前必须配置）：
+#   1. 复制 backend/.env.production.example 为 backend/.env 并填写
+#   2. SECRET_KEY 必须显式设置（>= 32 字节），否则后端启动失败
+#   3. CORS_ORIGINS 必须改为实际前端域名
+#
+# 安全特性：
+#   - ENV=production，DEBUG=false
+#   - MongoDB 不对外暴露端口（仅容器网络可达）
+#   - 向量库使用 qdrant
+# ===========================================
+
+services:
+  backend:
+    environment:
+      - ENV=production
+      - DEBUG=false
+      - SECRET_KEY=${SECRET_KEY:?错误：生产环境必须设置 SECRET_KEY 环境变量}
+      - VECTOR_STORE_BACKEND=${VECTOR_STORE_BACKEND:-qdrant}
+      - QDRANT_PERSIST_DIR=${QDRANT_PERSIST_DIR:-./data/qdrant_db}
+      - CORS_ORIGINS=${CORS_ORIGINS:?错误：生产环境必须设置 CORS_ORIGINS 环境变量}
+      - RERANKER_ENABLED=${RERANKER_ENABLED:-true}
+    volumes:
+      - backend-data:/app/data
+      - backend-uploads:/app/uploads
+
+  frontend:
+    ports:
+      - "80:80"
+    restart: always
+
+  mongodb:
+    restart: always
+    # 不暴露端口，仅容器网络可达
+
+volumes:
+  backend-data:
+  backend-uploads:

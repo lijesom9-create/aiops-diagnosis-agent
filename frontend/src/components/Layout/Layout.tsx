@@ -1,6 +1,5 @@
 /**
- * 布局组件
- * 知识助手 - 顶部导航 + 主内容区
+ * 布局组件 — 极简顶部导航
  */
 
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
@@ -12,12 +11,11 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     navigate('/login');
   };
 
-  // 导航链接
   const navLinks = [
     { path: '/', label: '问答', icon: MessageSquare },
     { path: '/documents', label: '文档', icon: FileText },
@@ -25,59 +23,56 @@ export default function Layout() {
   ];
 
   return (
-    <div className="h-screen flex flex-col bg-gray-50">
-      {/* 顶部导航栏 */}
-      <header className="bg-white shadow-sm border-b border-gray-200 flex-shrink-0">
-        <div className="px-4 sm:px-6">
-          <div className="flex justify-between items-center h-12">
-            {/* Logo + 导航 */}
-            <div className="flex items-center space-x-6">
-              <h1 className="text-lg font-bold text-blue-600">
-                🧠 知识助手
-              </h1>
+    <div className="h-screen flex flex-col bg-white">
+      {/* 顶部导航 */}
+      <header className="h-14 border-b border-zinc-200 flex-shrink-0">
+        <div className="h-full px-6 flex items-center justify-between">
+          {/* Logo + 导航 */}
+          <div className="flex items-center gap-8">
+            <Link to="/" className="text-sm font-semibold text-zinc-900 tracking-tight">
+              技术知识库
+            </Link>
 
-              {/* 导航链接 */}
-              <nav className="hidden sm:flex items-center space-x-1">
-                {navLinks.map(({ path, label, icon: Icon }) => {
-                  const isActive = location.pathname === path;
-                  return (
-                    <Link
-                      key={path}
-                      to={path}
-                      className={`flex items-center space-x-1 px-3 py-1.5 rounded-lg text-sm transition-colors ${
-                        isActive
-                          ? 'bg-blue-50 text-blue-600'
-                          : 'text-gray-600 hover:bg-gray-100'
-                      }`}
-                    >
-                      <Icon size={16} />
-                      <span>{label}</span>
-                    </Link>
-                  );
-                })}
-              </nav>
+            <nav className="flex items-center gap-1">
+              {navLinks.map(({ path, label, icon: Icon }) => {
+                const isActive = location.pathname === path;
+                return (
+                  <Link
+                    key={path}
+                    to={path}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] transition-colors ${
+                      isActive
+                        ? 'bg-zinc-100 text-zinc-900 font-medium'
+                        : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50'
+                    }`}
+                  >
+                    <Icon size={15} />
+                    <span>{label}</span>
+                  </Link>
+                );
+              })}
+            </nav>
+          </div>
+
+          {/* 用户区 */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 text-[13px] text-zinc-500">
+              <User size={14} />
+              <span>{user?.username}</span>
             </div>
-
-            {/* 用户菜单 */}
-            <div className="flex items-center space-x-3">
-              <div className="flex items-center space-x-2 text-gray-700">
-                <User size={16} />
-                <span className="text-sm font-medium hidden sm:inline">{user?.username}</span>
-              </div>
-
-              <button
-                onClick={handleLogout}
-                className="flex items-center space-x-1 px-2 py-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-              >
-                <LogOut size={16} />
-                <span className="text-xs hidden sm:inline">退出</span>
-              </button>
-            </div>
+            <div className="w-px h-4 bg-zinc-200" />
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1.5 px-2 py-1.5 text-[13px] text-zinc-500 hover:text-zinc-900 rounded-md transition-colors"
+            >
+              <LogOut size={14} />
+              <span>退出</span>
+            </button>
           </div>
         </div>
       </header>
 
-      {/* 主内容区 */}
+      {/* 主内容 */}
       <main className="flex-1 overflow-hidden">
         <Outlet />
       </main>

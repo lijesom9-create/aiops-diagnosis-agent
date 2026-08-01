@@ -4,33 +4,72 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { FileText, Trash2, Loader2, File, FileUp } from 'lucide-react';
-import { documentsApiNew } from '@/services/api';
+import { FileText, Trash2, Loader2, File, FileUp, X, Check } from 'lucide-react';
+import { documentsApiNew, DocumentInfo } from '@/services/api';
+import { useToastStore } from '@/store/toastStore';
 
-interface Document {
-  document_id: string;
-  filename: string;
-  title: string;
-  status: string;
-  chunk_count: number;
-  char_count: number;
-  created_at: string;
-}
+// 文档分类选项
+const CATEGORY_OPTIONS = [
+  { value: 'api_doc', label: 'API 文档' },
+  { value: 'ops_sop', label: '运维 SOP' },
+  { value: 'architecture', label: '架构设计' },
+  { value: 'dev_guide', label: '开发指南' },
+  { value: 'troubleshooting', label: '故障排查' },
+  { value: 'other', label: '其他' },
+];
+
+// 筛选标签（含"全部"）
+const FILTER_TABS = [
+  { value: '', label: '全部' },
+  ...CATEGORY_OPTIONS,
+];
+
+// 分类值 -> 中文标签
+const getCategoryLabel = (value: string) => {
+  return CATEGORY_OPTIONS.find(o => o.value === value)?.label || value;
+};
+
+// 文件类型标签（从扩展名派生）
+const getFileType = (filename: string) => {
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  return ext || 'file';
+};
+
+// 字符数格式化
+const formatChars = (n: number) => {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+};
+
+// 时间格式化
+const formatDate = (dateStr: string) => {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
 
 export default function DocumentsPage() {
-  const [documents, setDocuments] = useState<Document[]>([]);
+  const [documents, setDocuments] = useState<DocumentInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<string>('other');
+  const [filterCategory, setFilterCategory] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const toast = useToastStore();
 
   // 加载文档列表
-  const loadDocuments = async () => {
+  const loadDocuments = async (category?: string) => {
     try {
       setLoading(true);
-      const response = await documentsApiNew.list();
+      const response = await documentsApiNew.list(category);
       setDocuments(response.documents || []);
     } catch (error) {
       console.error('加载文档失败:', error);
+      toast.error('加载文档列表失败');
     } finally {
       setLoading(false);
     }
@@ -47,11 +86,12 @@ export default function DocumentsPage() {
 
     setUploading(true);
     try {
-      await documentsApiNew.upload(file);
-      await loadDocuments();
+      await documentsApiNew.upload(file, selectedCategory);
+      await loadDocuments(filterCategory || undefined);
+      toast.success('文档上传成功，正在处理中');
     } catch (error) {
       console.error('上传失败:', error);
-      alert('上传失败，请重试');
+      toast.error('上传失败，请重试');
     } finally {
       setUploading(false);
       if (fileInputRef.current) {
@@ -60,30 +100,39 @@ export default function DocumentsPage() {
     }
   };
 
+  // 切换分类筛选
+  const handleFilterChange = (category: string) => {
+    setFilterCategory(category);
+    loadDocuments(category || undefined);
+  };
+
   // 删除文档
   const handleDelete = async (documentId: string) => {
-    if (!confirm('确定要删除这个文档吗？')) return;
-
+    setDeletingId(documentId);
     try {
       await documentsApiNew.delete(documentId);
-      await loadDocuments();
+      await loadDocuments(filterCategory || undefined);
+      toast.success('文档已删除');
     } catch (error) {
       console.error('删除失败:', error);
-      alert('删除失败，请重试');
+      toast.error('删除失败，请重试');
+    } finally {
+      setDeletingId(null);
+      setConfirmingId(null);
     }
   };
 
-  // 状态颜色
-  const getStatusColor = (status: string) => {
+  // 状态标签样式
+  const getStatusClass = (status: string) => {
     switch (status) {
       case 'completed':
-        return 'bg-green-100 text-green-700';
+        return 'tag-success';
       case 'processing':
-        return 'bg-yellow-100 text-yellow-700';
+        return 'tag-warning';
       case 'failed':
-        return 'bg-red-100 text-red-700';
+        return 'tag-error';
       default:
-        return 'bg-gray-100 text-gray-700';
+        return 'tag-default';
     }
   };
 
@@ -102,90 +151,150 @@ export default function DocumentsPage() {
   };
 
   return (
-    <div className="h-full flex flex-col">
-      {/* 头部 */}
-      <div className="flex items-center justify-between px-6 py-4 border-b bg-white">
-        <h2 className="text-lg font-semibold text-gray-800">文档管理</h2>
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={uploading}
-          className="flex items-center space-x-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 transition-colors"
-        >
-          {uploading ? (
-            <Loader2 className="animate-spin" size={18} />
-          ) : (
-            <FileUp size={18} />
-          )}
-          <span>{uploading ? '上传中...' : '上传文档'}</span>
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".pdf,.docx,.txt,.md"
-          onChange={handleUpload}
-          className="hidden"
-        />
-      </div>
+    <div className="h-full overflow-y-auto">
+      <div className="max-w-5xl mx-auto px-6 py-6">
+        {/* 头部 */}
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h2 className="text-lg font-semibold text-zinc-900">文档管理</h2>
+            <p className="text-[13px] text-zinc-500 mt-0.5">上传、管理你的学习文档</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="input"
+              aria-label="选择上传分类"
+            >
+              {CATEGORY_OPTIONS.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="btn-primary"
+            >
+              {uploading ? (
+                <Loader2 size={15} className="animate-spin" />
+              ) : (
+                <FileUp size={15} />
+              )}
+              <span>{uploading ? '上传中...' : '上传文档'}</span>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.docx,.txt,.md"
+              onChange={handleUpload}
+              aria-label="选择文件上传"
+              className="hidden"
+            />
+          </div>
+        </div>
 
-      {/* 文档列表 */}
-      <div className="flex-1 overflow-y-auto p-6">
+        {/* 分类筛选标签栏 */}
+        <div className="flex items-center gap-1.5 mb-4 flex-wrap">
+          {FILTER_TABS.map(tab => (
+            <button
+              key={tab.value}
+              onClick={() => handleFilterChange(tab.value)}
+              className={`px-3 py-1 rounded-md text-[13px] ${
+                filterCategory === tab.value
+                  ? 'bg-zinc-100 text-zinc-900'
+                  : 'text-zinc-500'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* 文档列表 */}
         {loading ? (
-          <div className="flex items-center justify-center h-full">
-            <Loader2 className="animate-spin text-gray-400" size={32} />
+          <div className="flex items-center justify-center py-20">
+            <Loader2 className="animate-spin text-zinc-400" size={24} />
           </div>
         ) : documents.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-gray-400">
-            <div className="text-center">
-              <FileText size={48} className="mx-auto mb-4 opacity-50" />
-              <p className="text-lg mb-2">还没有文档</p>
-              <p className="text-sm">上传 PDF、Word、TXT 或 Markdown 文件</p>
-            </div>
+          <div className="card flex flex-col items-center justify-center py-20">
+            <FileText size={40} className="text-zinc-300 mb-4" strokeWidth={1.5} />
+            <p className="text-sm text-zinc-700 mb-1">还没有文档</p>
+            <p className="text-[12px] text-zinc-400">上传 PDF、Word、TXT 或 Markdown 文件开始</p>
           </div>
         ) : (
-          <div className="grid gap-4">
+          <div className="space-y-2">
             {documents.map(doc => (
               <div
                 key={doc.document_id}
-                className="bg-white rounded-lg border p-4 hover:shadow-md transition-shadow"
+                className="card px-4 py-3 flex items-center justify-between gap-3 hover:border-zinc-300 transition-colors"
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-start space-x-3">
-                    <File className="text-blue-500 mt-1" size={20} />
-                    <div>
-                      <h3 className="font-medium text-gray-900">{doc.title || doc.filename}</h3>
-                      <div className="flex items-center space-x-3 mt-1 text-sm text-gray-500">
-                        <span>{doc.filename}</span>
-                        <span>•</span>
-                        <span>{doc.chunk_count} 个分块</span>
-                        <span>•</span>
-                        <span>{(doc.char_count / 1000).toFixed(1)}k 字符</span>
-                      </div>
-                    </div>
+                {/* 左侧：图标 + 文档名 + 元信息 */}
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  <File size={16} className="text-zinc-400 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-zinc-900 truncate">
+                      {doc.title || doc.filename}
+                    </p>
+                    <p className="text-[12px] text-zinc-500 mt-0.5 truncate">
+                      {doc.filename}
+                      <span className="mx-1.5 text-zinc-300">·</span>
+                      {doc.chunk_count} 分块
+                      <span className="mx-1.5 text-zinc-300">·</span>
+                      {formatChars(doc.char_count)} 字符
+                      <span className="mx-1.5 text-zinc-300">·</span>
+                      {formatDate(doc.created_at)}
+                    </p>
                   </div>
+                </div>
 
-                  <div className="flex items-center space-x-2">
-                    <span className={`text-xs px-2 py-1 rounded-full ${getStatusColor(doc.status)}`}>
-                      {getStatusText(doc.status)}
-                    </span>
+                {/* 右侧：分类标签 + 类型标签 + 状态标签 + 操作 */}
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="tag-default">{getCategoryLabel(doc.category)}</span>
+                  <span className="tag-default uppercase">{getFileType(doc.filename)}</span>
+                  <span className={getStatusClass(doc.status)}>{getStatusText(doc.status)}</span>
+                  {confirmingId === doc.document_id ? (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleDelete(doc.document_id)}
+                        disabled={deletingId === doc.document_id}
+                        className="btn-danger px-2 py-1 text-[12px]"
+                        aria-label="确认删除"
+                      >
+                        {deletingId === doc.document_id ? (
+                          <Loader2 size={13} className="animate-spin" />
+                        ) : (
+                          <Check size={13} />
+                        )}
+                        <span>确认</span>
+                      </button>
+                      <button
+                        onClick={() => setConfirmingId(null)}
+                        disabled={deletingId === doc.document_id}
+                        className="btn-ghost px-2 py-1 text-[12px]"
+                        aria-label="取消删除"
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ) : (
                     <button
-                      onClick={() => handleDelete(doc.document_id)}
-                      className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                      onClick={() => setConfirmingId(doc.document_id)}
+                      className="btn-ghost p-1.5"
+                      aria-label="删除文档"
                     >
-                      <Trash2 size={16} />
+                      <Trash2 size={14} />
                     </button>
-                  </div>
+                  )}
                 </div>
               </div>
             ))}
           </div>
         )}
-      </div>
 
-      {/* 底部统计 */}
-      <div className="border-t bg-white px-6 py-3">
-        <p className="text-sm text-gray-500">
-          共 {documents.length} 个文档
-        </p>
+        {/* 底部统计 */}
+        {!loading && documents.length > 0 && (
+          <p className="text-[12px] text-zinc-400 mt-6">共 {documents.length} 个文档</p>
+        )}
       </div>
     </div>
   );
