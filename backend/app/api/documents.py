@@ -17,9 +17,11 @@ from pydantic import BaseModel
 from loguru import logger
 
 from ..core.auth import get_current_user, require_admin, UserResponse
+from ..core.config import settings
 from ..core.database import get_db, Database
 from ..document.uploader import DocumentUploader
 from ..models.document import Document, DocumentStatus, DocumentCategory
+from ..storage.file_storage import get_file_storage
 
 
 router = APIRouter(prefix="/api/documents", tags=["文档管理"])
@@ -308,14 +310,31 @@ async def upload_document(
 
         await db.create_document(document)
 
-        # 后台异步处理（user_id 传空：让向量库 metadata.user_id 为空，检索层判定为公共文档）
-        uploader = get_document_uploader()
-        background_tasks.add_task(
-            _process_document,
-            db, uploader, document_id, content, filename, title, "",
-        )
+        # 异步处理：USE_CELERY=True 走 Celery worker；False 降级到 BackgroundTasks 同步处理
+        if settings.USE_CELERY:
+            # Celery 模式：先存文件到 FileStorage，再投递 task（task 从路径读取，避免 bytes 过 broker）
+            file_storage = get_file_storage()
+            file_info = await file_storage.save(
+                content=content, filename=filename,
+                user_id=admin_user_id, document_id=document_id,
+            )
+            file_path = file_info["file_path"]
+            await db.update_document(document_id, {"file_path": file_path})
 
-        logger.info(f"文档上传成功: {document_id} - {filename} (分类: {category}, 导入者: {admin_user_id})")
+            from app.tasks.document_tasks import process_document
+            task = process_document.delay(
+                document_id, file_path, filename, title or filename,
+            )
+            await db.update_document(document_id, {"task_id": task.id})
+            logger.info(f"文档已投递 Celery task: {document_id} task={task.id} (导入者: {admin_user_id})")
+        else:
+            # 降级模式：BackgroundTasks 同步处理（user_id 传空=公共文档）
+            uploader = get_document_uploader()
+            background_tasks.add_task(
+                _process_document,
+                db, uploader, document_id, content, filename, title, "",
+            )
+            logger.info(f"文档已提交 BackgroundTasks: {document_id} - {filename} (导入者: {admin_user_id})")
 
         return DocumentResponse(
             document_id=document_id,
@@ -370,13 +389,26 @@ async def get_document_status(
                     detail="无权访问此文档"
                 )
 
-        return {
+        result = {
             "document_id": doc.get("document_id"),
             "status": doc.get("status"),
             "chunk_count": doc.get("chunk_count", 0),
             "char_count": doc.get("char_count", 0),
             "error_message": doc.get("error_message", ""),
+            "task_id": doc.get("task_id", ""),
         }
+
+        # Celery 模式下补充 task 实时状态（PENDING/STARTED/SUCCESS/FAILURE/RETRY）
+        if settings.USE_CELERY and doc.get("task_id"):
+            try:
+                from app.celery_app import app as celery_app
+                async_result = celery_app.AsyncResult(doc["task_id"])
+                result["task_state"] = async_result.state
+            except Exception as e:
+                result["task_state"] = "UNKNOWN"
+                logger.warning(f"查询 Celery task 状态失败: {e}")
+
+        return result
 
     except HTTPException:
         raise
@@ -385,6 +417,66 @@ async def get_document_status(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"获取文档状态失败: {str(e)}"
+        )
+
+
+@router.post("/{document_id}/retry")
+async def retry_document(
+    document_id: str,
+    current_user: UserResponse = Depends(require_admin),
+    db: Database = Depends(get_db),
+):
+    """
+    重试文档处理（仅管理员，需 USE_CELERY=True）
+
+    重新投递 Celery task 处理文档。要求文档有 file_path（Celery 模式上传时存储）。
+    """
+    if not settings.USE_CELERY:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="当前未启用 Celery 异步处理（USE_CELERY=False），无法重试"
+        )
+
+    try:
+        doc = await db.get_document(document_id)
+        if not doc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="文档不存在"
+            )
+
+        if doc.get("status") not in ("failed", "completed"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"当前状态 {doc.get('status')} 不可重试，仅 failed/completed 可重试"
+            )
+
+        file_path = doc.get("file_path")
+        if not file_path or not Path(file_path).exists():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="原始文件不存在，无法重试"
+            )
+
+        from app.tasks.document_tasks import process_document
+        task = process_document.delay(
+            document_id, file_path, doc.get("filename", ""), doc.get("title", ""),
+        )
+        await db.update_document(document_id, {
+            "status": DocumentStatus.PENDING.value,
+            "task_id": task.id,
+            "error_message": "",
+        })
+        logger.info(f"文档重试已投递: {document_id} task={task.id}")
+        return {"document_id": document_id, "task_id": task.id, "status": "pending"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"文档重试失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="文档重试失败"
         )
 
 
@@ -636,12 +728,25 @@ async def batch_upload_documents(
             }
             await db.create_document(document)
 
-            # 后台异步处理（user_id 传空：公共文档）
-            uploader = get_document_uploader()
-            background_tasks.add_task(
-                _process_document,
-                db, uploader, document_id, content, filename, filename, "",
-            )
+            # 异步处理：USE_CELERY 走 Celery worker；否则降级 BackgroundTasks
+            if settings.USE_CELERY:
+                file_storage = get_file_storage()
+                file_info = await file_storage.save(
+                    content=content, filename=filename,
+                    user_id=admin_user_id, document_id=document_id,
+                )
+                file_path = file_info["file_path"]
+                await db.update_document(document_id, {"file_path": file_path})
+
+                from app.tasks.document_tasks import process_document
+                task = process_document.delay(document_id, file_path, filename, filename)
+                await db.update_document(document_id, {"task_id": task.id})
+            else:
+                uploader = get_document_uploader()
+                background_tasks.add_task(
+                    _process_document,
+                    db, uploader, document_id, content, filename, filename, "",
+                )
 
             success_count += 1
             results.append({

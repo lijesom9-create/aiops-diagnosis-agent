@@ -175,6 +175,12 @@ class Settings(BaseSettings):
     # Redis配置（可选，用于缓存）
     REDIS_URL: Optional[str] = None
 
+    # Celery 异步任务队列（文档导入等耗时任务）
+    # USE_CELERY=True 时走 Celery worker（需单独启动 worker）；False 时降级到 BackgroundTasks 同步处理
+    USE_CELERY: bool = False
+    CELERY_BROKER_URL: Optional[str] = None  # 留空则复用 REDIS_URL
+    CELERY_RESULT_BACKEND: Optional[str] = None  # 留空则复用 REDIS_URL
+
     # CORS配置（逗号分隔的字符串）
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 

@@ -64,38 +64,17 @@ async def lifespan(app: FastAPI):
     # 连接数据库
     await db.connect()
 
-    # 初始化统一知识存储
-    from app.knowledge.unified_store import UnifiedKnowledgeStore
+    # 初始化统一知识存储（复用 shared_services.init_knowledge_store，celery worker 也用同一函数）
     from app.api.documents import set_knowledge_store
     from app.api.knowledge import set_knowledge_store as set_kb_store
     from app.api.health import set_knowledge_store as set_health_store
-    from app.shared_services import get_embedding_model, set_knowledge_store as set_shared_store
-    from app.retrieval.reranker import CrossEncoderReranker
+    from app.shared_services import init_knowledge_store
 
-    embedding_model = get_embedding_model()
-
-    # 创建 Reranker（可配置开关，加载失败时优雅降级）
-    reranker = None
-    if settings.RERANKER_ENABLED:
-        try:
-            reranker = CrossEncoderReranker(model_name=settings.RERANKER_MODEL_NAME)
-            # 触发一次加载，确保模型可用
-            reranker._load_model()
-            logger.info(f"Reranker 初始化完成: {settings.RERANKER_MODEL_NAME}")
-        except Exception as e:
-            logger.warning(f"Reranker 加载失败，将禁用重排: {e}")
-            reranker = None
-
-    knowledge_store = UnifiedKnowledgeStore(
-        embedding_model=embedding_model,
-        reranker=reranker,
-        separate_parent_child=settings.RAG_SEPARATE_PARENT_CHILD,
-        vector_store_backend=settings.VECTOR_STORE_BACKEND,
-    )
+    knowledge_store = init_knowledge_store()
+    # 同步到各 API 模块的本地引用
     set_knowledge_store(knowledge_store)
     set_kb_store(knowledge_store)
     set_health_store(knowledge_store)
-    set_shared_store(knowledge_store)
 
     logger.info(f"应用启动完成, 知识库: {knowledge_store.size()} 条")
 

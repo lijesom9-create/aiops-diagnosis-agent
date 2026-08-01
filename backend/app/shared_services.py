@@ -117,6 +117,45 @@ def set_knowledge_store(store):
     logger.info("Knowledge store 已设置")
 
 
+def init_knowledge_store():
+    """初始化统一知识库（web lifespan 和 celery worker 复用）
+
+    创建 embedding model + reranker + UnifiedKnowledgeStore，并设置到全局单例。
+    worker 进程不跑 FastAPI lifespan，调用本函数完成初始化。
+    幂等：已初始化则直接返回现有实例。
+    """
+    global _knowledge_store
+    if _knowledge_store is not None:
+        return _knowledge_store
+
+    from app.knowledge.unified_store import UnifiedKnowledgeStore
+    from app.retrieval.reranker import CrossEncoderReranker
+    from app.core.config import settings
+
+    embedding_model = get_embedding_model()
+
+    # 创建 Reranker（可配置开关，加载失败时优雅降级）
+    reranker = None
+    if settings.RERANKER_ENABLED:
+        try:
+            reranker = CrossEncoderReranker(model_name=settings.RERANKER_MODEL_NAME)
+            reranker._load_model()
+            logger.info(f"Reranker 初始化完成: {settings.RERANKER_MODEL_NAME}")
+        except Exception as e:
+            logger.warning(f"Reranker 加载失败，将禁用重排: {e}")
+            reranker = None
+
+    knowledge_store = UnifiedKnowledgeStore(
+        embedding_model=embedding_model,
+        reranker=reranker,
+        separate_parent_child=settings.RAG_SEPARATE_PARENT_CHILD,
+        vector_store_backend=settings.VECTOR_STORE_BACKEND,
+    )
+    set_knowledge_store(knowledge_store)
+    logger.info(f"Knowledge store 初始化完成: {knowledge_store.size()} 条")
+    return knowledge_store
+
+
 def get_hybrid_retriever():
     """获取混合检索器实例"""
     global _hybrid_retriever

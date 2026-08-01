@@ -96,6 +96,34 @@ services:
       - education-network
     restart: unless-stopped
 
+  # Celery Worker（文档导入异步处理，需 USE_CELERY=true）
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.celery_app worker --loglevel=info --pool=solo
+    env_file:
+      - ./backend/.env
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017
+      - REDIS_URL=redis://redis:6379/0
+      - USE_CELERY=true
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # 与 backend 共享 data（向量库）和 uploads（文档文件），worker 需读取 web 存储的文件
+      - ./backend/data:/app/data
+      - ./backend/uploads:/app/uploads
+      - ${USERPROFILE}/.cache/huggingface:/home/appuser/.cache/huggingface
+    networks:
+      - education-network
+    restart: unless-stopped
+
 networks:
   education-network:
     driver: bridge

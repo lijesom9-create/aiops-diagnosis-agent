@@ -53,6 +53,9 @@ jieba==0.42.1  # 中文分词（BM25/检索/记忆模块）
 # 缓存
 redis==8.1.0  # 可选缓存与限流后端
 
+# 异步任务队列（文档导入异步化）
+celery==5.5.3  # 分布式任务队列，broker 复用 Redis
+
 # 工具库
 pydantic==2.13.4
 pydantic-settings==2.14.2  # docling 需要兼容版本

@@ -149,3 +149,26 @@ class TestSuperAdminBootstrap:
         me = client.get("/api/auth/me", headers=auth_header(token))
         assert me.status_code == 200
         assert me.json()["role"] == "student"
+
+
+class TestRetryApi:
+    """重试 API（专题2：Celery 异步导入）"""
+
+    def test_retry_requires_celery(self, client):
+        """USE_CELERY=False 时重试 API 返回 400（降级模式不支持重试）"""
+        token = _register(client, role="admin")
+        resp = client.post(
+            "/api/documents/doc_nonexistent/retry",
+            headers=auth_header(token),
+        )
+        assert resp.status_code == 400
+        assert "Celery" in resp.json()["detail"] or "USE_CELERY" in resp.json()["detail"]
+
+    def test_student_retry_forbidden(self, client):
+        """普通用户重试 → 403（权限层先拒绝，不检查 USE_CELERY）"""
+        token = _register(client, role="student")
+        resp = client.post(
+            "/api/documents/doc_nonexistent/retry",
+            headers=auth_header(token),
+        )
+        assert resp.status_code == 403
