@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File,
 from pydantic import BaseModel
 from loguru import logger
 
-from ..core.auth import get_current_user, UserResponse
+from ..core.auth import get_current_user, require_admin, UserResponse
 from ..core.database import get_db, Database
 from ..document.uploader import DocumentUploader
 from ..models.document import Document, DocumentStatus, DocumentCategory
@@ -169,10 +169,14 @@ async def list_documents(
     获取文档列表
 
     获取当前用户的所有文档，支持按分类过滤。
+    管理员可查看全部文档；普通用户仅查看自己的文档 + 公共文档。
     """
     try:
-        user_id = current_user.user_id
-        documents = await db.get_user_documents(user_id)
+        # admin 看全部文档；普通用户看自己的 + 公共文档
+        if current_user.role == "admin":
+            documents = await db.get_all_documents()
+        else:
+            documents = await db.get_user_documents(current_user.user_id)
 
         # 按分类过滤
         if category:
@@ -216,17 +220,20 @@ async def upload_document(
     title_utf8: Optional[str] = None,  # UTF-8 编码的标题（用于修复中文乱码）
     skip_duplicate: bool = Form(True),  # 默认开启去重
     category: str = Form("other"),  # 文档分类
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(require_admin),
     db: Database = Depends(get_db),
 ):
     """
-    上传文档
+    上传文档（仅管理员）
 
     支持 PDF、Word、TXT、Markdown 格式。
     默认开启文件哈希去重（skip_duplicate=True），相同文件不重复入库。
+    管理员导入的文档默认为公共文档（所有用户可检索、可问答）。
     """
     try:
-        user_id = current_user.user_id
+        # admin 导入的文档为公共文档：user_id 留空（检索层据此判定公共）
+        # uploaded_by 记录导入者，便于审计
+        admin_user_id = current_user.user_id
 
         # 校验分类
         valid_categories = [c.value for c in DocumentCategory]
@@ -261,10 +268,10 @@ async def upload_document(
                 detail=f"不支持的文件类型: {doc_type or '未知'}，支持: {', '.join(sorted(_ALLOWED_EXTENSIONS))}"
             )
 
-        # 去重检查：相同文件哈希不重复入库
+        # 去重检查：公共文档全局去重（user_id="" 命中所有公共文档）
         file_hash = _compute_file_hash(content)
         if skip_duplicate:
-            existing = await _check_duplicate(db, user_id, file_hash)
+            existing = await _check_duplicate(db, "", file_hash)
             if existing:
                 logger.info(f"文件重复，跳过入库: {filename} -> 已存在 {existing.get('document_id')}")
                 return DocumentResponse(
@@ -284,7 +291,9 @@ async def upload_document(
         now = datetime.now().isoformat()
         document = {
             "document_id": document_id,
-            "user_id": user_id,
+            "user_id": "",  # 公共文档：留空使检索层对所有用户可见
+            "uploaded_by": admin_user_id,  # 审计：记录导入者
+            "is_public": True,  # 列表层据此返回给所有用户
             "filename": filename,
             "title": title or filename,
             "doc_type": doc_type,
@@ -299,14 +308,14 @@ async def upload_document(
 
         await db.create_document(document)
 
-        # 后台异步处理
+        # 后台异步处理（user_id 传空：让向量库 metadata.user_id 为空，检索层判定为公共文档）
         uploader = get_document_uploader()
         background_tasks.add_task(
             _process_document,
-            db, uploader, document_id, content, filename, title, user_id,
+            db, uploader, document_id, content, filename, title, "",
         )
 
-        logger.info(f"文档上传成功: {document_id} - {filename} (分类: {category})")
+        logger.info(f"文档上传成功: {document_id} - {filename} (分类: {category}, 导入者: {admin_user_id})")
 
         return DocumentResponse(
             document_id=document_id,
@@ -343,7 +352,6 @@ async def get_document_status(
     查询文档处理状态。
     """
     try:
-        user_id = current_user.user_id
         doc = await db.get_document(document_id)
 
         if not doc:
@@ -352,11 +360,15 @@ async def get_document_status(
                 detail="文档不存在"
             )
 
-        if doc.get("user_id") != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="无权访问此文档"
-            )
+        # admin 可查任意文档；普通用户仅查自己的 + 公共文档
+        if current_user.role != "admin":
+            doc_user_id = doc.get("user_id", "")
+            is_public = doc.get("is_public", False)
+            if doc_user_id and doc_user_id != current_user.user_id and not is_public:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="无权访问此文档"
+                )
 
         return {
             "document_id": doc.get("document_id"),
@@ -379,28 +391,21 @@ async def get_document_status(
 @router.delete("/{document_id}")
 async def delete_document(
     document_id: str,
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(require_admin),
     db: Database = Depends(get_db),
 ):
     """
-    删除文档
+    删除文档（仅管理员）
 
-    删除文档及其向量数据。
+    删除文档及其向量数据。管理员可删除任意文档。
     """
     try:
-        user_id = current_user.user_id
         doc = await db.get_document(document_id)
 
         if not doc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="文档不存在"
-            )
-
-        if doc.get("user_id") != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="无权删除此文档"
             )
 
         # 删除向量数据
@@ -441,30 +446,24 @@ async def update_document(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
     title_utf8: Optional[str] = None,
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(require_admin),
     db: Database = Depends(get_db),
 ):
     """
-    更新文档（先删旧数据再重新解析入库）
+    更新文档（仅管理员，先删旧数据再重新解析入库）
 
     流程：
     1. 删除旧文档的向量数据 + 图片
     2. 用新文件内容重新解析、分块、向量化
-    3. 更新 DB 记录（保留原 document_id）
+    3. 更新 DB 记录（保留原 document_id 和可见性）
     """
     try:
-        user_id = current_user.user_id
         doc = await db.get_document(document_id)
 
         if not doc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="文档不存在"
-            )
-        if doc.get("user_id") != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="无权更新此文档"
             )
 
         # 读取新文件
@@ -509,11 +508,11 @@ async def update_document(
             "version": old_version + 1,
         })
 
-        # 4. 后台异步重新处理
+        # 4. 后台异步重新处理（保持原文档可见性：公共文档 user_id 为空）
         uploader = get_document_uploader()
         background_tasks.add_task(
             _process_document,
-            db, uploader, document_id, content, filename, title, user_id,
+            db, uploader, document_id, content, filename, title, doc.get("user_id", ""),
         )
 
         logger.info(f"文档更新中: {document_id} - {filename}")
@@ -554,14 +553,15 @@ async def batch_upload_documents(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     skip_duplicate: bool = Form(True),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(require_admin),
     db: Database = Depends(get_db),
 ):
     """
-    批量上传文档
+    批量上传文档（仅管理员）
 
     一次上传多个文件，自动去重（skip_duplicate=True 时）。
     文件处理在后台异步执行，接口立即返回。
+    管理员导入的文档默认为公共文档。
 
     返回每个文件的处理结果：
     - success: 已提交处理
@@ -569,7 +569,7 @@ async def batch_upload_documents(
     - failed: 文件类型不支持或读取失败
     """
     try:
-        user_id = current_user.user_id
+        admin_user_id = current_user.user_id
         supported_types = {"pdf", "docx", "txt", "md", "markdown"}
 
         results: List[dict] = []
@@ -603,10 +603,10 @@ async def batch_upload_documents(
                 })
                 continue
 
-            # 去重检查
+            # 去重检查（公共文档全局去重）
             file_hash = _compute_file_hash(content)
             if skip_duplicate:
-                existing = await _check_duplicate(db, user_id, file_hash)
+                existing = await _check_duplicate(db, "", file_hash)
                 if existing:
                     skipped_count += 1
                     results.append({
@@ -617,12 +617,14 @@ async def batch_upload_documents(
                     })
                     continue
 
-            # 创建文档记录
+            # 创建文档记录（公共文档）
             document_id = f"doc_{uuid.uuid4().hex[:12]}"
             now = datetime.now().isoformat()
             document = {
                 "document_id": document_id,
-                "user_id": user_id,
+                "user_id": "",  # 公共文档
+                "uploaded_by": admin_user_id,
+                "is_public": True,
                 "filename": filename,
                 "title": filename,
                 "doc_type": doc_type,
@@ -634,11 +636,11 @@ async def batch_upload_documents(
             }
             await db.create_document(document)
 
-            # 后台异步处理
+            # 后台异步处理（user_id 传空：公共文档）
             uploader = get_document_uploader()
             background_tasks.add_task(
                 _process_document,
-                db, uploader, document_id, content, filename, filename, user_id,
+                db, uploader, document_id, content, filename, filename, "",
             )
 
             success_count += 1

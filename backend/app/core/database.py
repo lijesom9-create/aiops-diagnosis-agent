@@ -325,6 +325,29 @@ class Database:
             reverse=True
         )[:limit]
 
+    async def get_all_documents(
+        self,
+        status: Optional[str] = None,
+        limit: int = 1000,
+    ) -> List[dict]:
+        """获取所有文档（管理员视角，跨用户）"""
+        await self.connect()
+        if self._use_mongo:
+            query: dict = {}
+            if status:
+                query["status"] = status
+            cursor = self._mongo.documents.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
+            docs = await cursor.to_list(limit)
+            return clean_mongo_docs(docs)
+        result = list(self._documents)
+        if status:
+            result = [d for d in result if d.get("status") == status]
+        return sorted(
+            result,
+            key=lambda x: x.get("created_at", ""),
+            reverse=True
+        )[:limit]
+
     async def update_document(self, document_id: str, update_data: dict) -> bool:
         """更新文档记录"""
         await self.connect()

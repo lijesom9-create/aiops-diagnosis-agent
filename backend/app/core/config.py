@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
+    # 管理后台：超管账号初始化
+    # 全新部署时，首次注册该用户名会自动赋予 admin 角色（仅注册时生效，不回填已存在用户）
+    # 留空则不启用；已存在用户的提权请用 backend/promote_admin.py 脚本
+    SUPER_ADMIN_USERNAME: str = ""
+
     # AI模型配置（统一配置）
     # 模型名称格式：deepseek/chat, zhipu/glm-4-flash, openai/gpt-4o-mini, anthropic/claude-sonnet-4-20250514, qwen/qwen-turbo
     AI_MODEL: str = "deepseek/chat"

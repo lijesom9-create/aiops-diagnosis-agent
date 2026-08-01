@@ -184,6 +184,20 @@ async def require_admin_or_teacher(current_user: UserResponse = Depends(get_curr
     return current_user
 
 
+async def require_admin(current_user: UserResponse = Depends(get_current_user)) -> UserResponse:
+    """要求管理员权限（严格，仅 admin 角色可访问）
+
+    用于管理后台的写操作（文档导入/删除/更新、用户管理等）。
+    区别于 require_admin_or_teacher：教师角色无管理后台权限。
+    """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要管理员权限"
+        )
+    return current_user
+
+
 async def register_user(user_data: UserCreate) -> Token:
     """注册用户"""
 
@@ -209,12 +223,19 @@ async def register_user(user_data: UserCreate) -> Token:
     # 创建组织
     org_id = await db.create_org(name=user_data.org_name, owner_id=user_id)
 
+    # 角色判定：若用户名匹配超管配置，强制赋予 admin 角色（用于全新部署初始化）
+    # 仅在注册时生效；已存在用户的提权请用 backend/promote_admin.py 脚本
+    effective_role = user_data.role.value if isinstance(user_data.role, Enum) else user_data.role
+    if settings.SUPER_ADMIN_USERNAME and user_data.username == settings.SUPER_ADMIN_USERNAME:
+        effective_role = UserRole.ADMIN.value
+        logger.info(f"用户名匹配 SUPER_ADMIN_USERNAME，自动赋予 admin 角色: {user_data.username}")
+
     # 创建用户数据
     user_dict = {
         "user_id": user_id,
         "username": user_data.username,
         "email": user_data.email,
-        "role": user_data.role.value if isinstance(user_data.role, Enum) else user_data.role,
+        "role": effective_role,
         "hashed_password": get_password_hash(user_data.password),
         "org_id": org_id,
     }
