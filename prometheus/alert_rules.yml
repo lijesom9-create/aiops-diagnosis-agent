@@ -1,0 +1,79 @@
+# Prometheus 告警规则（AIOps 场景常用规则）
+# 文档：https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
+#
+# 告警触发后由 Prometheus 推送到 Alertmanager，Agent 通过 alertmanager MCP 查询活跃告警。
+# 规则按 AIOps 诊断场景设计：CPU/内存/磁盘/服务存活 4 类核心告警。
+
+groups:
+  - name: system_alerts
+    rules:
+      # ========== CPU 告警 ==========
+      # CPU 使用率 > 80% 持续 2 分钟（生产阈值，测试时可临时调低到 >20/for 30s）
+      - alert: HighCpuUsage
+        expr: 100 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100 > 80
+        for: 2m
+        labels:
+          severity: warning
+          category: cpu
+        annotations:
+          summary: "CPU 使用率过高 ({{ $value | printf \"%.1f\" }}%)"
+          description: "CPU 使用率超过 80% 已持续 2 分钟，可能影响服务响应时间"
+
+      # ========== 内存告警 ==========
+      # 内存使用率 > 90% 持续 1 分钟
+      - alert: HighMemoryUsage
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 90
+        for: 1m
+        labels:
+          severity: critical
+          category: memory
+        annotations:
+          summary: "内存使用率过高 ({{ $value | printf \"%.1f\" }}%)"
+          description: "内存使用率超过 90%，可能导致 OOM 或进程被 kill"
+
+      # 磁盘使用率 > 85%
+      - alert: HighDiskUsage
+        expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          category: disk
+        annotations:
+          summary: "磁盘使用率过高 ({{ $labels.mountpoint }}: {{ $value | printf \"%.1f\" }}%)"
+          description: "挂载点 {{ $labels.mountpoint }} 磁盘使用率超过 85%"
+
+      # ========== 负载告警 ==========
+      # 系统负载 > CPU 核数的 2 倍
+      - alert: HighLoadAverage
+        expr: node_load1 > count(count(node_cpu_seconds_total{mode="idle"}) by (cpu)) * 2
+        for: 5m
+        labels:
+          severity: warning
+          category: load
+        annotations:
+          summary: "系统负载过高 (load1: {{ $value | printf \"%.2f\" }})"
+          description: "1 分钟负载超过 CPU 核数的 2 倍，可能存在性能瓶颈"
+
+      # ========== 服务存活告警 ==========
+      # node-exporter 5 分钟无数据（采集目标宕机）
+      - alert: NodeExporterDown
+        expr: up{job="node_exporter"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: service
+        annotations:
+          summary: "node-exporter 不可达"
+          description: "node-exporter 已 5 分钟无数据，可能宕机或网络不通"
+
+      # ========== 网络告警 ==========
+      # 网络入流量突增（可能是攻击或大流量任务）
+      - alert: HighNetworkIngress
+        expr: rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br-.*"}[5m]) > 100000000
+        for: 3m
+        labels:
+          severity: warning
+          category: network
+        annotations:
+          summary: "网络入流量过高 ({{ $value | humanize1024 }}B/s)"
+          description: "网络入流量超过 100MB/s 已持续 3 分钟"

@@ -1,0 +1,36 @@
+{
+  "dataset": "queries_v3",
+  "version": "3.0",
+  "name": "多模态RAG智能运维Agent评测数据集 v3",
+  "description": "250+ 条 8 类评测查询集：普通/长尾/口语化/多跳/多模态/跨文档/多轮/负向，以运维知识库场景为主",
+  "created_at": "2026-08-04",
+  "files": [
+    {"file": "queries_v3_normal.json", "category": "normal", "label": "普通", "count": 40},
+    {"file": "queries_v3_long_tail.json", "category": "long_tail", "label": "长尾", "count": 35},
+    {"file": "queries_v3_colloquial.json", "category": "colloquial", "label": "口语化", "count": 30},
+    {"file": "queries_v3_multi_hop.json", "category": "multi_hop", "label": "多跳", "count": 30},
+    {"file": "queries_v3_multimodal.json", "category": "multimodal", "label": "多模态", "count": 25},
+    {"file": "queries_v3_cross_doc.json", "category": "cross_doc", "label": "跨文档", "count": 25},
+    {"file": "queries_v3_negative.json", "category": "negative", "label": "负向", "count": 25},
+    {"file": "queries_v3_multi_turn.json", "category": "multi_turn", "label": "多轮", "groups": 20, "turn_count": 60}
+  ],
+  "summary": {
+    "single_queries": 210,
+    "multi_turn_groups": 20,
+    "multi_turn_turns": 60,
+    "total_query_instances": 270
+  },
+  "fields": {
+    "query": "查询语句",
+    "category": "类别（normal/long_tail/colloquial/multi_hop/multimodal/cross_doc/negative）",
+    "domain": "场景域（ops=运维知识库 / multimodal=图片检索 / negative=拒答）",
+    "expected_keywords": "期望命中的关键词（检索评估 ground truth）",
+    "expected_doc_type": "期望命中文档类型",
+    "cross_doc_types": "跨文档查询期望覆盖的文档类型",
+    "image_hint": "多模态查询标记（期望命中图片描述块）",
+    "negative": "负向查询标记",
+    "expect_refuse": "期望 Agent 拒答",
+    "groups[].turns[].contextual": "多轮中依赖上下文的轮次（指代消解）"
+  },
+  "evaluation_script": "backend/evaluation/eval/eval_kb_v3.py"
+}

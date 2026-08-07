@@ -10,7 +10,9 @@ Memory Layer - 记忆管理层
 - RecallMemory: 回忆记忆（对话历史）- 支持语义搜索
 - ArchivalMemory: 档案记忆（用户笔记、学习记录）- 大容量存储
 - MemoryManager: 记忆管理器（整合所有记忆层次）
-- RAGGenerator: RAG 生成器（整合记忆和知识检索）
+
+注：RAG 生成由 LangGraphAgent（app/langgraph_agent/）统一承载，
+    评测脚本使用各自内联的轻量生成逻辑，不再保留独立 RAGGenerator 类。
 """
 
 # 新的记忆系统
@@ -18,7 +20,6 @@ from .core_memory import CoreMemory, UserProfile, AgentPersona
 from .recall_memory import RecallMemory, ConversationTurn, ConversationSession
 from .archival_memory import ArchivalMemory, MemoryEntry
 from .memory_manager import MemoryManager
-from .rag_generator import RAGGenerator, GenerationResult
 
 __all__ = [
     # 核心记忆
@@ -37,8 +38,4 @@ __all__ = [
 
     # 记忆管理器
     "MemoryManager",
-
-    # RAG 生成器
-    "RAGGenerator",
-    "GenerationResult",
 ]

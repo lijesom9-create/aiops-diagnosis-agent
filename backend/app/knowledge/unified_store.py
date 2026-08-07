@@ -9,10 +9,8 @@ Unified Knowledge Store - 统一知识存储
 MongoDB 只存储元数据和状态，不存储知识内容。
 """
 
-import math
 import os
 import re
-import threading
 from typing import List, Dict, Any, Optional, Set
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -67,214 +65,6 @@ def _init_jieba():
 _init_jieba()
 
 
-# ========== BM25 倒排索引 ==========
-
-class BM25Index:
-    """
-    BM25 倒排索引（内存持久化）
-
-    在文档添加/删除时增量更新，搜索时直接使用，不需要每次重建。
-    """
-
-    def __init__(self, k1: float = 1.5, b: float = 0.75):
-        self.k1 = k1
-        self.b = b
-
-        # 倒排索引核心数据结构
-        self._doc_contents: Dict[str, str] = {}       # doc_id → content
-        self._doc_lengths: Dict[str, int] = {}         # doc_id → 文档长度（词数）
-        self._term_freqs: Dict[str, Dict[str, int]] = {}  # term → {doc_id: 频率}
-        self._doc_freqs: Dict[str, int] = {}           # term → 出现在几个文档中
-
-        self._lock = threading.Lock()
-        self._avg_doc_length: float = 0.0
-        self._total_docs: int = 0
-
-    def add_document(self, doc_id: str, content: str) -> None:
-        """添加文档到倒排索引"""
-        terms = self._tokenize(content)
-        if not terms:
-            return
-
-        with self._lock:
-            # 如果文档已存在，先移除旧的
-            if doc_id in self._doc_contents:
-                self._remove_doc_internal(doc_id)
-
-            # 存储文档内容和长度
-            self._doc_contents[doc_id] = content
-            self._doc_lengths[doc_id] = len(terms)
-            self._total_docs = len(self._doc_contents)
-
-            # 统计词频
-            tf = {}
-            for term in terms:
-                tf[term] = tf.get(term, 0) + 1
-
-            # 更新倒排索引
-            for term, freq in tf.items():
-                if term not in self._term_freqs:
-                    self._term_freqs[term] = {}
-                self._term_freqs[term][doc_id] = freq
-                self._doc_freqs[term] = self._doc_freqs.get(term, 0) + 1
-
-            # 更新平均文档长度
-            total_length = sum(self._doc_lengths.values())
-            self._avg_doc_length = total_length / self._total_docs if self._total_docs else 0
-
-    def add_batch(self, doc_ids: List[str], contents: List[str]) -> None:
-        """批量添加文档"""
-        for doc_id, content in zip(doc_ids, contents):
-            self.add_document(doc_id, content)
-
-    def remove_document(self, doc_id: str) -> None:
-        """从倒排索引中移除文档"""
-        with self._lock:
-            self._remove_doc_internal(doc_id)
-
-    def _remove_doc_internal(self, doc_id: str) -> None:
-        """内部移除（需要已持有锁）"""
-        if doc_id not in self._doc_contents:
-            return
-
-        # 从倒排索引中移除
-        for term in list(self._term_freqs.keys()):
-            if doc_id in self._term_freqs[term]:
-                freq = self._term_freqs[term].pop(doc_id)
-                self._doc_freqs[term] -= freq
-                if self._doc_freqs[term] <= 0:
-                    del self._doc_freqs[term]
-                    del self._term_freqs[term]
-
-        del self._doc_contents[doc_id]
-        del self._doc_lengths[doc_id]
-        self._total_docs = len(self._doc_contents)
-
-        total_length = sum(self._doc_lengths.values())
-        self._avg_doc_length = total_length / self._total_docs if self._total_docs else 0
-
-    def search(self, query: str, top_k: int = 10) -> List[tuple]:
-        """
-        BM25 搜索
-
-        Returns:
-            List[(doc_id, score)]: 按分数排序的结果
-        """
-        query_terms = self._tokenize(query)
-        if not query_terms or not self._doc_contents:
-            return []
-
-        with self._lock:
-            scores = {}
-            for doc_id in self._doc_contents:
-                score = self._calculate_score(query_terms, doc_id)
-                if score > 0:
-                    scores[doc_id] = score
-
-        sorted_results = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-        return sorted_results[:top_k]
-
-    def _calculate_score(self, query_terms: List[str], doc_id: str) -> float:
-        """计算单个文档的 BM25 分数"""
-        score = 0.0
-        doc_len = self._doc_lengths.get(doc_id, 0)
-
-        for term in query_terms:
-            tf = self._term_freqs.get(term, {}).get(doc_id, 0)
-            if tf == 0:
-                continue
-
-            df = self._doc_freqs.get(term, 0)
-            idf = max(0.0, math.log((self._total_docs - df + 0.5) / (df + 0.5) + 1))
-
-            if self._avg_doc_length == 0:
-                tf_norm = 0.0
-            else:
-                tf_norm = (tf * (self.k1 + 1)) / (
-                    tf + self.k1 * (1 - self.b + self.b * doc_len / self._avg_doc_length)
-                )
-
-            score += idf * tf_norm
-
-        return score
-
-    @property
-    def size(self) -> int:
-        return self._total_docs
-
-    def save(self, path: str) -> None:
-        """持久化 BM25 索引到磁盘（pickle 格式）
-
-        保存内容：倒排索引核心数据结构 + 统计量
-        不保存 lock（lock 不可序列化，加载时重新创建）
-        """
-        import pickle
-        import os
-        with self._lock:
-            data = {
-                "k1": self.k1,
-                "b": self.b,
-                "doc_contents": self._doc_contents,
-                "doc_lengths": self._doc_lengths,
-                "term_freqs": self._term_freqs,
-                "doc_freqs": self._doc_freqs,
-                "avg_doc_length": self._avg_doc_length,
-                "total_docs": self._total_docs,
-            }
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        tmp_path = path + ".tmp"
-        with open(tmp_path, "wb") as f:
-            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-        # 原子替换：避免写入中途崩溃导致缓存损坏
-        os.replace(tmp_path, path)
-
-    def load(self, path: str) -> bool:
-        """从磁盘加载 BM25 索引
-
-        Returns:
-            True 加载成功；False 加载失败（文件不存在或损坏）
-        """
-        import pickle
-        import os
-        if not os.path.exists(path):
-            return False
-        try:
-            with open(path, "rb") as f:
-                data = pickle.load(f)
-            with self._lock:
-                self.k1 = data["k1"]
-                self.b = data["b"]
-                self._doc_contents = data["doc_contents"]
-                self._doc_lengths = data["doc_lengths"]
-                self._term_freqs = data["term_freqs"]
-                self._doc_freqs = data["doc_freqs"]
-                self._avg_doc_length = data["avg_doc_length"]
-                self._total_docs = data["total_docs"]
-            return True
-        except Exception as e:
-            logger.warning(f"BM25 索引加载失败，将重建: {e}")
-            return False
-
-    @staticmethod
-    def _tokenize(text: str) -> List[str]:
-        """中英文分词（使用领域词典）"""
-        if not text:
-            return []
-        try:
-            import jieba
-            # 英文按空格和标点分词
-            english_words = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', text)
-            # 中文使用 jieba 分词
-            chinese_text = re.sub(r'[a-zA-Z0-9_]+', ' ', text)
-            chinese_words = list(jieba.cut(chinese_text))
-            # 合并，过滤停用词和单字符
-            stop_words = {"的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都", "一", "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好", "自己", "这", "那", "吗", "呢", "吧", "啊", "请", "帮", "能", "可以", "什么", "怎么", "如何"}
-            all_words = [w.lower() for w in english_words] + [w for w in chinese_words if len(w) > 1 and w not in stop_words]
-            return all_words
-        except ImportError:
-            return re.findall(r'[\w一-鿿]+', text.lower())
-
-
 @dataclass
 class KnowledgeItem:
     """知识条目"""
@@ -317,6 +107,7 @@ class UnifiedKnowledgeStore:
         reranker=None,
         vector_store_backend: Optional[str] = None,
         separate_parent_child: bool = True,
+        sparse_embedding_model=None,
     ):
         self.embedding_model = embedding_model
         self._separate_parent_child = separate_parent_child
@@ -324,13 +115,17 @@ class UnifiedKnowledgeStore:
         self._collection_name = collection_name
         self._persist_directory = persist_directory
         self._vector_store_backend = vector_store_backend
+        # sparse embedding model（BGE-M3 lexical_weights，传给 child store 启用 sparse 检索）
+        self._sparse_model = sparse_embedding_model
 
         # 子块向量库（向后兼容：self.vector_store 始终指向 child store）
+        # child store 启用 sparse vector（sparse_embedding_model），parent store 不需要
         self.vector_store = self._create_vector_store(
             embedding_model=embedding_model,
             collection_name=collection_name,
             persist_directory=persist_directory,
             backend=vector_store_backend,
+            sparse_embedding_model=sparse_embedding_model,
         )
         # 父块向量库（分离存储：独立 collection，不参与 ANN 检索，仅按 ID 取回）
         if separate_parent_child:
@@ -339,20 +134,13 @@ class UnifiedKnowledgeStore:
                 collection_name=f"{collection_name}_parent",
                 persist_directory=persist_directory,
                 backend=vector_store_backend,
+                sparse_embedding_model=None,
             )
         else:
             # 兼容模式：父子同库（旧逻辑，不推荐）
             self._parent_store = self.vector_store
 
         self.reranker = reranker
-
-        # BM25 倒排索引（内存 + 磁盘持久化，启动时优先从磁盘加载）
-        self._bm25 = BM25Index()
-        self._bm25_initialized = False
-        # BM25 索引磁盘缓存路径（与向量库同目录，避免数据分散）
-        self._bm25_cache_path = os.path.join(
-            self._persist_directory or "./data", "bm25_index.pkl"
-        )
 
         # CLIP 图像向量库（懒加载，仅当 MULTIMODAL_VECTOR_ENABLED=True 且模型可用时创建）
         # 与文本向量库（self.vector_store）独立，存 CLIP 图像向量，供多模态检索
@@ -391,12 +179,14 @@ class UnifiedKnowledgeStore:
         collection_name: str,
         persist_directory: Optional[str],
         backend: Optional[str] = None,
+        sparse_embedding_model=None,
     ):
         """
         工厂方法：根据 backend 选择向量存储后端
 
         Args:
             backend: "chroma" | "qdrant" | None（None 时从 settings 读取）
+            sparse_embedding_model: sparse embedding 模型（仅 Qdrant 支持，ChromaDB 忽略）
         """
         # 延迟导入避免循环依赖
         from ..core.config import settings
@@ -414,9 +204,10 @@ class UnifiedKnowledgeStore:
                 persist_directory=path,
                 host=host,
                 port=port,
+                sparse_embedding_model=sparse_embedding_model,
             )
 
-        # 默认 ChromaDB
+        # 默认 ChromaDB（不支持 sparse vector，忽略 sparse_embedding_model）
         host = settings.CHROMA_HOST
         port = settings.CHROMA_PORT
         path = persist_directory or settings.CHROMA_PERSIST_DIR
@@ -427,41 +218,6 @@ class UnifiedKnowledgeStore:
             host=host,
             port=port,
         )
-
-    def _ensure_bm25_index(self) -> None:
-        """确保 BM25 索引已加载（懒加载）
-
-        优先从磁盘缓存加载，避免每次启动都全量重建：
-        1. 检查磁盘缓存是否存在且与向量库 size 匹配
-        2. 匹配则直接加载（毫秒级）
-        3. 不匹配则全量重建并保存到磁盘
-        """
-        if self._bm25_initialized:
-            return
-
-        # 尝试从磁盘加载
-        child_size = self.vector_store.size()
-        if self._bm25.load(self._bm25_cache_path):
-            if self._bm25.size == child_size:
-                logger.info(
-                    f"BM25 索引从磁盘加载成功: {self._bm25.size} 篇文档 (跳过全量重建)"
-                )
-                self._bm25_initialized = True
-                return
-            else:
-                logger.info(
-                    f"BM25 磁盘缓存 size={self._bm25.size} 与向量库 size={child_size} 不匹配，重建索引"
-                )
-
-        # 全量重建
-        self._rebuild_bm25_index()
-        # 持久化到磁盘，供下次启动使用
-        try:
-            self._bm25.save(self._bm25_cache_path)
-            logger.info(f"BM25 索引已持久化到磁盘: {self._bm25_cache_path}")
-        except Exception as e:
-            logger.warning(f"BM25 索引持久化失败（不影响功能）: {e}")
-        self._bm25_initialized = True
 
     # ========== CLIP 多模态向量（懒加载 + 优雅降级）==========
 
@@ -572,9 +328,14 @@ class UnifiedKnowledgeStore:
             logger.info(f"CLIP 索引完成: {indexed}/{len(image_items)} 张图片")
         return indexed
 
-    def _clip_search(self, query: str, top_k: int) -> List[tuple]:
+    def _clip_search(
+        self, query: str, top_k: int, filters: Optional[Dict[str, Any]] = None
+    ) -> List[tuple]:
         """
         CLIP 向量检索：query → CLIP text embedding → 查 image_store
+
+        Args:
+            filters: Qdrant 风格 filter（与向量/BM25 路径一致，含 chunk_type/source/可见性）
 
         Returns:
             List[(doc_id, score, metadata)]，score 已归一化到 [0,1]
@@ -590,6 +351,7 @@ class UnifiedKnowledgeStore:
                 query_vector=query_vector,
                 top_k=top_k,
                 min_score=0.0,
+                filters=filters,
             )
         except Exception as e:
             logger.warning(f"CLIP 检索失败: {type(e).__name__}: {e}")
@@ -665,33 +427,13 @@ class UnifiedKnowledgeStore:
             return QueryRewriter.enhanced_rewrite(query)
         return QueryRewriter.rewrite(query)
 
-    def _rebuild_bm25_index(self) -> None:
-        """从 ChromaDB 重建 BM25 索引（只索引子块，父块不进入 BM25）"""
-        all_data = self.vector_store.get_all(include=["documents", "metadatas"])
-        if not all_data or not all_data.get("ids"):
-            return
-        ids = all_data["ids"]
-        documents = all_data.get("documents", [])
-        metadatas = all_data.get("metadatas", []) or [{}] * len(ids)
-
-        self._bm25 = BM25Index()
-        child_ids = []
-        child_documents = []
-        for i, doc_id in enumerate(ids):
-            meta = metadatas[i] if i < len(metadatas) else {}
-            # 分离模式下 child_store 已无 parent；兼容模式下仍需过滤
-            if meta.get("chunk_type") == "parent":
-                continue
-            child_ids.append(doc_id)
-            child_documents.append(documents[i])
-
-        self._bm25.add_batch(child_ids, child_documents)
-        logger.info(f"BM25 索引重建完成: {self._bm25.size} 篇文档 (从 child_store 加载)")
-
     # ========== 添加知识 ==========
 
     def add(self, item: KnowledgeItem) -> None:
-        """添加单条知识（按 chunk_type 分流到 parent/child store）"""
+        """添加单条知识（按 chunk_type 分流到 parent/child store）
+
+        sparse vector 由 QdrantVectorStore.add 内部自动处理，无需额外操作。
+        """
         chroma_data = item.to_chroma()
         meta = chroma_data["metadata"]
         target_store = self._parent_store if meta.get("chunk_type") == "parent" else self.vector_store
@@ -700,10 +442,6 @@ class UnifiedKnowledgeStore:
             content=item.content,
             metadata=meta,
         )
-        # 同步更新 BM25 索引：只索引子块
-        self._ensure_bm25_index()
-        if meta.get("chunk_type") != "parent":
-            self._bm25.add_document(item.id, item.content)
         logger.debug(f"添加知识: {item.id} ({item.source}, chunk_type={meta.get('chunk_type')})")
 
     def add_batch(self, items: List[KnowledgeItem]) -> None:
@@ -738,16 +476,7 @@ class UnifiedKnowledgeStore:
         else:
             self.vector_store.add_batch(doc_ids, contents, metadatas)
 
-        # 同步更新 BM25 索引：只索引子块
-        self._ensure_bm25_index()
-        child_ids, child_contents = [], []
-        for i, meta in enumerate(metadatas):
-            if meta.get("chunk_type") == "parent":
-                continue
-            child_ids.append(doc_ids[i])
-            child_contents.append(contents[i])
-        if child_ids:
-            self._bm25.add_batch(child_ids, child_contents)
+        # sparse vector 由 QdrantVectorStore.add_batch 内部自动处理，无需额外操作
 
         # CLIP 多模态向量索引（仅对图片子块，CLIP 不可用时自动跳过）
         try:
@@ -755,7 +484,7 @@ class UnifiedKnowledgeStore:
         except Exception as e:
             logger.debug(f"CLIP 索引跳过（不影响主流程）: {type(e).__name__}: {e}")
 
-        logger.info(f"批量添加知识: {len(items)} 条 (parent={sum(1 for m in metadatas if m.get('chunk_type')=='parent')}, child={len(child_ids)})")
+        logger.info(f"批量添加知识: {len(items)} 条 (parent={sum(1 for m in metadatas if m.get('chunk_type')=='parent')}, child={sum(1 for m in metadatas if m.get('chunk_type')!='parent')})")
 
     def add_batch_with_dedup(
         self,
@@ -897,6 +626,113 @@ class UnifiedKnowledgeStore:
         """按类型搜索"""
         return self.search(query=query, top_k=top_k, source=source, user_id=user_id, org_id=org_id)
 
+    # ========== Metadata Filter 辅助方法（运维场景：按 service/doc_type 等精准过滤）==========
+
+    @staticmethod
+    def _merge_filters(
+        base: Dict[str, Any], extra: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """合并两个 Qdrant 风格 filter（支持 $and 嵌套）
+
+        用于把 metadata_filter（如 {"service":"payment-service"}）合并到基础 filter
+        （如 {"chunk_type":"child"}），生成 {"$and":[...]} 传给 Qdrant。
+        """
+        if not extra:
+            return base or {}
+        if not base:
+            return extra
+        conditions: List[Dict[str, Any]] = []
+        if "$and" in base:
+            conditions.extend(base["$and"])
+        else:
+            conditions.append(base)
+        if "$and" in extra:
+            conditions.extend(extra["$and"])
+        else:
+            conditions.append(extra)
+        return {"$and": conditions}
+
+    @staticmethod
+    def _match_metadata_filter(
+        metadata: Dict[str, Any], meta_filter: Optional[Dict[str, Any]]
+    ) -> bool:
+        """检查 metadata 是否满足 meta_filter（Python 层过滤，给 BM25 内存索引用）
+
+        BM25 是内存索引不支持原生 filter，检索后在 Python 层按 meta_filter 过滤。
+        支持：
+        - {"key": "value"} 精确匹配
+        - {"$and": [...]} 全部满足
+        - {"$or": [...]} 任一满足
+        - {"$or_empty": {"key": k, "value": v}} 字段为空 / 等于 v（可见性过滤，字段一定存在）
+        - {"$or_missing": {"key": k, "value": v}} / {"$or_null": ...} 字段不存在 / 为空 / 等于 v（可见性过滤）
+        """
+        if not meta_filter:
+            return True
+        for k, v in meta_filter.items():
+            if k == "$and":
+                for sub in v:
+                    if not UnifiedKnowledgeStore._match_metadata_filter(metadata, sub):
+                        return False
+            elif k == "$or":
+                if not any(UnifiedKnowledgeStore._match_metadata_filter(metadata, sub) for sub in v):
+                    return False
+            elif k in ("$or_empty", "$or_missing", "$or_null"):
+                # Python 层三者语义一致：字段不存在(None) / 空串 / 等于目标值 → 可见
+                key = v["key"]
+                val = v["value"]
+                actual = metadata.get(key)
+                if actual not in (None, "", val):
+                    return False
+            else:
+                if metadata.get(k) != v:
+                    return False
+        return True
+
+    def _build_visibility_filter(
+        self,
+        source: Optional[str] = None,
+        metadata_filter: Optional[Dict[str, Any]] = None,
+        org_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """构造可见性 + 业务过滤条件（三路检索共用，保证过滤行为一致）
+
+        合并：
+        - source: 来源过滤
+        - metadata_filter: 业务元数据过滤（如 service/doc_type）
+        - org_id: 用 $or_empty 表达（字段一定存在，空串=公共），should [MatchValue(""), MatchValue(org_id)]
+        - user_id: 用 $or_missing 表达（字段可能不存在，cleaned 移除空值），
+          must_not [MatchExcept([user_id])] 排除非目标值，字段缺失则保留
+
+        存储约定差异：
+        - org_id: KnowledgeItem.to_chroma 强制写入（公共文档 org_id=""），故用 $or_empty
+        - user_id: uploader._store_chunks 的 cleaned 会移除空值（公共文档无 user_id 字段），故用 $or_missing
+
+        Returns:
+            filter dict，可能为 {}（无条件）。供 Qdrant pre-filter 和 BM25 Python post-filter 共用。
+        """
+        f: Dict[str, Any] = {}
+        if source:
+            f = self._merge_filters(f, {"source": source})
+        if metadata_filter:
+            f = self._merge_filters(f, metadata_filter)
+        if org_id:
+            f = self._merge_filters(f, {"$or_empty": {"key": "org_id", "value": org_id}})
+        if user_id:
+            f = self._merge_filters(f, {"$or_missing": {"key": "user_id", "value": user_id}})
+        return f
+
+    def _build_child_filter(
+        self,
+        source: Optional[str] = None,
+        metadata_filter: Optional[Dict[str, Any]] = None,
+        org_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """构造子块检索 filter = chunk_type=child + 可见性过滤"""
+        visibility = self._build_visibility_filter(source, metadata_filter, org_id, user_id)
+        return self._merge_filters({"chunk_type": "child"}, visibility)
+
     # ========== 混合检索 ==========
 
     def hybrid_search(
@@ -913,7 +749,7 @@ class UnifiedKnowledgeStore:
         candidate_multiplier: int = 3,
     ) -> List[Dict[str, Any]]:
         """
-        混合检索：BM25（关键词）+ Vector（语义）+ RRF 融合
+        混合检索：Sparse（关键词）+ Vector（语义）+ RRF 融合
 
         Args:
             query: 搜索查询
@@ -925,7 +761,7 @@ class UnifiedKnowledgeStore:
             rewrite_query: 是否重写查询
             rewrite_mode: 重写模式，"basic" / "enhanced" / "llm" / "enhanced_llm"，默认 enhanced
             rrf_k: RRF 融合参数 k，默认 60
-            candidate_multiplier: vector/BM25 候选数量相对于 top_k 的倍数，默认 3
+            candidate_multiplier: vector/sparse 候选数量相对于 top_k 的倍数，默认 3
 
         Returns:
             List[Dict]: 搜索结果
@@ -970,27 +806,29 @@ class UnifiedKnowledgeStore:
         # 0. 查询重写
         queries = self._rewrite_query(query, rewrite_query, rewrite_mode)
 
-        # 1-2. 向量检索 + BM25 检索（并行执行，省 ~30ms）
+        # 1-2. 向量检索 + sparse 检索（并行执行，省 ~30ms）
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=2) as pool:
+            # P3 修复：向量路使用 queries[0]（conversation 模式下即指代消解后的 query）
+            vector_query = queries[0] if queries else query
             vector_future = pool.submit(
                 self._vector_search,
-                query, top_k * candidate_multiplier, source, user_id, org_id
+                vector_query, top_k * candidate_multiplier, source, user_id, org_id
             )
-            bm25_future = pool.submit(
-                self._bm25_search,
+            sparse_future = pool.submit(
+                self._sparse_search,
                 queries, top_k * candidate_multiplier, source, user_id, org_id
             )
             vector_results = vector_future.result()
-            bm25_results = bm25_future.result()
+            sparse_results = sparse_future.result()
 
         # 3. RRF 融合
-        if bm25_results and vector_results:
-            fused = self._rrf_fuse(bm25_results, vector_results, k=rrf_k)
+        if sparse_results and vector_results:
+            fused = self._rrf_fuse(sparse_results, vector_results, k=rrf_k)
         elif vector_results:
             fused = vector_results
         else:
-            fused = bm25_results
+            fused = sparse_results
 
         # 4. Rerank（P1-3: 与 parent_child 一致的候选数限制，避免 rerank 全量候选）
         if self.reranker and fused:
@@ -1000,7 +838,10 @@ class UnifiedKnowledgeStore:
                 rerank_input = self._select_rerank_candidates(fused, top_k)
                 # P0-1 优化：限制 rerank 候选上限，减少 ONNX 推理时间
                 # 上限与 top_k 关联：保证返回数量 ≥ top_k，同时限制总候选数
-                MAX_RERANK_CANDIDATES = max(top_k, 6)
+                # 注：硬上限需 > top_k*2（_select_rerank_candidates 清晰查询分支的返回数），
+                # 否则动态选择被覆盖。max(top_k*3, 18) 保证清晰查询的 2*top_k 候选不被截断，
+                # 同时为模糊查询的全量候选提供安全兜底
+                MAX_RERANK_CANDIDATES = max(top_k * 3, 18)
                 if len(rerank_input) > MAX_RERANK_CANDIDATES:
                     rerank_input = rerank_input[:MAX_RERANK_CANDIDATES]
                 retrieval_results = [
@@ -1049,13 +890,14 @@ class UnifiedKnowledgeStore:
         vector_weight: float = 1.0,
         bm25_weight: float = 1.0,
         chat_history: Optional[List[Dict]] = None,
+        metadata_filter: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
         父子文档混合检索
 
         流程：
         1. 向量检索子块（chunk_type=child）
-        2. BM25 检索子块
+        2. Sparse 检索子块
         3. RRF 融合子块结果
         4. 按 parent_id 去重
         5. 批量取回父块
@@ -1091,7 +933,8 @@ class UnifiedKnowledgeStore:
             )
             _history_hash = hashlib.md5(_history_str.encode()).hexdigest()[:8]
 
-        cache_key_str = f"{query}|{top_k}|{rewrite_mode}|{candidate_multiplier}|{rrf_k}|{vector_weight}|{bm25_weight}|{source}|{user_id}|{org_id}|{_history_hash}"
+        _meta_filter_str = str(sorted(metadata_filter.items())) if metadata_filter else ""
+        cache_key_str = f"{query}|{top_k}|{rewrite_mode}|{candidate_multiplier}|{rrf_k}|{vector_weight}|{bm25_weight}|{source}|{user_id}|{org_id}|{_history_hash}|{_meta_filter_str}"
         cache_key = hashlib.md5(cache_key_str.encode()).hexdigest()
         cached = self._cache_get(cache_key)
         if cached is not None:
@@ -1105,16 +948,20 @@ class UnifiedKnowledgeStore:
         queries = self._rewrite_query(query, rewrite_query, rewrite_mode, chat_history=chat_history)
         _rewrite_ms = (_time.time() - _t0) * 1000
 
-        # P0-3: 并行检索（向量 + BM25 同时执行）
+        # P0-3: 并行检索（向量 + sparse 同时执行）
         from concurrent.futures import ThreadPoolExecutor
 
         def _vector_search():
             """向量检索子块"""
-            vector_filters: Dict[str, Any] = {"chunk_type": "child"}
-            if source:
-                vector_filters = {"$and": [{"chunk_type": "child"}, {"source": source}]}
+            # 统一构造 filter：chunk_type=child + source + metadata_filter + 可见性(org/user)
+            # org_id/user_id 走 Qdrant pre-filter，避免 top_k 内被其他组织/用户占满导致召回下降
+            vector_filters = self._build_child_filter(source, metadata_filter, org_id, user_id)
+            # P3 修复：向量路使用 queries[0]（conversation 模式下即指代消解后的 query），
+            # 避免多轮对话中"它/这个/当时"等指代词直接 embedding 导致召回失效。
+            # 普通模式下 queries[0] 与原 query 等价，行为不变。
+            vector_query = queries[0] if queries else query
             vector_results = self.vector_store.search(
-                query=query,
+                query=vector_query,
                 top_k=child_top_k * candidate_multiplier,
                 min_score=0.0,
                 filters=vector_filters,
@@ -1122,11 +969,12 @@ class UnifiedKnowledgeStore:
             # 调试日志：排查向量检索为空的原因
             if not vector_results:
                 logger.warning(
-                    f"[DEBUG] 向量检索返回0条! query={query[:30]!r}, "
+                    f"[DEBUG] 向量检索返回0条! query={vector_query[:30]!r}, "
                     f"filters={vector_filters}, embedding_dim={getattr(self.embedding_model, 'dim', 'unknown')}"
                 )
             children = []
             for doc_id, score, metadata in vector_results:
+                # org_id/user_id 已由 pre-filter 保证，此处保留兜底（防御性，pre-filter 降级时仍正确）
                 if org_id and metadata.get("org_id") and metadata.get("org_id") != org_id:
                     continue
                 if user_id and metadata.get("user_id") and metadata.get("user_id") != user_id:
@@ -1134,45 +982,54 @@ class UnifiedKnowledgeStore:
                 children.append({"id": doc_id, "score": score, "metadata": metadata})
             return children
 
-        def _bm25_search():
-            """BM25 检索子块"""
-            self._ensure_bm25_index()
-            if self._bm25.size == 0:
-                return []
+        def _sparse_search():
+            """Sparse vector 检索子块（BGE-M3 lexical_weights，替代 BM25）
+
+            sparse_search 支持 Qdrant 原生 pre-filter，直接传入完整 filter，
+            不需要 get_by_ids 回查 + Python 层过滤。
+            """
+            # 统一构造 filter：chunk_type=child + source + metadata_filter + 可见性(org/user)
+            sparse_filter = self._build_child_filter(source, metadata_filter, org_id, user_id)
             all_scores: Dict[str, float] = {}
+            all_meta: Dict[str, Dict] = {}
             for q in queries:
-                results = self._bm25.search(q, top_k=child_top_k * candidate_multiplier)
-                for doc_id, score in results:
+                results = self.vector_store.sparse_search(
+                    query=q,
+                    top_k=child_top_k * candidate_multiplier,
+                    filters=sparse_filter,
+                )
+                for doc_id, score, metadata in results:
                     all_scores[doc_id] = max(all_scores.get(doc_id, 0), score)
+                    all_meta[doc_id] = metadata
             sorted_docs = sorted(all_scores.items(), key=lambda x: x[1], reverse=True)[:child_top_k]
             children = []
             for doc_id, score in sorted_docs:
-                try:
-                    records = self.vector_store.get_by_ids([doc_id])
-                    if records:
-                        meta = records[0].get("metadata", {})
-                        content = records[0].get("content", "")
-                        children.append({"id": doc_id, "score": score, "metadata": meta, "content": content})
-                except Exception:
-                    continue
+                meta = all_meta.get(doc_id, {})
+                content = meta.get("content", "")
+                children.append({"id": doc_id, "score": score, "metadata": meta, "content": content})
             return children
 
-        # 并行执行向量检索和 BM25 检索
+        # 并行执行向量检索和 sparse 检索
         _t1 = _time.time()
         with ThreadPoolExecutor(max_workers=3) as executor:
             future_v = executor.submit(_vector_search)
-            future_b = executor.submit(_bm25_search)
+            future_s = executor.submit(_sparse_search)
             vector_children = future_v.result()
-            bm25_children = future_b.result()
+            sparse_children = future_s.result()
         _retrieval_ms = (_time.time() - _t1) * 1000
 
         # CLIP 多模态向量检索（第三路，CLIP 不可用时返回空）
         clip_children = []
         if self._ensure_clip():
             try:
-                clip_results = self._clip_search(query, top_k=child_top_k)
-                # 转换为 children 格式（与 vector/bm25 children 一致）
+                # P3 修复：与向量路一致，CLIP 检索也用消解后 query（conversation 模式）
+                clip_query = queries[0] if queries else query
+                # 统一 filter：chunk_type=child + source + metadata_filter + 可见性（与向量路一致）
+                clip_filters = self._build_child_filter(source, metadata_filter, org_id, user_id)
+                clip_results = self._clip_search(clip_query, top_k=child_top_k, filters=clip_filters)
+                # 转换为 children 格式（与 vector/sparse children 一致）
                 for doc_id, score, metadata in clip_results:
+                    # pre-filter 已保证可见性，保留兜底（防御性）
                     if org_id and metadata.get("org_id") and metadata.get("org_id") != org_id:
                         continue
                     if user_id and metadata.get("user_id") and metadata.get("user_id") != user_id:
@@ -1185,17 +1042,17 @@ class UnifiedKnowledgeStore:
             except Exception as e:
                 logger.warning(f"CLIP 检索失败（跳过）: {type(e).__name__}: {e}")
 
-        # 3. 加权 RRF 融合子块结果（vector + bm25 → text_fused）
+        # 3. 加权 RRF 融合子块结果（vector + sparse → text_fused）
         _t2 = _time.time()
-        if bm25_children and vector_children:
+        if sparse_children and vector_children:
             text_fused = self._rrf_fuse(
-                vector_children, bm25_children, k=rrf_k,
+                vector_children, sparse_children, k=rrf_k,
                 weight_a=vector_weight, weight_b=bm25_weight,
             )
         elif vector_children:
             text_fused = vector_children
         else:
-            text_fused = bm25_children
+            text_fused = sparse_children
 
         # CLIP 结果融合：用 CLIP_FUSION_WEIGHT 加权，与 text_fused 二次 RRF
         if clip_children and text_fused:
@@ -1278,7 +1135,10 @@ class UnifiedKnowledgeStore:
                 # P0-1 优化：限制 rerank 候选上限，减少 ONNX 推理时间
                 # 候选已按融合分数降序排列，截断尾部低质量候选不影响精度
                 # 上限与 top_k 关联：保证返回数量 ≥ top_k，同时限制总候选数
-                MAX_RERANK_CANDIDATES = max(top_k, 6)
+                # 注：硬上限需 > top_k*2（_select_rerank_candidates 清晰查询分支的返回数），
+                # 否则动态选择被覆盖。max(top_k*3, 18) 保证清晰查询的 2*top_k 候选不被截断，
+                # 同时为模糊查询的全量候选提供安全兜底
+                MAX_RERANK_CANDIDATES = max(top_k * 3, 18)
                 if len(rerank_input) > MAX_RERANK_CANDIDATES:
                     rerank_input = rerank_input[:MAX_RERANK_CANDIDATES]
 
@@ -1294,7 +1154,11 @@ class UnifiedKnowledgeStore:
                 ]
                 # 取 top_k * 2 给 reranker，重排后截断 top_k
                 rerank_limit = min(len(rerank_input), max(top_k * 2, top_k + 5))
-                reranked = self.reranker.rerank(query, retrieval_results, limit=rerank_limit)
+                # P3 修复：reranker 必须用重写后的 query（queries[0]），
+                # 与向量/CLIP 检索一致。conversation 模式下 queries[0] 是指代消解后的 query，
+                # 若用原始 query 会让"它/这个"等指代词进入 CrossEncoder 导致打分失真
+                rerank_query = queries[0] if queries else query
+                reranked = self.reranker.rerank(rerank_query, retrieval_results, limit=rerank_limit)
                 parent_results = [
                     {
                         "id": r.doc_id,
@@ -1321,7 +1185,7 @@ class UnifiedKnowledgeStore:
             f"RAG 检索完成 | query={query[:30]!r} "
             f"| rewrite={_rewrite_ms:.1f}ms retrieval={_retrieval_ms:.1f}ms "
             f"fuse={_fuse_ms:.1f}ms rerank={_rerank_ms:.1f}ms total={_total_ms:.1f}ms "
-            f"| vector_hits={len(vector_children)} bm25_hits={len(bm25_children)} "
+            f"| vector_hits={len(vector_children)} sparse_hits={len(sparse_children)} "
             f"fused_children={len(fused_children)} parent_candidates={len(parent_results)} "
             f"returned={len(result)} reranker={'on' if _reranker_used else 'off'}"
         )
@@ -1333,7 +1197,7 @@ class UnifiedKnowledgeStore:
         _metrics.observe("rag_rerank_duration_ms", _rerank_ms)
         _metrics.observe("rag_total_duration_ms", _total_ms)
         _metrics.observe("rag_vector_hits", len(vector_children))
-        _metrics.observe("rag_bm25_hits", len(bm25_children))
+        _metrics.observe("rag_sparse_hits", len(sparse_children))
         _metrics.observe("rag_parent_results", len(result))
         if _reranker_used:
             _metrics.increment("rag_reranker_used_total")
@@ -1360,7 +1224,7 @@ class UnifiedKnowledgeStore:
         if not parent_results:
             return parent_results
 
-        query_terms = set(t.lower() for t in BM25Index._tokenize(query) if t)
+        query_terms = set(t.lower() for t in self._tokenize(query) if t)
         expansion_terms = set(QueryRewriter.expand_terms(query))
         all_terms = sorted(query_terms | expansion_terms)
 
@@ -1426,23 +1290,31 @@ class UnifiedKnowledgeStore:
             })
         return output
 
-    def _bm25_search(
+    def _sparse_search(
         self, queries: List[str], top_k: int = 10,
         source: Optional[str] = None, user_id: Optional[str] = None,
         org_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """BM25 关键词检索（使用持久化倒排索引）"""
-        self._ensure_bm25_index()
+        """Sparse vector 检索（BGE-M3 lexical_weights，替代 BM25）
 
-        if self._bm25.size == 0:
-            return []
+        利用 Qdrant 原生 pre-filter，不需要 get_by_ids 回查 + Python 层过滤。
+        sparse_search 返回 [(doc_id, score, metadata), ...]，score 为 Qdrant sparse 原始打分。
+        """
+        # 构造子块 filter：chunk_type=child + source + 可见性（org/user）
+        sparse_filter = self._build_child_filter(source, None, org_id, user_id)
 
-        # 合并多个查询变体的 BM25 结果
+        # 合并多个查询变体的 sparse 结果（取最大分）
         all_scores: Dict[str, float] = {}
+        all_meta: Dict[str, Dict] = {}
         for query in queries:
-            results = self._bm25.search(query, top_k=top_k * 2)
-            for doc_id, score in results:
+            results = self.vector_store.sparse_search(
+                query=query,
+                top_k=top_k * 2,
+                filters=sparse_filter,
+            )
+            for doc_id, score, metadata in results:
                 all_scores[doc_id] = max(all_scores.get(doc_id, 0), score)
+                all_meta[doc_id] = metadata
 
         if not all_scores:
             return []
@@ -1450,30 +1322,11 @@ class UnifiedKnowledgeStore:
         # 排序
         sorted_docs = sorted(all_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
-        # 构建结果（从向量库获取元数据）
+        # 构建结果（metadata 已由 sparse_search 返回，无需回查向量库）
         output = []
         for doc_id, score in sorted_docs:
-            # 获取元数据（通过公开 API，避免依赖具体后端的 _collection）
-            try:
-                records = self.vector_store.get_by_ids([doc_id])
-                if records:
-                    meta = records[0]["metadata"]
-                    content = records[0]["content"]
-                else:
-                    meta = {}
-                    content = ""
-            except Exception:
-                meta = {}
-                content = ""
-
-            # 过滤
-            if source and meta.get("source") != source:
-                continue
-            if user_id:
-                doc_user_id = meta.get("user_id")
-                if doc_user_id and doc_user_id != user_id:
-                    continue
-
+            meta = all_meta.get(doc_id, {})
+            content = meta.get("content", "")
             output.append({
                 "id": doc_id,
                 "score": score,
@@ -1538,14 +1391,14 @@ class UnifiedKnowledgeStore:
     # ========== 删除知识 ==========
 
     def delete(self, doc_id: str) -> bool:
-        """删除知识（同时尝试删父子两个 store）"""
+        """删除知识（同时尝试删父子两个 store）
+
+        Qdrant 的删除会自动处理 sparse vector 数据，无需额外操作。
+        """
         r1 = self.vector_store.delete(doc_id=doc_id)
         r2 = True
         if self._separate_parent_child:
             r2 = self._parent_store.delete(doc_id=doc_id)
-        # 同步更新 BM25 索引
-        self._ensure_bm25_index()
-        self._bm25.remove_document(doc_id)
         return r1 or r2
 
     def delete_by_user(self, user_id: str) -> int:
@@ -1553,7 +1406,6 @@ class UnifiedKnowledgeStore:
         n1 = self.vector_store.delete_by_filter({"user_id": user_id})
         if self._separate_parent_child:
             n2 = self._parent_store.delete_by_filter({"user_id": user_id})
-        self._ensure_bm25_index()
         return n1
 
     def delete_by_topic(self, topic_id: str) -> int:
@@ -1561,15 +1413,12 @@ class UnifiedKnowledgeStore:
         n1 = self.vector_store.delete_by_filter({"topic_id": topic_id})
         if self._separate_parent_child:
             n2 = self._parent_store.delete_by_filter({"topic_id": topic_id})
-        self._ensure_bm25_index()
         return n1
 
     def delete_by_document(self, document_id: str) -> int:
         """删除文档的所有知识（同时删父子两个 store）"""
         n1 = self.vector_store.delete_by_document(document_id)
         n2 = self._parent_store.delete_by_document(document_id) if self._separate_parent_child else 0
-        # 同步更新 BM25
-        self._ensure_bm25_index()
         # 失效缓存：文档删除后，旧查询结果可能引用已删除内容
         self._invalidate_caches()
         return n1 if n1 >= 0 else n2
@@ -1723,9 +1572,7 @@ class UnifiedKnowledgeStore:
             stats["added"] = s.get("added", 0) + s.get("updated", 0)
             stats["failed"] = s.get("failed", 0)
 
-        # 重建 BM25
-        self._bm25_initialized = False
-        self._ensure_bm25_index()
+        # sparse vector 由 QdrantVectorStore 在 add 时自动处理，无需额外操作
         # 失效缓存：文档更新后内容变化，旧查询结果不再适用
         self._invalidate_caches()
         logger.info(f"文档 {document_id} 更新完成: {stats}")
@@ -1774,9 +1621,7 @@ class UnifiedKnowledgeStore:
                 document_id=document_id, new_chunks=chunks, batch_size=batch_size,
             )
 
-        # 重建 BM25
-        self._bm25_initialized = False
-        self._ensure_bm25_index()
+        # sparse vector 由 QdrantVectorStore 在 add 时自动处理，无需额外操作
         logger.info(f"文档 {document_id} 增量更新完成: {stats}")
         return stats
 

@@ -13,6 +13,7 @@ version: '3.8'
 #   - ENV=production，DEBUG=false
 #   - MongoDB 不对外暴露端口（仅容器网络可达）
 #   - 向量库使用 qdrant
+#   - 管理后台前端端口 8080，建议配合防火墙/IP白名单限制访问
 # ===========================================
 
 services:
@@ -32,6 +33,11 @@ services:
   frontend:
     ports:
       - "80:80"
+    restart: always
+
+  admin-frontend:
+    ports:
+      - "8080:80"
     restart: always
 
   mongodb:

@@ -4,12 +4,18 @@
 定义 LangGraph Agent 使用的工具。
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Annotated
 from langchain_core.tools import tool
 from loguru import logger
+import contextvars
 import time
 import hashlib
 import threading
+
+try:
+    from langgraph.prebuilt import InjectedState
+except ImportError:
+    InjectedState = None  # 兼容旧版 langgraph
 
 
 # 全局变量，用于存储工具依赖
@@ -17,33 +23,38 @@ _retriever = None
 _knowledge_store = None
 
 
-# ========== 引用溯源 buffer ==========
-# 模块级缓冲区：search_knowledge 工具执行时写入结构化检索结果，
+# ========== 引用溯源 buffer（per-session 隔离） ==========
+# search_knowledge 工具执行时写入结构化检索结果，
 # Agent 的 _call_agent 在工具执行后读取并清空。
 #
 # 原因：LangGraph 1.1.x 的 ToolNode 调用 tool.invoke()，
 # 而 .invoke() 对 response_format="content_and_artifact" 只返回 content 字符串，
 # artifact 丢失。因此用 buffer 作为可靠传递机制。
 #
-# 并发性说明：LangGraph 单 session 内图执行是顺序的（_call_agent → ToolNode → _call_agent），
-# buffer 在 _call_agent 开头被读取并清空，不会跨请求累积。
-# 多 session 并发时可能存在极小窗口的竞态，对学习项目可接受。
-_retrieval_buffer: List[Dict] = []
-_retrieval_buffer_lock = threading.Lock()
+# 并发安全：使用 contextvars.ContextVar 实现 per-request 隔离，
+# 避免多 session 并发时检索结果跨会话泄漏（旧实现用模块级 list + Lock，
+# 会把 A 用户的私有文档混入 B 用户的引用列表）。
+_retrieval_buffer: contextvars.ContextVar[List[Dict]] = contextvars.ContextVar(
+    "retrieval_buffer", default=None
+)
+
+
+def _get_buffer() -> List[Dict]:
+    """获取当前 context 的 buffer（未设置时返回空列表）"""
+    return _retrieval_buffer.get() or []
 
 
 def pop_retrieval_buffer() -> List[Dict]:
     """读取并清空检索结果缓冲区（供 Agent._call_agent 调用）"""
-    with _retrieval_buffer_lock:
-        result = list(_retrieval_buffer)
-        _retrieval_buffer.clear()
+    result = list(_get_buffer())
+    _retrieval_buffer.set([])
     return result
 
 
 def _append_retrieval_buffer(docs: List[Dict]) -> None:
     """向缓冲区追加检索结果（供 search_knowledge 工具调用）"""
-    with _retrieval_buffer_lock:
-        _retrieval_buffer.extend(docs)
+    current = _get_buffer()
+    _retrieval_buffer.set(current + docs)
 
 
 # ========== 检索质量评估与低质量重试 ==========
@@ -126,32 +137,35 @@ def _merge_search_results(results1: List[Dict], results2: List[Dict], limit: int
     return merged[:limit]
 
 
-# ========== 对话上下文管理（多轮对话指代消解） ==========
-# 模块级对话上下文：存储最近几轮对话文本，供 search_knowledge 做查询重写。
+# ========== 对话上下文管理（多轮对话指代消解，per-session 隔离） ==========
+# 存储最近几轮对话文本，供 search_knowledge 做查询重写。
 #
 # 工作流：
 # 1. Agent._call_agent 在调用 LLM 前，调用 set_conversation_context(messages)
-# 2. search_knowledge 工具执行时，读取 _conversation_context 做指代消解
+# 2. search_knowledge 工具执行时，读取对话上下文做指代消解
 # 3. 如果用户查询含指代词（如"它的路由"），用 LLM 根据对话历史重写为完整查询
 #
 # 设计理由：
 # - LangGraph 的 ToolNode 调用 tool.invoke() 时不传 state，工具拿不到对话历史
-# - 用模块级变量传递是最简方案（类似 _retrieval_buffer 的模式）
-# - 只存储最近 6 条消息的文本摘要，内存占用极小
+# - 用 ContextVar 传递，保证并发请求间对话历史不串用
 
-_conversation_context: List[str] = []
-# 查询重写用的 LLM（由 Agent 初始化时注入）
+_conversation_context: contextvars.ContextVar[List[str]] = contextvars.ContextVar(
+    "conversation_context", default=None
+)
+# 查询重写用的 LLM（由 Agent 初始化时注入，全局共享）
 _query_rewriter_llm = None
-# 查询重写缓存（避免相同 query+context 重复调用 LLM）
+# 查询重写缓存（避免相同 query+context 重复调用 LLM，全局共享）
 _query_rewrite_cache: Dict[str, str] = {}
 _query_rewrite_cache_lock = threading.Lock()
 
-# ========== 当前用户身份（权限隔离） ==========
+# ========== 当前用户身份（权限隔离，per-session 隔离） ==========
 # 与 _conversation_context 同理：ToolNode 调用 tool.invoke() 时不传 state，
-# 用模块级变量传递 user_id，供 search_knowledge 做文档权限过滤。
+# 用 ContextVar 传递 user_id，供 search_knowledge 做文档权限过滤。
 # _call_agent 在调用 LLM 前调用 set_current_user_id(user_id)，
 # search_knowledge 执行时读取该值传给 hybrid_search_parent_child。
-_current_user_id: Optional[str] = None
+_current_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "current_user_id", default=None
+)
 
 
 def set_current_user_id(user_id: Optional[str]) -> None:
@@ -160,8 +174,7 @@ def set_current_user_id(user_id: Optional[str]) -> None:
     由 Agent._call_agent 在每次调用 LLM 前设置。
     传入 None 表示不限制（如系统级调用）。
     """
-    global _current_user_id
-    _current_user_id = user_id
+    _current_user_id.set(user_id)
     logger.debug(f"set_current_user_id: {user_id}")
 
 
@@ -174,8 +187,7 @@ def set_conversation_context(messages) -> None:
     Args:
         messages: LangGraph state["messages"] 列表
     """
-    global _conversation_context
-    _conversation_context = []
+    ctx: List[str] = []
     # 只取最近 6 条消息（约 3 轮对话），避免上下文过长
     recent = list(messages[-6:]) if messages else []
     for msg in recent:
@@ -188,7 +200,29 @@ def set_conversation_context(messages) -> None:
         content = getattr(msg, "content", "")
         if content and isinstance(content, str):
             # 每条消息最多取 200 字符，控制重写 prompt 大小
-            _conversation_context.append(f"{role}: {content[:200]}")
+            ctx.append(f"{role}: {content[:200]}")
+    _conversation_context.set(ctx)
+
+
+def _extract_conv_context_from_messages(messages) -> List[str]:
+    """从 LangGraph messages 提取对话上下文（P3: InjectedState 路径使用）
+
+    与 set_conversation_context 逻辑一致，但不写入 contextvars，
+    直接返回上下文列表供调用方使用。
+    """
+    ctx: List[str] = []
+    recent = list(messages[-6:]) if messages else []
+    for msg in recent:
+        role = "user"
+        msg_type = getattr(msg, "type", "")
+        if msg_type == "ai" or msg_type == "assistant":
+            role = "assistant"
+        elif msg_type == "human" or msg_type == "user":
+            role = "user"
+        content = getattr(msg, "content", "")
+        if content and isinstance(content, str):
+            ctx.append(f"{role}: {content[:200]}")
+    return ctx
 
 
 def set_query_rewriter_llm(llm) -> None:
@@ -227,7 +261,7 @@ def _needs_query_rewrite(query: str) -> bool:
     return False
 
 
-def _rewrite_query_with_context(query: str) -> str:
+def _rewrite_query_with_context(query: str, conv_ctx: Optional[List[str]] = None) -> str:
     """根据对话上下文重写查询（消解指代词）
 
     三级判断（避免不必要的 LLM 调用）：
@@ -237,12 +271,16 @@ def _rewrite_query_with_context(query: str) -> str:
 
     Args:
         query: 原始查询
+        conv_ctx: 对话上下文列表（P3: 由调用方传入，不再从全局变量读取）
+                  为 None 时回退到 contextvars（兼容旧调用方式）
 
     Returns:
         重写后的查询（重写失败时返回原查询，静默降级）
     """
     # 第一级：无对话上下文，直接返回
-    if not _conversation_context:
+    if conv_ctx is None:
+        conv_ctx = _conversation_context.get() or []
+    if not conv_ctx:
         return query
 
     # 第二级：规则判断是否需要重写
@@ -252,7 +290,7 @@ def _rewrite_query_with_context(query: str) -> str:
     # 第三级：用 LLM 重写
     # 先查缓存（相同 query + context 不重复调用）
     context_hash = hashlib.md5(
-        "|".join(_conversation_context).encode()
+        "|".join(conv_ctx).encode()
     ).hexdigest()[:8]
     cache_key = f"{query}::{context_hash}"
     with _query_rewrite_cache_lock:
@@ -270,7 +308,7 @@ def _rewrite_query_with_context(query: str) -> str:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         # 构建重写 prompt（轻量，限制输出长度）
-        context_str = "\n".join(_conversation_context[-4:])  # 最近 2 轮
+        context_str = "\n".join(conv_ctx[-4:])  # 最近 2 轮
         rewrite_prompt = f"""根据对话历史，将用户的追问重写为完整的独立查询。
 
 要求：
@@ -366,7 +404,13 @@ def set_knowledge_store(store):
 
 
 @tool
-def search_knowledge(query: str, limit: int = 5) -> str:
+def search_knowledge(
+    query: str,
+    limit: int = 5,
+    service: Optional[str] = None,
+    doc_type: Optional[str] = None,
+    state: Annotated[dict, InjectedState] if InjectedState else dict = None,
+) -> str:
     """
     搜索企业知识库
 
@@ -380,23 +424,52 @@ def search_knowledge(query: str, limit: int = 5) -> str:
     - 架构设计、故障排查
     - 任何涉及企业内部文档的问题
 
+    运维诊断场景可按 service/doc_type 精准过滤：
+    - service: 限定服务名（如 "payment-service"），只检索该服务相关文档
+    - doc_type: 限定文档类型："manual"运维手册 / "incident"历史事故 / "sop"处置预案 / "postmortem"事故复盘
+    例如诊断 payment-service 故障时，可传 service="payment-service" + doc_type="incident" 查同类历史事故
+
     Args:
         query: 搜索关键词
         limit: 返回结果数量
+        service: 限定服务名（可选），不填则全库检索
+        doc_type: 限定文档类型（可选 manual/incident/sop/postmortem），不填则全部类型
 
     Returns:
         str: 搜索结果（带 [N] 编号，供 LLM 内联引用）
     """
-    global _retriever, _knowledge_store, _tool_cache, _current_user_id
+    global _retriever, _knowledge_store, _tool_cache
+
+    # P3: 优先从 LangGraph state 读取 per-session 数据（InjectedState 注入）
+    # 兼容降级：state 为 None 时（直接调用工具非 LangGraph 上下文）回退到 contextvars
+    if state is not None:
+        # 从 state 读取用户身份（权限隔离）
+        task_ctx = state.get("task_context") or {}
+        user_id = task_ctx.get("user_id")
+        # 从 state.messages 提取对话上下文（指代消解）
+        conv_ctx = _extract_conv_context_from_messages(state.get("messages", []))
+    else:
+        # 兼容降级：直接调用工具时从 contextvars 读取
+        user_id = _current_user_id.get()
+        conv_ctx = _conversation_context.get() or []
 
     # 多轮对话指代消解：根据对话上下文重写查询
     # 例如：用户追问"它的路由怎么定义？" → 重写为"FastAPI 的路由怎么定义？"
-    rewritten_query = _rewrite_query_with_context(query)
+    rewritten_query = _rewrite_query_with_context(query, conv_ctx)
     # 后续检索和缓存都使用重写后的查询
     search_query = rewritten_query if rewritten_query != query else query
 
-    # 检查缓存（缓存键含 user_id，避免跨用户泄漏）
-    cached = _tool_cache.get("search_knowledge", search_query, limit, _current_user_id or "")
+    # 运维场景：按 service/doc_type 精准过滤（如"只查 payment-service 的历史事故"）
+    metadata_filter: Optional[Dict[str, Any]] = None
+    if service or doc_type:
+        metadata_filter = {}
+        if service:
+            metadata_filter["service"] = service
+        if doc_type:
+            metadata_filter["doc_type"] = doc_type
+
+    # 检查缓存（缓存键含 user_id + service + doc_type，避免跨用户/跨过滤条件泄漏）
+    cached = _tool_cache.get("search_knowledge", search_query, limit, user_id or "", service or "", doc_type or "")
     if cached is not None:
         # 缓存命中时，结构化数据也要写入 buffer（供 Agent 生成 citations）
         if isinstance(cached, (tuple, list)):  # list: Redis JSON 反序列化后
@@ -412,7 +485,8 @@ def search_knowledge(query: str, limit: int = 5) -> str:
             # 传入 user_id 做文档权限过滤（公共文档 + 本人私有文档）
             results = _knowledge_store.hybrid_search_parent_child(
                 search_query, top_k=limit, rewrite_query=True,
-                user_id=_current_user_id,
+                user_id=user_id,
+                metadata_filter=metadata_filter,
             )
 
             # 检索质量评估：结果过少或最高分过低时，用 LLM 生成替代查询重试一次
@@ -423,7 +497,8 @@ def search_knowledge(query: str, limit: int = 5) -> str:
                     logger.info(f"检索质量低，替代查询重试: '{search_query}' -> '{alt_query}'")
                     alt_results = _knowledge_store.hybrid_search_parent_child(
                         alt_query, top_k=limit, rewrite_query=False,  # 替代 query 已是 LLM 重写的
-                        user_id=_current_user_id,
+                        user_id=user_id,
+                        metadata_filter=metadata_filter,
                     )
                     if alt_results:
                         results = _merge_search_results(results or [], alt_results, limit)
@@ -459,6 +534,10 @@ def search_knowledge(query: str, limit: int = 5) -> str:
                         "content": content,
                         "image_path": meta.get("image_path"),
                         "source": "knowledge_base",
+                        # 运维元数据：供证据看板按 doc_type/service 分类
+                        "doc_type": meta.get("doc_type", ""),
+                        "service": meta.get("service", ""),
+                        "incident_id": meta.get("incident_id", ""),
                     })
 
                 text = "\n\n".join(formatted) + "\n\n---\n请在回答中使用 [1]、[2] 等编号引用上述来源。"
@@ -466,7 +545,7 @@ def search_knowledge(query: str, limit: int = 5) -> str:
                 _append_retrieval_buffer(artifact)
                 # 缓存 (text, artifact) 元组（缓存命中时重放 artifact 到 buffer）
                 # 缓存键含 user_id，与缓存检查一致，避免跨用户泄漏
-                _tool_cache.set("search_knowledge", (text, artifact), search_query, limit, _current_user_id or "")
+                _tool_cache.set("search_knowledge", (text, artifact), search_query, limit, user_id or "", service or "", doc_type or "")
                 return text
 
             return "未找到相关知识"
@@ -757,10 +836,133 @@ def search_memory(user_id: str, query: str) -> str:
         return f"搜索记忆失败: {str(e)}"
 
 
+@tool
+def query_metrics(service: str, metric: str = "all") -> str:
+    """查询服务的实时监控指标（AIOps 故障诊断首选工具）。
+
+    返回服务的关键监控指标，用于故障诊断的"现场取证"。
+    拿到指标后应根据异常方向再调 query_logs 定向查日志。
+
+    Args:
+        service: 服务名，如 "payment-service"、"order-service"、"mysql"
+        metric: 指标名，默认 "all" 一次拿全。可选：error_rate / connection_pool_usage / pending_connections / qps
+
+    Returns:
+        JSON 格式的监控指标数据
+    """
+    import json
+    import random
+
+    # Mock 数据：模拟 payment-service 连接池耗尽场景
+    mock_data = {
+        "service": service,
+        "timestamp": "2026-08-02T15:00:00Z",
+        "metrics": {
+            "error_rate": {"value": 0.38, "baseline": 0.01, "unit": "%", "status": "critical"},
+            "connection_pool_usage": {"value": 1.0, "baseline": 0.3, "unit": "%", "status": "critical"},
+            "pending_connections": {"value": 87, "baseline": 2, "unit": "count", "status": "critical"},
+            "qps": {"value": 4200, "baseline": 1500, "unit": "req/s", "status": "warning"},
+            "p99_latency": {"value": 3200, "baseline": 80, "unit": "ms", "status": "critical"},
+        },
+    }
+
+    if metric != "all" and metric in mock_data["metrics"]:
+        return json.dumps({"service": service, "metric": metric, **mock_data["metrics"][metric]})
+    return json.dumps(mock_data, ensure_ascii=False)
+
+
+@tool
+def query_logs(service: str, keyword: str, time_range: str = "1h") -> str:
+    """查询服务日志，按关键词过滤。
+
+    根据 query_metrics 的异常方向定向查日志找具体异常。
+    如 connection_pool_usage 高 → keyword="HikariPool" 看连接池报错。
+
+    Args:
+        service: 服务名，如 "payment-service"、"mysql"
+        keyword: 日志关键词，如 "HikariPool"、"error"、"slow_query"、"timeout"
+        time_range: 时间范围，默认 "1h"，可选 "5m"/"30m"/"2h"/"24h"
+
+    Returns:
+        JSON 格式的日志数据
+    """
+    import json
+
+    # Mock 日志：根据关键词返回不同的模拟日志
+    log_templates = {
+        "HikariPool": [
+            "[ERROR] 2026-08-02 14:55:23 HikariPool-1 - Connection is not available, timeout 30000ms",
+            "[WARN]  2026-08-02 14:55:24 HikariPool-1 - Pool stats: active=10, idle=0, waiting=87",
+            "[ERROR] 2026-08-02 14:55:25 HikariPool-1 - Connection pool exhausted (max=10)",
+        ],
+        "error": [
+            "[ERROR] 2026-08-02 14:55:23 payment-service - HTTP 500: upstream connect timed out",
+            "[ERROR] 2026-08-02 14:55:26 payment-service - java.sql.SQLTransientConnectionException",
+            "[ERROR] 2026-08-02 14:55:28 payment-service - HikariPool-1 - Connection is not available",
+        ],
+        "slow_query": [
+            "[WARN] 2026-08-02 14:54:00 mysql - slow_query detected: SELECT * FROM orders WHERE status='pending' (耗时 12.3s)",
+            "[WARN] 2026-08-02 14:55:00 mysql - slow_query detected: UPDATE inventory SET stock=stock-1 (耗时 8.7s)",
+        ],
+    }
+
+    logs = log_templates.get(keyword, [
+        f"[INFO] 2026-08-02 14:55:00 {service} - no logs matched keyword '{keyword}'",
+    ])
+
+    return json.dumps({
+        "service": service,
+        "keyword": keyword,
+        "time_range": time_range,
+        "count": len(logs),
+        "logs": logs,
+    }, ensure_ascii=False)
+
+
+@tool
+def analyze_chart(service: str, chart_type: str = "overview") -> str:
+    """分析服务监控图表（Grafana 截图），提取图表中的异常模式。
+
+    通过视觉语言模型（VLM）理解监控图表截图，识别曲线异常、跨指标关联，
+    输出结构化分析结果。用于故障诊断的"看图取证"，比纯文本指标更直观。
+
+    Args:
+        service: 服务名，如 "payment-service"、"order-service"
+        chart_type: 图表类型，默认 "overview"。可选："overview"全览 / "connection_pool"连接池 / "latency"延迟
+
+    Returns:
+        JSON 格式的图表分析结果（metrics + anomalies + insights）
+    """
+    import json
+
+    # Mock 数据：模拟 VLM 分析 Grafana 截图后的输出
+    # 与 query_metrics 数据一致，但增加 VLM 特有的 anomalies/insights（看图才能发现的形态级信息）
+    mock_analysis = {
+        "service": service,
+        "chart_type": chart_type,
+        "source": "grafana_screenshot",
+        "metrics": {
+            "error_rate": {"value": 0.38, "baseline": 0.01, "unit": "ratio", "status": "critical"},
+            "connection_pool_usage": {"value": 1.0, "baseline": 0.3, "unit": "ratio", "status": "critical"},
+            "pending_connections": {"value": 87, "baseline": 2, "unit": "count", "status": "critical"},
+        },
+        "anomalies": [
+            {"type": "spike", "description": "error_rate 在 14:30 出现陡升尖峰，从 0.01 飙至 0.38", "severity": "critical"},
+            {"type": "saturation", "description": "connection_pool_usage 曲线触顶 100% 并持续横盘，连接池饱和", "severity": "critical"},
+            {"type": "correlation", "description": "pending_connections 与 error_rate 同步上升，强相关", "severity": "high"},
+        ],
+        "insights": "图表显示连接池打满（100%）与错误率飙升（38%）强相关，尖峰始于 14:30，符合连接池耗尽特征",
+    }
+    return json.dumps(mock_analysis, ensure_ascii=False)
+
+
 def create_tools() -> list:
     """创建工具列表"""
     return [
         search_knowledge,
+        query_metrics,
+        query_logs,
+        analyze_chart,
         web_search,
         crawl_webpage,
         generate_content,

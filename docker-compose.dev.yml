@@ -8,7 +8,9 @@ version: '3.8'
 #   - ENV=development，DEBUG=true
 #   - SECRET_KEY 留空会自动生成
 #   - MongoDB 端口对外暴露（便于本地调试）
-#   - 向量库默认 chroma（无需额外容器）
+#   - 向量库默认 qdrant（Server 模式，Web UI: localhost:6333/dashboard）
+#   - CORS 允许用户端(3000) + 管理后台(8080) + Vite dev(5173)
+#   - 源代码卷挂载：改代码无需重建镜像，uvicorn 自动重载
 # ===========================================
 
 services:
@@ -17,8 +19,24 @@ services:
       - ENV=development
       - DEBUG=true
       - SECRET_KEY=${SECRET_KEY:-}
-      - VECTOR_STORE_BACKEND=${VECTOR_STORE_BACKEND:-chroma}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      - VECTOR_STORE_BACKEND=${VECTOR_STORE_BACKEND:-qdrant}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8080,http://localhost:5173}
+      - HF_HOME=/home/appuser/.cache/huggingface
+    # 开发模式：挂载源代码，改代码无需重建镜像
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/main.py:/app/main.py
+    # uvicorn --reload：文件变更后自动重启
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app
+    # 开发模式用 root，避免 Windows 挂载文件权限问题
+    user: root
+
+  celery-worker:
+    # 同样挂载源代码（celery 无 --reload，改代码后需 docker compose restart celery-worker）
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/main.py:/app/main.py
+    user: root
 
   mongodb:
     ports:

@@ -116,6 +116,7 @@ class QdrantVectorStore:
         host: Optional[str] = None,
         port: Optional[int] = None,
         hnsw_preset: str = "medium",
+        sparse_embedding_model=None,
     ):
         from qdrant_client import QdrantClient
         from qdrant_client.models import Distance, VectorParams
@@ -123,6 +124,12 @@ class QdrantVectorStore:
         self.embedding_model = embedding_model
         self.collection_name = collection_name
         self._dimension = embedding_model.dimension
+        # sparse embedding model（BGE-M3 同源 sparse，None 时无 sparse 检索能力）
+        self._sparse_model = sparse_embedding_model
+        self._has_sparse = sparse_embedding_model is not None
+        # sparse vector 的命名向量名
+        self._sparse_vector_name = "text-sparse"
+        self._dense_vector_name = "dense"
 
         # 客户端配置
         if host and port:
@@ -149,23 +156,53 @@ class QdrantVectorStore:
             logger.info(f"Qdrant 集合已存在: {collection_name}")
         except Exception:
             # 集合不存在，创建
-            self._client.create_collection(
-                collection_name=collection_name,
-                vectors_config=VectorParams(
-                    size=self._dimension,
-                    distance=Distance.COSINE,
-                ),
-                hnsw_config={
-                    "m": hnsw_config["m"],
-                    "ef_construct": hnsw_config["ef_construct"],
-                    "full_scan_threshold": 10000,
-                },
-            )
-            # 为常用过滤字段创建 payload 索引（加速过滤）
-            self._ensure_payload_indexes(collection_name)
-            logger.info(
-                f"Qdrant 集合已创建: {collection_name}, dim={self._dimension}, HNSW: {hnsw_preset}"
-            )
+            if self._has_sparse:
+                # 混合检索模式：dense（named vector）+ sparse 共存
+                from qdrant_client.models import SparseVectorParams, SparseIndexParams
+                self._client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config={
+                        self._dense_vector_name: VectorParams(
+                            size=self._dimension,
+                            distance=Distance.COSINE,
+                        ),
+                    },
+                    sparse_vectors_config={
+                        self._sparse_vector_name: SparseVectorParams(
+                            index=SparseIndexParams(on_disk=False),
+                        ),
+                    },
+                    hnsw_config={
+                        "m": hnsw_config["m"],
+                        "ef_construct": hnsw_config["ef_construct"],
+                        "full_scan_threshold": 10000,
+                    },
+                )
+                logger.info(
+                    f"Qdrant 集合已创建 (dense+sparse 混合): {collection_name}, "
+                    f"dim={self._dimension}, HNSW: {hnsw_preset}"
+                )
+            else:
+                # 纯 dense 模式（兼容旧逻辑：默认向量，非 named vector）
+                self._client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(
+                        size=self._dimension,
+                        distance=Distance.COSINE,
+                    ),
+                    hnsw_config={
+                        "m": hnsw_config["m"],
+                        "ef_construct": hnsw_config["ef_construct"],
+                        "full_scan_threshold": 10000,
+                    },
+                )
+                logger.info(
+                    f"Qdrant 集合已创建 (dense only): {collection_name}, "
+                    f"dim={self._dimension}, HNSW: {hnsw_preset}"
+                )
+        # 无论新建还是已存在，都确保 payload 索引齐全（已存在的索引会跳过）
+        # 这样对已有 collection 也能补建运维场景新增的 doc_type/service 等索引
+        self._ensure_payload_indexes(collection_name)
 
         logger.info(f"Qdrant 集合已就绪: {collection_name}, 当前记录数: {self.size()}")
 
@@ -173,8 +210,11 @@ class QdrantVectorStore:
         """为常用过滤字段创建 payload 索引"""
         from qdrant_client.models import PayloadSchemaType
 
+        # 运维场景新增业务字段索引：doc_type/service/severity/incident_id
+        # 用于 hybrid_search_parent_child 的 metadata_filter 精准过滤
         for field in ("chunk_type", "source", "user_id", "org_id",
-                      "document_id", "topic_id", "parent_id"):
+                      "document_id", "topic_id", "parent_id",
+                      "doc_type", "service", "severity", "incident_id"):
             try:
                 self._client.create_payload_index(
                     collection_name=collection_name,
@@ -217,12 +257,30 @@ class QdrantVectorStore:
 
         meta = metadata or {}
         payload = {**meta, "content": content, "_original_id": doc_id}
+        cleaned = self.clean_markdown(content) if clean_for_embedding else content
+        if not cleaned.strip():
+            cleaned = content
+
+        if self._has_sparse:
+            # BGE-M3: 一次 encode 出 dense + sparse
+            dense_vec, sparse_vec = self._sparse_model.embed_dense_sparse(cleaned)
+            from qdrant_client.models import SparseVector
+            vector = {
+                self._dense_vector_name: dense_vec,
+                self._sparse_vector_name: SparseVector(
+                    indices=sparse_vec["indices"],
+                    values=sparse_vec["values"],
+                ),
+            }
+        else:
+            vector = self.embedding_model.embed(cleaned)
+
         self._client.upsert(
             collection_name=self.collection_name,
             points=[
                 PointStruct(
                     id=self._to_uuid(doc_id),
-                    vector=self._embed(content, clean_for_embedding),
+                    vector=vector,
                     payload=payload,
                 )
             ],
@@ -243,17 +301,48 @@ class QdrantVectorStore:
             return
 
         metadatas = metadatas or [{}] * len(doc_ids)
-        vectors = [self._embed(c, clean_for_embedding) for c in contents]
-        points = []
-        for doc_id, content, vector, meta in zip(doc_ids, contents, vectors, metadatas):
-            payload = {**meta, "content": content, "_original_id": doc_id}
-            points.append(
-                PointStruct(
-                    id=self._to_uuid(doc_id),
-                    vector=vector,
-                    payload=payload,
+        # 统一清理文本
+        cleaned_contents = []
+        for c in contents:
+            cleaned = self.clean_markdown(c) if clean_for_embedding else c
+            if not cleaned.strip():
+                cleaned = c
+            cleaned_contents.append(cleaned)
+
+        if self._has_sparse:
+            # BGE-M3: 批量一次 encode 出 dense + sparse
+            from qdrant_client.models import SparseVector
+            dense_list, sparse_list = self._sparse_model.embed_dense_sparse_batch(cleaned_contents)
+            points = []
+            for doc_id, content, dense_vec, sparse_vec, meta in zip(
+                doc_ids, contents, dense_list, sparse_list, metadatas
+            ):
+                payload = {**meta, "content": content, "_original_id": doc_id}
+                points.append(
+                    PointStruct(
+                        id=self._to_uuid(doc_id),
+                        vector={
+                            self._dense_vector_name: dense_vec,
+                            self._sparse_vector_name: SparseVector(
+                                indices=sparse_vec["indices"],
+                                values=sparse_vec["values"],
+                            ),
+                        },
+                        payload=payload,
+                    )
                 )
-            )
+        else:
+            vectors = [self.embedding_model.embed(c) for c in cleaned_contents]
+            points = []
+            for doc_id, content, vector, meta in zip(doc_ids, contents, vectors, metadatas):
+                payload = {**meta, "content": content, "_original_id": doc_id}
+                points.append(
+                    PointStruct(
+                        id=self._to_uuid(doc_id),
+                        vector=vector,
+                        payload=payload,
+                    )
+                )
         self._client.upsert(
             collection_name=self.collection_name,
             points=points,
@@ -298,14 +387,17 @@ class QdrantVectorStore:
         用于多模态检索：CLIP 文本向量查 CLIP 图像向量库
         """
         qdrant_filter = self._convert_filter(filters)
-        results = self._client.query_points(
-            collection_name=self.collection_name,
-            query=query_vector,
-            limit=top_k,
-            query_filter=qdrant_filter,
-            with_payload=True,
-            with_vectors=False,
-        ).points
+        kwargs = {
+            "collection_name": self.collection_name,
+            "query": query_vector,
+            "limit": top_k,
+            "query_filter": qdrant_filter,
+            "with_payload": True,
+            "with_vectors": False,
+        }
+        if self._has_sparse:
+            kwargs["using"] = self._dense_vector_name
+        results = self._client.query_points(**kwargs).points
 
         output = []
         for p in results:
@@ -588,14 +680,30 @@ class QdrantVectorStore:
 
         支持：
         - None -> None
-        - {"key": "value"} -> Filter(must=[FieldCondition(key=key, match=MatchValue(value=value))])
+        - {"key": "value"} -> Filter(must=[FieldCondition(...)])
         - {"$and": [{"key": "value"}, ...]} -> Filter(must=[...])
+        - {"$or": [{"k1": v1}, {"k2": v2}]} -> Filter(should=[...])  (OR 语义，至少满足一个)
+        - {"$or_empty": {"key": k, "value": v}} -> Filter(should=[MatchValue(""), MatchValue(v)])
+          表示 "字段为空串 OR 字段==v"。用于字段【一定存在】的可空字段（如 org_id，to_chroma 强制写入空串）
+        - {"$or_missing": {"key": k, "value": v}} -> Filter(must_not=[MatchExcept([v])])
+          表示 "字段不存在 OR 字段==v"。用于字段【可能不存在】的可空字段（如 user_id，cleaned 移除空值）。
+          原理：must_not 排除"value NOT IN [v]"的文档；字段不存在时 MatchExcept 不匹配 → 不被排除 → 保留
+
+        注：qdrant_client local mode 的 IsNullCondition 实测不生效，故 user_id 用 must_not+MatchExcept 方案，
+        该方案在 local mode 与 server mode 均验证通过。
         """
         if not filters:
             return None
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchExcept
 
-        conditions = []
+        must: List[Any] = []
+        should: List[Any] = []
+        must_not: List[Any] = []
+
+        def _add_simple(sub: Dict, target: List[Any]):
+            """把简单 {key: value} 条件追加到 target（must 或 should 列表）"""
+            for sk, sv in sub.items():
+                target.append(FieldCondition(key=sk, match=MatchValue(value=sv)))
 
         def _parse(clause: Dict):
             for k, v in clause.items():
@@ -603,17 +711,37 @@ class QdrantVectorStore:
                     for sub in v:
                         _parse(sub)
                 elif k == "$or":
-                    # 转为 should
-                    pass  # 当前项目未使用 $or，留作扩展
+                    # $or 子项作为 should 条件（OR 语义）
+                    for sub in v:
+                        _add_simple(sub, should)
+                elif k == "$or_empty":
+                    # 字段一定存在，空串=公共：should [MatchValue(""), MatchValue(v)]
+                    key = v["key"]
+                    val = v["value"]
+                    should.append(FieldCondition(key=key, match=MatchValue(value="")))
+                    should.append(FieldCondition(key=key, match=MatchValue(value=val)))
+                elif k in ("$or_missing", "$or_null"):
+                    # 字段可能不存在：must_not [MatchExcept([v])] 排除非目标值，字段缺失则不匹配 → 保留
+                    # $or_null 作为别名保留（语义在 Python 层等价，Qdrant 层按 $or_missing 处理）
+                    key = v["key"]
+                    val = v["value"]
+                    must_not.append(FieldCondition(key=key, match=MatchExcept(**{"except": [val]})))
                 else:
-                    conditions.append(
-                        FieldCondition(key=k, match=MatchValue(value=v))
-                    )
+                    must.append(FieldCondition(key=k, match=MatchValue(value=v)))
 
         _parse(filters)
-        if not conditions:
+
+        if not must and not should and not must_not:
             return None
-        return Filter(must=conditions)
+
+        kwargs: Dict[str, Any] = {}
+        if must:
+            kwargs["must"] = must
+        if should:
+            kwargs["should"] = should
+        if must_not:
+            kwargs["must_not"] = must_not
+        return Filter(**kwargs)
 
     @_retry_qdrant()
     def search(
@@ -623,7 +751,7 @@ class QdrantVectorStore:
         min_score: float = 0.0,
         filters: Optional[Dict] = None,
     ) -> List[Tuple[str, float, Dict]]:
-        """相似度搜索
+        """相似度搜索（dense vector）
 
         返回 [(doc_id, score, metadata_with_content), ...]
         与 ChromaDBVectorStore.search 完全一致
@@ -633,14 +761,19 @@ class QdrantVectorStore:
         query_vector = self.embedding_model.embed(query)
         qdrant_filter = self._convert_filter(filters)
 
-        results = self._client.query_points(
-            collection_name=self.collection_name,
-            query=query_vector,
-            limit=top_k,
-            query_filter=qdrant_filter,
-            with_payload=True,
-            with_vectors=False,
-        ).points
+        # named vector 模式需指定 using，默认向量模式不需要
+        kwargs = {
+            "collection_name": self.collection_name,
+            "query": query_vector,
+            "limit": top_k,
+            "query_filter": qdrant_filter,
+            "with_payload": True,
+            "with_vectors": False,
+        }
+        if self._has_sparse:
+            kwargs["using"] = self._dense_vector_name
+
+        results = self._client.query_points(**kwargs).points
 
         output = []
         for p in results:
@@ -657,6 +790,60 @@ class QdrantVectorStore:
                 output.append((
                     original_id,
                     similarity,
+                    {**payload, "content": content},
+                ))
+        return output
+
+    @_retry_qdrant()
+    def sparse_search(
+        self,
+        query: str,
+        top_k: int = 10,
+        min_score: float = 0.0,
+        filters: Optional[Dict] = None,
+    ) -> List[Tuple[str, float, Dict]]:
+        """
+        Sparse vector 搜索（BGE-M3 lexical_weights，替代 BM25）
+
+        返回 [(doc_id, score, metadata_with_content), ...]
+        score 为 Qdrant sparse 原始打分（不需要 [0,1] 映射，与 BM25 分数性质类似）
+
+        需要 collection 创建时启用 sparse vector（_has_sparse=True）
+        """
+        if not self._has_sparse:
+            logger.warning("sparse_search 需要启用 sparse vector，降级返回空列表")
+            return []
+
+        from qdrant_client.models import SparseVector
+
+        sparse_vec = self._sparse_model.embed_sparse(query)
+        if not sparse_vec["indices"]:
+            return []
+
+        qdrant_filter = self._convert_filter(filters)
+        results = self._client.query_points(
+            collection_name=self.collection_name,
+            query=SparseVector(
+                indices=sparse_vec["indices"],
+                values=sparse_vec["values"],
+            ),
+            using=self._sparse_vector_name,
+            limit=top_k,
+            query_filter=qdrant_filter,
+            with_payload=True,
+            with_vectors=False,
+        ).points
+
+        output = []
+        for p in results:
+            payload = dict(p.payload or {})
+            original_id = payload.pop("_original_id", "")
+            content = payload.pop("content", "")
+            score = float(p.score)
+            if score >= min_score:
+                output.append((
+                    original_id,
+                    score,
                     {**payload, "content": content},
                 ))
         return output

@@ -1,0 +1,96 @@
+/**
+ * 全局样式 — 极简设计系统（与主前端一致）
+ * 原则：中性灰为主，黑色强调，大量留白，无花哨效果
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ========== 基础重置 ========== */
+@layer base {
+  body {
+    @apply bg-zinc-50 text-zinc-900 antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-zinc-200 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-zinc-300;
+  }
+}
+
+/* ========== 组件样式 ========== */
+@layer components {
+  /* 按钮 */
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium
+           transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed
+           focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-1;
+  }
+
+  .btn-primary {
+    @apply btn bg-zinc-900 text-white hover:bg-zinc-800 active:bg-zinc-950;
+  }
+
+  .btn-secondary {
+    @apply btn bg-white text-zinc-700 border border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300;
+  }
+
+  .btn-danger {
+    @apply btn bg-red-600 text-white hover:bg-red-700;
+  }
+
+  .btn-ghost {
+    @apply btn bg-transparent text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900;
+  }
+
+  /* 输入框 */
+  .input {
+    @apply w-full px-3.5 py-2 text-sm bg-white border border-zinc-200 rounded-lg
+           transition-colors duration-150 placeholder:text-zinc-400
+           focus:outline-none focus:border-zinc-400 focus:ring-0;
+  }
+
+  /* 卡片 */
+  .card {
+    @apply bg-white border border-zinc-200 rounded-xl;
+  }
+
+  /* 标签 */
+  .tag {
+    @apply inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-md;
+  }
+  .tag-default {
+    @apply tag bg-zinc-100 text-zinc-600;
+  }
+  .tag-success {
+    @apply tag bg-green-50 text-green-700;
+  }
+  .tag-warning {
+    @apply tag bg-amber-50 text-amber-700;
+  }
+  .tag-error {
+    @apply tag bg-red-50 text-red-700;
+  }
+  .tag-info {
+    @apply tag bg-blue-50 text-blue-700;
+  }
+}
+
+/* ========== 动画 ========== */
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out;
+}
+.animate-slide-up {
+  animation: slideUp 0.2s ease-out;
+}

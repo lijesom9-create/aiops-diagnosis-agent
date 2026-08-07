@@ -1,11 +1,11 @@
-# 构建阶段
-FROM node:18-alpine as build
+# 构建阶段（用 slim 替代 alpine，避免 npm "Exit handler never called" bug）
+FROM node:20-slim as build
 
 WORKDIR /app
 
 COPY package*.json ./
 
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 
 COPY . .
 

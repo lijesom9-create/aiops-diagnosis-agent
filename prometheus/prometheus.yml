@@ -1,0 +1,34 @@
+# Prometheus 采集配置
+# 采集 node_exporter 暴露的本机系统指标（CPU/内存/磁盘/网络/文件系统等）
+#
+# 采集机制：Prometheus 主动 pull 模式（每 15s 拉一次 node_exporter 的 /metrics 端点）
+# node_exporter 在 Docker 里需以 host network 模式运行才能看到宿主机真实指标
+
+global:
+  scrape_interval: 15s       # 采集间隔：15 秒一次（生产常用 15-30s）
+  evaluation_interval: 15s   # 告警规则评估间隔
+
+# 告警规则文件（AIOps 场景：CPU/内存/磁盘/负载/服务存活 告警）
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
+# 告警推送目标：Alertmanager
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+# 采集目标列表
+scrape_configs:
+  # 1. node_exporter：宿主机系统指标（CPU/内存/磁盘/网络）
+  #    在 Docker 网络里通过容器名 node_exporter 访问
+  - job_name: 'node_exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          instance: 'host'  # 标记为"宿主机"，便于 Agent 查询时区分
+
+  # 2. Prometheus 自身指标（自监控，便于排查 Prometheus 健康）
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

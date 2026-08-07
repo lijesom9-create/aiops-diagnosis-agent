@@ -325,7 +325,7 @@ class MemoryManager:
                         parts_with_meta.append({
                             "name": f"rag_{i}",
                             "content": f"[{i}] {title}\n{content_str}",
-                            "priority": 60 - i,
+                            "priority": 60 - i * 5,
                             "truncatable": True,
                             "image_path": image_path,
                             "image_type": image_type,
@@ -334,7 +334,7 @@ class MemoryManager:
                         parts_with_meta.append({
                             "name": f"rag_{i}",
                             "content": f"[{i}] {title}\n{content}",
-                            "priority": 60 - i,  # 越靠前优先级越高
+                            "priority": 60 - i * 5,  # 越靠前优先级越高；i>=5 时低于 archival(40)，避免挤占历史对话预算
                             "truncatable": True,
                         })
 

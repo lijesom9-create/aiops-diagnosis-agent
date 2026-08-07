@@ -252,6 +252,137 @@ class SentenceTransformerEmbedding(EmbeddingModel):
         return self._dimension
 
 
+class BGEM3Embedding(EmbeddingModel):
+    """
+    BGE-M3 嵌入模型：同时支持 dense + sparse 向量（同源）
+
+    一次 encode 调用可同时获取：
+    - dense_vecs: 1024 维稠密向量（语义检索）
+    - lexical_weights: 稀疏向量 token_id→weight（关键词检索，替代 BM25）
+
+    优势：
+    - dense 和 sparse 同源，混合检索效果最佳
+    - 多语言支持（100+ 语言），中文 sparse 表现优秀
+    - 无需 jieba 分词，模型自带多语言 tokenizer
+
+    依赖：pip install FlagEmbedding
+    模型：BAAI/bge-m3（~2.2GB）
+    """
+
+    def __init__(self, model_name: str = "BAAI/bge-m3", use_fp16: bool = True):
+        import torch
+        from FlagEmbedding import BGEM3FlagModel
+
+        # CPU 环境不支持 fp16：半精度权重与 fp32 输入混合运算会抛
+        # "expected scalar type Half but found Float"（sparse 编码路径必现），
+        # 且 CPU 上 fp16 无加速收益。无 CUDA 时自动降级 fp32，保证 sparse 向量可用。
+        if use_fp16 and not torch.cuda.is_available():
+            logger.warning("当前无 CUDA（CPU 环境），BGE-M3 自动降级 fp16→fp32，避免 sparse 编码失败")
+            use_fp16 = False
+
+        self.model_name = model_name
+        logger.info(f"正在加载 BGE-M3 模型: {model_name} (离线模式)")
+        self._model = BGEM3FlagModel(model_name, use_fp16=use_fp16)
+        self._dimension = 1024  # BGE-M3 dense 固定 1024 维
+        logger.info(f"BGE-M3 加载完成，dense 维度: {self._dimension}")
+
+    def embed(self, text: str) -> List[float]:
+        """生成单条文本的 dense 向量"""
+        try:
+            output = self._model.encode(
+                [text], return_dense=True, return_sparse=False, return_colbert_vecs=False
+            )
+            return output["dense_vecs"][0].tolist()
+        except Exception as e:
+            logger.error(f"BGE-M3 dense 编码失败: {e}")
+            return [0.0] * self._dimension
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """批量生成 dense 向量"""
+        try:
+            output = self._model.encode(
+                texts, return_dense=True, return_sparse=False, return_colbert_vecs=False
+            )
+            return output["dense_vecs"].tolist()
+        except Exception as e:
+            logger.error(f"BGE-M3 批量 dense 编码失败: {e}")
+            return [[0.0] * self._dimension] * len(texts)
+
+    @property
+    def dimension(self) -> int:
+        return self._dimension
+
+    def embed_sparse(self, text: str) -> dict:
+        """
+        生成单条文本的 sparse 向量
+
+        Returns:
+            {"indices": [int, ...], "values": [float, ...]}
+        """
+        try:
+            output = self._model.encode(
+                [text], return_dense=False, return_sparse=True, return_colbert_vecs=False
+            )
+            weights = output["lexical_weights"][0]
+            return {"indices": list(weights.keys()), "values": list(weights.values())}
+        except Exception as e:
+            logger.error(f"BGE-M3 sparse 编码失败: {e}")
+            return {"indices": [], "values": []}
+
+    def embed_sparse_batch(self, texts: List[str]) -> List[dict]:
+        """批量生成 sparse 向量"""
+        try:
+            output = self._model.encode(
+                texts, return_dense=False, return_sparse=True, return_colbert_vecs=False
+            )
+            results = []
+            for weights in output["lexical_weights"]:
+                results.append({"indices": list(weights.keys()), "values": list(weights.values())})
+            return results
+        except Exception as e:
+            logger.error(f"BGE-M3 批量 sparse 编码失败: {e}")
+            return [{"indices": [], "values": []}] * len(texts)
+
+    def embed_dense_sparse(self, text: str) -> tuple:
+        """
+        一次前向计算同时返回 dense + sparse（推荐，避免重复编码）
+
+        Returns:
+            (dense_vec, {"indices": [...], "values": [...]})
+        """
+        try:
+            output = self._model.encode(
+                [text], return_dense=True, return_sparse=True, return_colbert_vecs=False
+            )
+            dense = output["dense_vecs"][0].tolist()
+            weights = output["lexical_weights"][0]
+            sparse = {"indices": list(weights.keys()), "values": list(weights.values())}
+            return dense, sparse
+        except Exception as e:
+            logger.error(f"BGE-M3 dense+sparse 编码失败: {e}")
+            return [0.0] * self._dimension, {"indices": [], "values": []}
+
+    def embed_dense_sparse_batch(self, texts: List[str]) -> tuple:
+        """
+        批量同时返回 dense + sparse
+
+        Returns:
+            (List[dense_vec], List[sparse_dict])
+        """
+        try:
+            output = self._model.encode(
+                texts, return_dense=True, return_sparse=True, return_colbert_vecs=False
+            )
+            dense_list = output["dense_vecs"].tolist()
+            sparse_list = []
+            for weights in output["lexical_weights"]:
+                sparse_list.append({"indices": list(weights.keys()), "values": list(weights.values())})
+            return dense_list, sparse_list
+        except Exception as e:
+            logger.error(f"BGE-M3 批量 dense+sparse 编码失败: {e}")
+            return [[0.0] * self._dimension] * len(texts), [{"indices": [], "values": []}] * len(texts)
+
+
 def create_embedding_model(
     api_key: Optional[str] = None,
     model_name: Optional[str] = None,
@@ -282,8 +413,13 @@ def create_embedding_model(
         )
     elif use_local_embedding:
         try:
-            logger.info(f"使用本地 sentence-transformer 模型: {local_model_name}")
-            base = SentenceTransformerEmbedding(model_name=local_model_name)
+            # BGE-M3 特殊处理：用 FlagEmbedding 库加载（支持 dense + sparse 同源）
+            if "bge-m3" in local_model_name.lower():
+                logger.info(f"使用 BGE-M3 模型 (dense+sparse 同源): {local_model_name}")
+                base = BGEM3Embedding(model_name=local_model_name)
+            else:
+                logger.info(f"使用本地 sentence-transformer 模型: {local_model_name}")
+                base = SentenceTransformerEmbedding(model_name=local_model_name)
         except Exception as e:
             logger.warning(f"本地嵌入模型加载失败，降级为 TF-IDF: {e}")
             base = TFIDFModel(max_features=5000)

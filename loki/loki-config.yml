@@ -1,0 +1,54 @@
+# Loki 日志聚合系统配置（单节点模式，学习/开发环境用）
+# 文档：https://grafana.com/docs/loki/latest/configuration/
+
+auth_enabled: false  # 开发环境关闭鉴权，生产环境需开启
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  path_prefix: /loki/data
+  storage:
+    filesystem:
+      chunks_directory: /loki/data/chunks
+      rules_directory: /loki/data/rules
+  replication_factor: 1  # 单节点模式，副本数 1
+  ring:
+    kvstore:
+      store: inmemory  # 单节点用内存 ring，无需 etcd
+
+# 禁用 ruler（告警规则），我们只需要日志查询，不需要告警
+ruler:
+  enable_api: false
+  enable_alertmanager_v2: false
+
+# Schema 配置：TSDB 引擎（v13 schema，Loki 2.8+ 推荐）
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  filesystem:
+    directory: /loki/data
+  tsdb_shipper:
+    active_index_directory: /loki/data/tsdb-index
+    cache_location: /loki/data/tsdb-cache
+
+# 数据保留与限制
+limits_config:
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h   # 拒绝 7 天前的旧日志
+  retention_period: 168h              # 日志保留 7 天（学习场景足够）
+  max_query_series: 500               # 单次查询最大 series 数
+  max_query_length: 721h              # 单次查询最大时间跨度 30 天
+
+# 关闭匿名使用统计上报
+analytics:
+  reporting_enabled: false

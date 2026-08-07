@@ -82,9 +82,7 @@ class RAGRetrieverAdapter:
 # 全局单例
 _embedding_model = None
 _memory_manager = None
-_rag_generator = None
 _knowledge_store = None
-_hybrid_retriever = None
 
 
 def get_embedding_model():
@@ -99,9 +97,9 @@ def get_embedding_model():
             model_name=settings.EMBEDDING_MODEL or None,
             base_url=settings.EMBEDDING_BASE_URL or None,
             use_local_embedding=True,
-            local_model_name="BAAI/bge-small-zh-v1.5",
+            local_model_name="BAAI/bge-m3",
         )
-        logger.info("Embedding model 初始化完成: BAAI/bge-small-zh-v1.5")
+        logger.info("Embedding model 初始化完成: BAAI/bge-m3 (dense+sparse 同源)")
     return _embedding_model
 
 
@@ -150,53 +148,11 @@ def init_knowledge_store():
         reranker=reranker,
         separate_parent_child=settings.RAG_SEPARATE_PARENT_CHILD,
         vector_store_backend=settings.VECTOR_STORE_BACKEND,
+        sparse_embedding_model=embedding_model,  # BGE-M3 同源 sparse（替代自研 BM25）
     )
     set_knowledge_store(knowledge_store)
     logger.info(f"Knowledge store 初始化完成: {knowledge_store.size()} 条")
     return knowledge_store
-
-
-def get_hybrid_retriever():
-    """获取混合检索器实例"""
-    global _hybrid_retriever
-    if _hybrid_retriever is None:
-        from app.retrieval.hybrid_retriever import HybridRetriever, SparseRetriever, DenseRetriever
-        from app.retrieval.reranker import CrossEncoderReranker
-        from app.core.config import settings
-
-        embedding_model = get_embedding_model()
-        knowledge_store = get_knowledge_store()
-
-        # 创建稀疏检索器（BM25）
-        sparse_retriever = SparseRetriever()
-
-        # 创建稠密检索器（向量）
-        dense_retriever = DenseRetriever(
-            embedding_model=embedding_model,
-            vector_store=knowledge_store.vector_store if knowledge_store else None,
-        )
-
-        # 复用 KnowledgeStore 的 reranker，避免重复加载模型
-        reranker = None
-        if knowledge_store and knowledge_store.reranker:
-            reranker = knowledge_store.reranker
-        elif settings.RERANKER_ENABLED:
-            try:
-                reranker = CrossEncoderReranker(model_name=settings.RERANKER_MODEL_NAME)
-                reranker._load_model()
-            except Exception as e:
-                logger.warning(f"Hybrid retriever 加载 reranker 失败: {e}")
-                reranker = None
-
-        # 创建混合检索器
-        _hybrid_retriever = HybridRetriever(
-            sparse_retriever=sparse_retriever,
-            dense_retriever=dense_retriever,
-            fusion_method="rrf",
-            reranker=reranker,
-        )
-        logger.info(f"Hybrid retriever 初始化完成（reranker: {reranker.name if reranker else 'None'}）")
-    return _hybrid_retriever
 
 
 def get_memory_manager():
@@ -221,19 +177,3 @@ def get_memory_manager():
         )
         logger.info("MemoryManager 初始化完成")
     return _memory_manager
-
-
-def get_rag_generator():
-    """获取统一的 RAG generator 实例"""
-    global _rag_generator
-    if _rag_generator is None:
-        from app.memory import RAGGenerator
-        from app.core.ai_service import ai_service
-
-        memory = get_memory_manager()
-        _rag_generator = RAGGenerator(
-            llm_service=ai_service,
-            memory_manager=memory,
-        )
-        logger.info("RAGGenerator 初始化完成")
-    return _rag_generator

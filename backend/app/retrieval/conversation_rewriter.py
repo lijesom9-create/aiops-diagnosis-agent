@@ -214,22 +214,15 @@ class ConversationQueryRewriter:
         self.stats["llm_called"] += 1
 
         try:
-            provider = self._get_provider()
             history_str = self._format_history(chat_history)
             prompt = REWRITE_PROMPT_TEMPLATE.format(
                 chat_history=history_str,
                 question=query,
             )
 
-            # 同步调用 LLM
-            response = provider.invoke(
-                prompt,
-                temperature=self.temperature,
-                max_tokens=200,
-            )
+            # 同步 httpx 调用 LLM（避免 asyncio event loop 问题，与 LLMQueryRewriter 一致）
+            rewritten = self._call_llm_sync(prompt)
 
-            # 解析响应
-            rewritten = response.strip() if isinstance(response, str) else str(response).strip()
             # 清理可能的引号、前缀
             rewritten = rewritten.strip("\"'""''")
             # 去除可能的 "改写后的查询：" 前缀
@@ -250,6 +243,43 @@ class ConversationQueryRewriter:
             self.stats["llm_failed"] += 1
             logger.warning(f"对话查询改写失败: {type(e).__name__}: {e}")
             return query  # 降级到原始 query
+
+    def _call_llm_sync(self, prompt: str) -> str:
+        """同步 httpx 调用 LLM（参考 LLMQueryRewriter._call_llm_sync）"""
+        import httpx
+        from ..core.config import settings
+        from ..core.ai_service import parse_model_name, PROVIDER_CONFIGS
+
+        if not settings.AI_API_KEY:
+            return ""
+
+        provider_name, model_name = parse_model_name(settings.AI_MODEL)
+        config = PROVIDER_CONFIGS.get(provider_name)
+        if not config:
+            return ""
+        base_url = settings.AI_BASE_URL or config["base_url"]
+
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": "你是一个对话查询改写器，只输出改写后的独立查询本身，不要解释。"},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": self.temperature,
+            "max_tokens": 200,
+        }
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.post(
+                f"{base_url}/chat/completions",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {settings.AI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"].strip()
 
     def get_stats(self) -> Dict:
         """获取统计信息"""

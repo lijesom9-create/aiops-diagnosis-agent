@@ -6,22 +6,15 @@ Retrieval Layer - 检索层
 - Retrieval Layer（本模块）：负责"怎么查" — Retrieve
 
 检索方式：
-- Sparse Retrieval：稀疏检索 (BM25)
-- Dense Retrieval：稠密检索 (Vector)
-- Hybrid Retrieval：混合检索 (Sparse + Dense + Fusion)
+- Dense Retrieval：稠密检索（Vector，Qdrant）
 - Reranking：重排序 (CrossEncoder / LLM)
+
+注：早期测试对比用的 hybrid_retriever（SparseRetriever/DenseRetriever/HybridRetriever）
+已移除，线上检索统一走 knowledge/unified_store.hybrid_search_parent_child。
 """
 
 from .base import BaseRetriever, RetrievalResult
 from .reranker import Reranker
-
-# 新增：混合检索器
-from .hybrid_retriever import (
-    SparseRetriever,
-    DenseRetriever,
-    HybridRetriever,
-    QueryRewriter,
-)
 
 __all__ = [
     # 基类
@@ -30,10 +23,4 @@ __all__ = [
 
     # 重排序
     "Reranker",
-
-    # 混合检索器
-    "SparseRetriever",
-    "DenseRetriever",
-    "HybridRetriever",
-    "QueryRewriter",
 ]

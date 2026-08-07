@@ -270,6 +270,21 @@ async def upload_document(
                 detail=f"不支持的文件类型: {doc_type or '未知'}，支持: {', '.join(sorted(_ALLOWED_EXTENSIONS))}"
             )
 
+        # 解析 Markdown YAML frontmatter → 运维业务 metadata（doc_type/service/severity 等）
+        # 与 scripts/seed_ops_kb.py 共用逻辑；无 frontmatter 时为空 dict，不影响原有流程
+        from app.document.frontmatter import parse_frontmatter, extract_business_metadata
+        biz_meta: dict = {}
+        try:
+            content_text = content.decode("utf-8", errors="ignore")
+            frontmatter, _ = parse_frontmatter(content_text)
+            biz_meta = extract_business_metadata(frontmatter)
+        except Exception as e:
+            logger.debug(f"frontmatter 解析失败（忽略，按普通文档处理）: {e}")
+
+        # frontmatter 声明的 doc_type 优先于文件扩展名（如 manual/incident/sop 业务分类）
+        if biz_meta.get("doc_type"):
+            doc_type = str(biz_meta["doc_type"]).lower()
+
         # 去重检查：公共文档全局去重（user_id="" 命中所有公共文档）
         file_hash = _compute_file_hash(content)
         if skip_duplicate:
@@ -306,6 +321,11 @@ async def upload_document(
             "created_at": now,
             "category": category,
             "tags": [],
+            # 运维业务 metadata（frontmatter 解析）：供文档列表展示 & 检索过滤
+            "service": biz_meta.get("service"),
+            "severity": biz_meta.get("severity"),
+            "incident_id": biz_meta.get("incident_id"),
+            "extra_metadata": biz_meta or None,
         }
 
         await db.create_document(document)
@@ -323,7 +343,7 @@ async def upload_document(
 
             from app.tasks.document_tasks import process_document
             task = process_document.delay(
-                document_id, file_path, filename, title or filename,
+                document_id, file_path, filename, title or filename, biz_meta,
             )
             await db.update_document(document_id, {"task_id": task.id})
             logger.info(f"文档已投递 Celery task: {document_id} task={task.id} (导入者: {admin_user_id})")
@@ -332,7 +352,7 @@ async def upload_document(
             uploader = get_document_uploader()
             background_tasks.add_task(
                 _process_document,
-                db, uploader, document_id, content, filename, title, "",
+                db, uploader, document_id, content, filename, title, "", biz_meta,
             )
             logger.info(f"文档已提交 BackgroundTasks: {document_id} - {filename} (导入者: {admin_user_id})")
 
@@ -605,6 +625,7 @@ async def update_document(
         background_tasks.add_task(
             _process_document,
             db, uploader, document_id, content, filename, title, doc.get("user_id", ""),
+            doc.get("extra_metadata"),
         )
 
         logger.info(f"文档更新中: {document_id} - {filename}")
@@ -709,6 +730,17 @@ async def batch_upload_documents(
                     })
                     continue
 
+            # 解析 Markdown YAML frontmatter → 运维业务 metadata（与单文件上传一致）
+            from app.document.frontmatter import parse_frontmatter, extract_business_metadata
+            biz_meta: dict = {}
+            try:
+                frontmatter, _ = parse_frontmatter(content.decode("utf-8", errors="ignore"))
+                biz_meta = extract_business_metadata(frontmatter)
+            except Exception as e:
+                logger.debug(f"frontmatter 解析失败（忽略，按普通文档处理）: {e}")
+            if biz_meta.get("doc_type"):
+                doc_type = str(biz_meta["doc_type"]).lower()
+
             # 创建文档记录（公共文档）
             document_id = f"doc_{uuid.uuid4().hex[:12]}"
             now = datetime.now().isoformat()
@@ -725,6 +757,10 @@ async def batch_upload_documents(
                 "char_count": 0,
                 "file_hash": file_hash,
                 "created_at": now,
+                "service": biz_meta.get("service"),
+                "severity": biz_meta.get("severity"),
+                "incident_id": biz_meta.get("incident_id"),
+                "extra_metadata": biz_meta or None,
             }
             await db.create_document(document)
 
@@ -739,13 +775,13 @@ async def batch_upload_documents(
                 await db.update_document(document_id, {"file_path": file_path})
 
                 from app.tasks.document_tasks import process_document
-                task = process_document.delay(document_id, file_path, filename, filename)
+                task = process_document.delay(document_id, file_path, filename, filename, biz_meta)
                 await db.update_document(document_id, {"task_id": task.id})
             else:
                 uploader = get_document_uploader()
                 background_tasks.add_task(
                     _process_document,
-                    db, uploader, document_id, content, filename, filename, "",
+                    db, uploader, document_id, content, filename, filename, "", biz_meta,
                 )
 
             success_count += 1
@@ -857,8 +893,13 @@ async def _process_document(
     filename: str,
     title: Optional[str],
     user_id: str,
+    extra_metadata: Optional[dict] = None,
 ):
-    """后台处理文档：解析、分块、向量化"""
+    """后台处理文档：解析、分块、向量化
+
+    extra_metadata: 运维业务 metadata（frontmatter 解析的 doc_type/service/severity 等），
+    注入到每个 chunk，支撑检索层 metadata_filter 精准过滤。
+    """
     try:
         await db.update_document(document_id, {"status": DocumentStatus.PROCESSING.value})
 
@@ -868,6 +909,7 @@ async def _process_document(
             title=title,
             user_id=user_id,
             document_id=document_id,
+            extra_metadata=extra_metadata,
         )
 
         await db.update_document(document_id, {

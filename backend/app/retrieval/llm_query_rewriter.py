@@ -13,7 +13,7 @@ LLM MultiQuery Rewriter - 基于 LLM 的多查询重写器
 """
 import json
 import re
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Dict
 from functools import lru_cache
 from loguru import logger
 
@@ -93,6 +93,9 @@ class LLMQueryRewriter:
         self.similarity_threshold = similarity_threshold
         self.temperature = temperature
         self._embedding_model = embedding_model
+        # 实例级 LLM 缓存（替代 lru_cache 装饰实例方法，避免 self 被缓存持有导致内存泄漏，
+        # 同时支持按需 invalidate，文档增删时可清空避免脏缓存）
+        self._llm_cache: Dict[str, tuple] = {}
         # 统计信息
         self.stats = {"called": 0, "success": 0, "fallback": 0, "filtered": 0}
 
@@ -107,24 +110,38 @@ class LLMQueryRewriter:
             self._provider = create_ai_provider()
         return self._provider
 
-    @lru_cache(maxsize=CACHE_SIZE)
     def _call_llm(self, query: str) -> tuple:
-        """调用 LLM 生成变体（带 LRU 缓存，纯同步 httpx）
+        """调用 LLM 生成变体（带实例级缓存，纯同步 httpx）
 
         Returns:
             tuple: (variants_list, success_bool)
         """
+        # 缓存命中检查
+        cached = self._llm_cache.get(query)
+        if cached is not None:
+            return cached
+
         self.stats["called"] += 1
         try:
             variants = self._call_llm_sync(query)
             if not variants:
-                return (), False
-            self.stats["success"] += 1
-            return tuple(variants), True
+                result = ((), False)
+            else:
+                self.stats["success"] += 1
+                result = (tuple(variants), True)
         except Exception as e:
             logger.warning(f"LLM MultiQuery 调用失败，将降级到规则重写: {type(e).__name__}: {str(e)[:200]}")
             self.stats["fallback"] += 1
-            return (), False
+            result = ((), False)
+
+        # 写入缓存（限制大小，避免内存膨胀）
+        if len(self._llm_cache) < self.CACHE_SIZE:
+            self._llm_cache[query] = result
+        return result
+
+    def invalidate_cache(self) -> None:
+        """清空 LLM 重写缓存（文档增删时调用，避免脏缓存）"""
+        self._llm_cache.clear()
 
     def _call_llm_sync(self, query: str) -> List[str]:
         """同步 httpx 调用 LLM（统一走这条路径，避免 asyncio event loop 问题）"""
@@ -237,12 +254,8 @@ class LLMQueryRewriter:
 
         # 1. 规则重写（始终先做）
         if self.mode in ("enhanced_llm", "enhanced"):
-            try:
-                from .unified_store_imports import _safe_enhanced_rewrite
-                rule_variants = _safe_enhanced_rewrite(base_query)
-            except ImportError:
-                from ..knowledge.unified_store import QueryRewriter
-                rule_variants = QueryRewriter.enhanced_rewrite(base_query)
+            from ..knowledge.unified_store import QueryRewriter
+            rule_variants = QueryRewriter.enhanced_rewrite(base_query)
             for q in rule_variants:
                 if q not in queries:
                     queries.append(q)
@@ -266,7 +279,12 @@ class LLMQueryRewriter:
 
     @property
     def cache_info(self):
-        return self._call_llm.cache_info()
+        """缓存统计信息（兼容旧接口，返回 dict 代替 lru_cache 的 CacheInfo）"""
+        return {
+            "hits": self.stats["called"] - len(self._llm_cache),
+            "size": len(self._llm_cache),
+            "maxsize": self.CACHE_SIZE,
+        }
 
 
 # 模块级单例（延迟初始化）

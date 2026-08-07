@@ -22,7 +22,7 @@ from loguru import logger
 
 from app.core.config import settings
 from app.core.database import db
-from app.api import auth, documents, memory, langgraph, knowledge, health
+from app.api import auth, documents, memory, langgraph, knowledge, health, admin, alerts, monitoring
 
 
 # ========== 结构化日志配置 ==========
@@ -77,6 +77,16 @@ async def lifespan(app: FastAPI):
     set_health_store(knowledge_store)
 
     logger.info(f"应用启动完成, 知识库: {knowledge_store.size()} 条")
+
+    # MCP 监控工具集成：启用后 Agent 加载 ops_monitoring_server 的 query_metrics/query_logs
+    if settings.MCP_ENABLED:
+        try:
+            from app.api.langgraph import get_agent
+            agent = get_agent()
+            mcp_count = await agent.init_mcp_tools()
+            logger.info(f"MCP 监控工具已加载: {mcp_count} 个")
+        except Exception as e:
+            logger.warning(f"MCP 工具加载失败（Agent 将仅使用知识库工具）: {e}")
 
     yield
 
@@ -184,6 +194,9 @@ app.include_router(knowledge.router)
 app.include_router(health.router)
 app.include_router(memory.router)
 app.include_router(langgraph.router)  # LangGraph Agent (替代 chat.router)
+app.include_router(admin.router)  # 管理后台（仅管理员）
+app.include_router(alerts.router)  # Alertmanager webhook Bridge（告警 → 飞书通知）
+app.include_router(monitoring.router)  # 监控数据查询 API（前端智能运维看板用）
 
 
 # 根端点

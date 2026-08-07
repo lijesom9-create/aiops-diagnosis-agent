@@ -62,7 +62,7 @@ class KnowledgeStatsResponse(BaseModel):
     child_records: int
     parent_records: int
     clip_image_records: int
-    bm25_indexed: int
+    sparse_enabled: bool
     document_count: int
     documents: List[DocumentStat]
     collections: List[CollectionStats]
@@ -79,7 +79,7 @@ async def get_knowledge_stats(
 
     返回：
     - 各集合记录数（child / parent / clip_image）
-    - BM25 索引文档数
+    - sparse vector 是否启用
     - 按文档聚合的块数统计
     """
     try:
@@ -100,13 +100,8 @@ async def get_knowledge_stats(
             except Exception:
                 pass
 
-        # BM25 索引状态
-        bm25_size = 0
-        try:
-            store._ensure_bm25_index()
-            bm25_size = store._bm25.size
-        except Exception as e:
-            logger.debug(f"BM25 状态获取失败: {e}")
+        # sparse vector 状态（BGE-M3 同源 sparse，替代自研 BM25）
+        sparse_enabled = getattr(store.vector_store, '_has_sparse', False)
 
         # 按文档聚合统计
         doc_stats = _aggregate_document_stats(store)
@@ -123,7 +118,7 @@ async def get_knowledge_stats(
             child_records=child_size,
             parent_records=parent_size,
             clip_image_records=clip_size,
-            bm25_indexed=bm25_size,
+            sparse_enabled=sparse_enabled,
             document_count=len(doc_stats),
             documents=doc_stats,
             collections=collections,
@@ -177,36 +172,6 @@ async def get_document_chunks(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"查询文档知识块失败: {str(e)}"
-        )
-
-
-@router.post("/bm25/rebuild")
-async def rebuild_bm25_index(
-    current_user: UserResponse = Depends(get_current_user),
-):
-    """
-    重建 BM25 索引
-
-    当向量库数据变更后，BM25 索引可能不同步，调用此端点强制重建。
-    """
-    try:
-        store = _get_store()
-        store._bm25_initialized = False
-        store._ensure_bm25_index()
-        bm25_size = store._bm25.size
-
-        logger.info(f"BM25 索引重建完成: {bm25_size} 篇文档")
-
-        return {
-            "message": "BM25 索引重建完成",
-            "bm25_indexed": bm25_size,
-        }
-
-    except Exception as e:
-        logger.error(f"BM25 索引重建失败: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"BM25 索引重建失败: {str(e)}"
         )
 
 

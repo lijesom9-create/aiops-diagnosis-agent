@@ -225,6 +225,13 @@ class CachedEmbeddingModel:
             f"lru_capacity={lru_capacity}, disk={'on' if self._disk else 'off'}"
         )
 
+    def __getattr__(self, name: str):
+        """
+        透传未识别的属性/方法到底层模型
+        （如 BGEM3Embedding 的 embed_sparse / embed_dense_sparse 等方法不缓存，直接透传）
+        """
+        return getattr(self.base, name)
+
     def embed(self, text: str) -> List[float]:
         """单条文本嵌入（带缓存）"""
         key = _cache_key(text, self.model_name)

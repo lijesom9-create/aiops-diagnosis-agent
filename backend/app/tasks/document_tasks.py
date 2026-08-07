@@ -39,7 +39,7 @@ def _run_async(coro):
     retry_jitter=True,        # 抖动避免任务雪崩
     max_retries=3,
 )
-def process_document(self, document_id: str, file_path: str, filename: str, title: str = ""):
+def process_document(self, document_id: str, file_path: str, filename: str, title: str = "", extra_metadata: dict = None):
     """异步处理文档：解析 → 分块 → 向量化 → 入库
 
     Args:
@@ -47,6 +47,8 @@ def process_document(self, document_id: str, file_path: str, filename: str, titl
         file_path: web 端已存储的文件绝对路径
         filename: 原始文件名
         title: 文档标题
+        extra_metadata: 运维业务 metadata（frontmatter 解析的 doc_type/service/severity 等），
+            注入到每个 chunk，支撑检索层 metadata_filter 精准过滤
 
     user_id 传 None 给 uploader：
       - 跳过 uploader 内部 file_storage.save（文件已由 web 端存好）
@@ -81,6 +83,7 @@ def process_document(self, document_id: str, file_path: str, filename: str, titl
             title=title or filename,
             user_id=None,
             document_id=document_id,
+            extra_metadata=extra_metadata,
         )
 
         # 5. 更新状态为 completed

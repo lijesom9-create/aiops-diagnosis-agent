@@ -8,19 +8,41 @@
 #   开发：cp backend/.env.development.example backend/.env
 #   生产：cp backend/.env.production.example backend/.env
 #
+# 端口映射（默认/开发环境）：
+#   用户端前端:   http://localhost:3000
+#   管理后台前端: http://localhost:8080
+#   后端 API:     http://localhost:8000
+#   Qdrant Web UI: http://localhost:6333/dashboard
+#   MongoDB:       localhost:27017（仅开发环境暴露）
+#
 # Docker 网络中服务间用容器名访问：
 #   MongoDB: mongodb:27017
 #   Redis:   redis:6379
 # ===========================================
 
 services:
-  # 前端服务
+  # 前端服务（用户端：RAG 问答 + 记忆系统）
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
       - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - education-network
+    restart: unless-stopped
+
+  # 管理后台前端（独立项目：文档导入 + 用户管理 + 任务监控）
+  # 与用户端前端分离部署，生产环境建议对 8080 端口做 IP 白名单限制
+  admin-frontend:
+    build:
+      context: ./admin-frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
     depends_on:
       backend:
         condition: service_healthy
@@ -41,14 +63,41 @@ services:
       # 覆盖 .env 中的本地地址，用 Docker 网络中的容器名
       - MONGODB_URL=mongodb://mongodb:27017
       - REDIS_URL=redis://redis:6379/0
+      # Qdrant server 模式（替代本地嵌入模式）
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      # Celery 异步文档导入：任务由 celery-worker 容器消费
+      - USE_CELERY=true
       # 启用 HuggingFace 离线模式（使用挂载的本地缓存）
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
+      # MCP 监控后端：prometheus 查 Prometheus HTTP API（时序数据 + PromQL）
+      # 容器内需用容器名访问 Prometheus（非 localhost）
+      - MCP_SERVER_TYPE=prometheus
+      - PROMETHEUS_URL=http://prometheus:9090
+      # Loki 日志查询地址（prometheus 模式下双 MCP server 之一）
+      - LOKI_URL=http://loki:3100
+      # Alertmanager 告警查询地址（prometheus 模式下三 MCP server 之一）
+      - ALERTMANAGER_URL=http://alertmanager:9093
+      # HTTP 代理：容器内访问 DeepSeek/OpenAI 等海外 API 时走宿主机代理
+      # host.docker.internal 是 Docker Desktop 提供的指向宿主机的特殊 DNS
+      # 仅对走公网的请求生效；Docker 内网通信（prometheus/loki/qdrant 等）不受影响
+      - HTTP_PROXY=http://host.docker.internal:7897
+      - HTTPS_PROXY=http://host.docker.internal:7897
+      - NO_PROXY=localhost,127.0.0.1,mongodb,redis,qdrant,prometheus,loki,alertmanager,backend,celery-worker
     depends_on:
       mongodb:
         condition: service_healthy
       redis:
         condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_started
+      alertmanager:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/live"]
       interval: 30s
@@ -61,6 +110,24 @@ services:
       - ./backend/uploads:/app/uploads
       # 挂载本地 HuggingFace 模型缓存（bge-small-zh-v1.5 / bge-reranker-base 等）
       - ${USERPROFILE}/.cache/huggingface:/home/appuser/.cache/huggingface
+    networks:
+      - education-network
+    restart: unless-stopped
+
+  # Qdrant 向量数据库（Server 模式，自带 Web UI: http://localhost:6333/dashboard）
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"   # REST API + Web UI
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
     networks:
       - education-network
     restart: unless-stopped
@@ -84,6 +151,8 @@ services:
   redis:
     image: redis:7-alpine
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"   # 暴露给本地开发直跑 backend 时使用（容器间仍用 redis:6379）
     volumes:
       - redis-data:/data
     healthcheck:
@@ -96,17 +165,149 @@ services:
       - education-network
     restart: unless-stopped
 
+  # ===========================================
+  # 监控系统（AIOps 接入真实运维数据）
+  # ===========================================
+
+  # Prometheus：时序数据库 + 查询引擎
+  # 采集 node_exporter 指标，提供 PromQL 查询 API 供 Agent 调用
+  # Web UI: http://localhost:9090
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"   # Web UI + HTTP API
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'   # 数据保留 30 天
+      - '--web.enable-lifecycle'              # 允许热重载配置
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - education-network
+    restart: unless-stopped
+
+  # node_exporter：宿主机系统指标采集器
+  # Windows Docker Desktop 不支持 true host network，这里用 bridge 网络 + 端口映射
+  # 采集的是 Docker VM（WSL2）的指标，对学习 AIOps 链路足够：能拿到 CPU/内存/磁盘/网络真实时序数据
+  node-exporter:
+    image: prom/node-exporter:latest
+    ports:
+      - "9100:9100"   # /metrics 端点，供 Prometheus 拉取
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      # 屏蔽 Windows Docker Desktop 不支持的采集器
+      - '--no-collector.tcpstat'   # Windows 无 /proc/net/tcp
+    networks:
+      - education-network
+    restart: unless-stopped
+
+  # ===========================================
+  # 日志系统（AIOps 日志取证数据源）
+  # ===========================================
+
+  # Loki：日志聚合系统（Grafana 出品，Prometheus 的日志版）
+  # 接收 promtail 推送的日志，提供 LogQL 查询 API 供 Agent 调用
+  # Web UI: 无内置 UI，可通过 Grafana 查看，或用 Agent 的 query_loki 工具查询
+  loki:
+    image: grafana/loki:latest
+    # Loki 默认以 loki 用户（UID 10001）运行，但 Docker volume 创建的目录归 root，
+    # 导致 loki 无法创建 chunks/rules 目录。学习环境用 root 简化权限问题
+    user: "0:0"
+    ports:
+      - "3100:3100"   # HTTP API
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/local-config.yaml
+      - loki-data:/loki/data
+    command: -config.file=/etc/loki/local-config.yaml
+    # Loki 是 distroless 镜像（无 shell/wget/curl），无法用命令健康检查
+    # backend 用 service_started 依赖（不等 healthy），Loki 启动快，backend 重连容错
+    networks:
+      - education-network
+    restart: unless-stopped
+
+  # Promtail：日志采集器（Loki 的采集端）
+  # 通过 Docker socket 自动发现容器，采集 stdout/stderr 日志推送到 Loki
+  # 给日志打上 container/service/level 标签，供 Agent 按 container 名过滤查询
+  promtail:
+    image: grafana/promtail:latest
+    volumes:
+      # Docker socket：用于容器自动发现
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # 容器日志文件（Docker 的 json-file 日志驱动）
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./loki/promtail-config.yml:/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      loki:
+        condition: service_started
+    networks:
+      - education-network
+    restart: unless-stopped
+
+  # ===========================================
+  # 告警系统（AIOps 告警确认数据源）
+  # ===========================================
+
+  # Alertmanager：告警管理器（接收 Prometheus 推送的告警，去重/聚合/抑制后供 Agent 查询）
+  # Web UI: http://localhost:9093
+  alertmanager:
+    image: prom/alertmanager:latest
+    ports:
+      - "9093:9093"   # HTTP API + Web UI
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      - alertmanager-data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    # alertmanager 是 distroless 镜像，无 shell/wget，用 wget --spider 可能失败
+    # 用 /-/healthy 端点 + wget（prom/alertmanager 镜像内置了 wget）
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - education-network
+    restart: unless-stopped
+
   # Celery Worker（文档导入异步处理，需 USE_CELERY=true）
   celery-worker:
     build:
       context: ./backend
       dockerfile: Dockerfile
     command: celery -A app.celery_app worker --loglevel=info --pool=solo
+    # celery-worker 与 backend 共用同一 Dockerfile（其 HTTP HEALTHCHECK 不适用于 celery），
+    # 这里覆盖为 celery 探活：ping 本 worker，失败则标记 unhealthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -d celery@$$HOSTNAME >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     env_file:
       - ./backend/.env
     environment:
       - MONGODB_URL=mongodb://mongodb:27017
       - REDIS_URL=redis://redis:6379/0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
       - USE_CELERY=true
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
@@ -114,6 +315,8 @@ services:
       mongodb:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     volumes:
       # 与 backend 共享 data（向量库）和 uploads（文档文件），worker 需读取 web 存储的文件
@@ -131,3 +334,7 @@ networks:
 volumes:
   mongodb-data:
   redis-data:
+  qdrant-data:
+  prometheus-data:
+  loki-data:
+  alertmanager-data:

@@ -1,0 +1,48 @@
+# Promtail 日志采集器配置
+# 自动发现 Docker Compose 项目的容器，采集容器 stdout/stderr 日志推送到 Loki
+# 文档：https://grafana.com/docs/loki/latest/clients/promtail/configuration/
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml  # 记录每个日志文件的读取位置，重启后不重复读
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+scrape_configs:
+  # 采集 Docker 容器日志
+  # 通过 Docker socket 自动发现容器，按 compose 项目过滤
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        # 只采集本 compose 项目的容器（避免采集无关容器）
+        filters:
+          - name: label
+            values: ["com.docker.compose.project=education-agent"]
+    relabel_configs:
+      # 容器名 → container label（如 "education-agent-backend-1"）
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      # compose service 名 → service label（如 "backend"、"frontend"）
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'service'
+      # compose 项目名 → project label
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: 'project'
+    pipeline_stages:
+      # 解析 Docker JSON 日志格式（containerd 输出）
+      - docker: {}
+      # 提取日志级别（匹配 ERROR/WARN/INFO/DEBUG）
+      - regex:
+          expression: '(?P<level>ERROR|WARN|WARNING|INFO|DEBUG|TRACE)'
+      - labels:
+          level:

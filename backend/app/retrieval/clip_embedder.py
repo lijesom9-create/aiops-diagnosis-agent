@@ -53,6 +53,33 @@ def _extract_tensor(features):
     raise TypeError(f"无法从 {type(features).__name__} 提取 tensor")
 
 
+def _get_text_features_safe(model, inputs, device):
+    """
+    安全获取文本特征（兼容 transformers 4.5x 与 ChineseCLIP 的组合）
+
+    背景：transformers 4.57 中 ChineseCLIPModel.get_text_features 依赖
+    text_model 的 pooler_output，而 ChineseCLIP 配置未启用 pooler（返回 None），
+    导致 text_projection(pooled_output) 抛 TypeError。
+    这里降级为手动 forward：取 last_hidden_state 的 CLS token 再过 text_projection，
+    与官方实现等价。
+    """
+    import torch
+
+    try:
+        return model.get_text_features(**inputs)
+    except (TypeError, AttributeError, ValueError):
+        # 手动 forward：text_model -> CLS pooling -> text_projection
+        kwargs = {"input_ids": inputs["input_ids"]}
+        if "attention_mask" in inputs:
+            kwargs["attention_mask"] = inputs["attention_mask"]
+        if "token_type_ids" in inputs:
+            kwargs["token_type_ids"] = inputs["token_type_ids"]
+        with torch.no_grad():
+            text_outputs = model.text_model(**kwargs)
+            pooled = text_outputs.last_hidden_state[:, 0, :]
+            return model.text_projection(pooled)
+
+
 class CLIPEmbedder:
     """
     CLIP 图文对齐嵌入器
@@ -149,7 +176,7 @@ class CLIPEmbedder:
             with torch.no_grad():
                 inputs = self._processor(text=["test"], return_tensors="pt", padding=True)
                 inputs = {k: v.to(self._device) for k, v in inputs.items()}
-                features = self._model.get_text_features(**inputs)
+                features = _get_text_features_safe(self._model, inputs, self._device)
                 tensor = _extract_tensor(features)
                 self._dimension = tensor.shape[-1]
 
@@ -237,7 +264,7 @@ class CLIPEmbedder:
             with torch.no_grad():
                 inputs = self._processor(text=[text], return_tensors="pt", padding=True)
                 inputs = {k: v.to(self._device) for k, v in inputs.items()}
-                features = self._model.get_text_features(**inputs)
+                features = _get_text_features_safe(self._model, inputs, self._device)
                 tensor = _extract_tensor(features)
                 # L2 归一化
                 tensor = tensor / tensor.norm(dim=-1, keepdim=True)

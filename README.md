@@ -1,287 +1,403 @@
-# 🤖 个人知识助手 - RAG 问答系统
+# 🤖 智能运维故障诊断 Agent（基于 RAG + LangGraph）
 
-基于 RAG 的个人知识管理系统，支持文档上传、网页爬取、智能问答。使用 LangGraph 实现 Agent 核心循环，支持自主决策和工具调用。
+企业级运维故障诊断系统：用户上报线上故障，Agent 依据 **实时监控取证 → 知识库历史经验 → 根因定位 → 处置方案** 的流程进行证据驱动的诊断，输出结构化诊断报告。
 
-## ✨ 功能特性
+后端基于 **FastAPI + LangGraph + RAG**，前端为 React（用户端问答 + 管理后台），向量检索使用 **Qdrant**（本地嵌入式 / Docker Server 两种模式）。
 
-### 📚 知识管理
-- **文档上传**：支持 PDF、DOCX、TXT 格式
-- **网页爬取**：支持静态页面和 JavaScript 动态页面
-- **智能分块**：按段落、标题智能分块，保留文档结构
-- **向量化存储**：使用 ChromaDB 持久化存储
+**AIOps 全链路**：Prometheus（指标）+ Loki（日志）+ Alertmanager（告警）+ 飞书自建应用（通知），告警触发 → 自动推送飞书卡片，Agent 可调 MCP 工具三源交叉印证定位根因。
 
-### 🔍 RAG 检索
-- **混合检索**：关键词 + 向量 + BM25 三路融合
-- **CrossEncoder 重排序**：语义重排序，提高检索质量
-- **问题理解**：意图识别、问题改写、子问题拆解
-- **引用溯源**：答案可追溯到原文
+---
 
-### 🤖 Agent 系统
-- **LangGraph Agent**：基于 LangGraph 的 Agent 核心循环
-- **自研 Agent**：自研 Agent Loop，支持反思机制
-- **工具调用**：搜索、爬取、生成、总结等工具
+## ✨ 核心能力
 
-### 🔧 基础设施
-- **MCP 支持**：标准化工具调用协议
-- **长期记忆**：用户偏好、历史交互
-- **安全权限**：工具调用权限控制
-- **可观测性**：链路追踪、指标监控
+### 🧠 Agent 故障诊断（LangGraph）
+- **意图路由 + ReAct 循环**：`route_intent → agent → tools`，按 query 意图分流（运维诊断/通用/闲聊）
+- **5 阶段诊断工作流**（系统提示内置）：现象理解 → 监控取证 → 知识库检索 → 根因定位 → 方案生成
+- **结构化诊断报告**：`### 现象 / 证据 / 根因分析 / 处置方案 / 置信度`，答案自动带引用溯源
+- **证据充分性约束**：诊断 prompt 强制 ≥2 次 search_knowledge + 并行监控取证（旧版反思裁判节点已移除，改确定性约束兜底）
+- **循环保护**：`max_steps=8`，超限自动生成低置信度降级报告，避免无限循环
+- **会话记忆**：SQLite Checkpoint（AsyncSqliteSaver）持久化多轮会话
+
+### 🔍 RAG 检索链路
+- **父子分离存储**：子块检索、父块取回，保留 heading_path 结构上下文
+- **混合检索**：Qdrant dense 向量 + sparse（BGE-M3 同源）并行，加权 RRF 融合
+- **CrossEncoder 重排序**：ONNX Runtime 加速（bge-reranker-base，int8 量化优先）
+- **查询改写**：规则增强（默认）/ 多轮指代消解 / LLM MultiQuery
+- **多模态（可选）**：图片 VLM 描述（qwen-vl-plus）+ OCR + 表格 LLM 摘要；CLIP 图像向量默认关闭
+
+### 🛠️ 运维监控工具（MCP）
+- **三 MCP server 并存**（`MCP_SERVER_TYPE=prometheus`）：
+  - Prometheus：`query_metrics` / `query_range` 查 PromQL 时序数据（CPU/内存/磁盘/网络/负载）
+  - Loki：`query_loki` 查 LogQL 容器日志（支持 container 名模糊匹配 + 关键词过滤）
+  - Alertmanager：`query_alerts` 查当前告警列表（firing/pending）
+- 诊断时**监控优先**：先取实时指标，再定向查日志，再查 Alertmanager 当前告警，最后查知识库历史经验，**四源交叉印证**
+- MCP 子进程显式继承父进程环境变量（`env=os.environ.copy()`），确保容器内 `PROMETHEUS_URL=http://prometheus:9090` 正确传递
+
+### 🚨 AIOps 告警通知链路（端到端已验证）
+```
+Prometheus 告警规则触发
+    ↓
+Alertmanager 聚合 / 去重 / 抑制
+    ↓
+POST /api/alerts/webhook（Bridge 端点）
+    ↓
+FeishuClient（飞书自建应用 tenant_access_token）
+    ↓
+飞书 IM 卡片消息（按 firing/resolved 着色）
+```
+- **告警卡片**：按状态着色（firing=红 / resolved=绿），含告警名、severity、实例、摘要、描述、起止时间
+- **测试端点**：`GET /api/alerts/test` 手动触发一条测试告警验证链路
+- 未配置飞书应用时返回 503，避免 Alertmanager 重复推送无效请求
+
+### 📚 知识库管理
+- 支持 PDF / DOCX / TXT / Markdown 上传，智能分块（段落/标题/父子）
+- **YAML frontmatter 解析**：文档头部的 `doc_type / service / severity / incident_id` 注入 chunk metadata，支撑 `service + doc_type` 精准过滤
+- **21 类多来源知识库**（`backend/data/ops_docs/`）：架构设计 / API 文档 / 配置指南 / 监控告警 / 数据库运维 / 中间件运维 / K8s / 容量规划 / 安全基线 / 变更管理 / 值班手册 / 灾备预案 / 性能调优 / 第三方依赖 / 网络排障 / CI-CD / 数据字典 + 事故 INC-2026-001~100 / 复盘 Postmortem 50 篇 / 手册 / SOP，共 **206 篇**，一键导入脚本
+- **Celery 异步导入**：文档解析/向量化异步化，任务状态 + 重试 API
+
+### 🔐 管理与安全
+- **管理后台**（独立前端，8080）：文档导入、用户管理、任务监控
+- **RBAC**：写操作限定管理员；`SUPER_ADMIN_USERNAME` 超管初始化机制
+- **Prompt 注入防护** + 答案敏感信息脱敏 + 限流 + 熔断器
+
+---
 
 ## 🏗️ 技术栈
 
 | 层 | 技术 |
 |----|------|
-| 后端 | Python 3.10+, FastAPI |
-| 前端 | React 18, TypeScript, Tailwind CSS |
-| 数据库 | MongoDB |
-| 向量数据库 | ChromaDB |
-| 嵌入模型 | sentence-transformers (本地) |
-| LLM | DeepSeek |
-| Agent 框架 | LangGraph |
+| 后端 | Python 3.12, FastAPI, LangGraph |
+| Agent | LangGraph（意图路由 + ReAct 循环） + MCP (langchain-mcp-adapters) |
+| LLM | DeepSeek / Qwen / 任意 OpenAI 兼容接口 |
+| 嵌入 | BAAI/bge-m3（本地，dense 1024 维 + sparse 同源） |
+| 重排 | BAAI/bge-reranker-base（ONNX Runtime） |
+| 向量库 | Qdrant（Docker Server 模式 / 本地嵌入式） |
+| 文档库 | MongoDB (Motor) |
+| 缓存/队列 | Redis（可选）+ Celery |
+| 会话持久化 | SQLite（AsyncSqliteSaver） |
+| 前端 | React 18 + TS + Tailwind + Zustand（用户端 3000 / 管理端 8080） |
+
+---
 
 ## 🚀 快速开始
 
-### 前置要求
-
-- Python 3.10+
-- Node.js 18+
-- MongoDB 6.0+
-
-### 1. 克隆项目
+### 方式一：Docker（推荐，含 Qdrant Server 模式）
 
 ```bash
-git clone <repository-url>
-cd education-agent
+# 准备环境变量（backend/.env 需存在；开发/生产模板见 backend/.env.*.example）
+cp backend/.env.development.example backend/.env   # 或使用生产模板并填入密钥
+
+# 构建并启动全部服务（frontend/backend/admin-frontend/qdrant/mongodb/redis/celery-worker）
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+
+# 首次部署后导入运维知识库（可选，进入 backend 容器执行或本地脚本）
 ```
 
-### 2. 启动后端
+启动后访问：
+- 用户端问答：<http://localhost:3000>
+- 管理后台：<http://localhost:8080>
+- API 文档：<http://localhost:8000/docs>
+- Qdrant Web UI：<http://localhost:6333/dashboard>
+
+### 方式二：本地开发
+
+```bash
+# 1. 依赖服务：MongoDB（必需）；Qdrant/Redis 可选（无 Redis 用内存缓存，本地 Qdrant 嵌入式）
+# 建议用 Docker 起依赖：
+docker compose up -d mongodb redis qdrant
+
+# 2. 后端
+cd backend
+python -m venv venv            # Python 3.12；venv\Scripts\activate（Windows）/ source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env           # 配置 AI_API_KEY 等
+python main.py                 # http://localhost:8000
+
+# 3. 前端（用户端）
+cd frontend
+npm install
+npm run dev                    # http://localhost:3000
+```
+
+> ⚠️ 注意：`backend/venv` 若报 `pydantic_core` 类错误，说明解释器与已编译包版本不匹配，请用 **Python 3.12** 重建 venv。
+
+### 运维知识库导入（种子数据）
 
 ```bash
 cd backend
-
-# 创建虚拟环境
-python -m venv venv
-# Windows
-venv\Scripts\activate
-# Linux/Mac
-source venv/bin/activate
-
-# 安装依赖
-pip install -r requirements.txt
-
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env 文件，配置 AI API 密钥
-
-# 启动服务
-python main.py
+python scripts/seed_ops_kb.py    # 将 data/ops_docs/ 的 206 篇（21 类）运维文档导入 Qdrant
 ```
 
-后端将运行在 http://localhost:8000
+---
 
-### 3. 启动前端
-
-```bash
-cd frontend
-
-# 安装依赖
-npm install
-
-# 启动开发服务器
-npm run dev
-```
-
-前端将运行在 http://localhost:3000
-
-### 4. 访问应用
-
-打开浏览器访问 http://localhost:3000，使用以下测试账号登录：
-
-- 用户名：demo2
-- 密码：demo123
-
-或者注册新账号。
-
-## 📁 项目结构
+## 🧩 系统架构
 
 ```
-education-agent/
-├── backend/                   # 后端代码
-│   ├── app/
-│   │   ├── langgraph_agent/  # LangGraph Agent
-│   │   ├── api/              # API 路由
-│   │   ├── capabilities/     # 能力系统
-│   │   ├── core/             # 核心配置
-│   │   ├── document/         # 文档处理
-│   │   ├── knowledge/        # 知识管理
-│   │   ├── mcp/              # MCP 支持
-│   │   ├── memory/           # 记忆系统
-│   │   ├── observability/    # 可观测性
-│   │   ├── retrieval/        # RAG 检索
-│   │   ├── security/         # 安全权限
-│   │   ├── tools/            # 工具系统
-│   │   └── workflow/         # 工作流引擎
-│   ├── scripts/              # 脚本工具
-│   └── tests/                # 测试
-├── frontend/                  # 前端代码
-│   └── src/
-│       ├── components/       # React 组件
-│       ├── services/         # API 服务
-│       └── store/            # 状态管理
-└── docs/                     # 文档
+┌───────────────┐   ┌──────────────────┐
+│  用户端前端    │   │  管理后台前端     │
+│  :3000 (Chat) │   │  :8080 (Admin)   │
+└──────┬────────┘   └────────┬─────────┘
+       │   HTTP / SSE         │
+┌──────▼─────────────────────▼─────────┐
+│         API 层 (FastAPI)              │
+│  /api/langgraph | /api/documents |   │
+│  /api/auth | /api/admin | /api/health│
+│  中间件: CORS | 请求ID | 限流 | 异常   │
+└──────┬───────────────────────────────┘
+       │
+┌──────▼───────────────────────────────┐
+│    LangGraph Agent (核心)            │
+│   route_intent → agent → tools → ... │
+│   工具: query_metrics/query_logs     │
+│        (MCP监控) + search_knowledge   │
+│        + web_search + memory         │
+│   Checkpoint: AsyncSqliteSaver       │
+└──────┬───────────────────────────────┘
+       │
+┌──────▼───────────────────────────────┐
+│     RAG 检索链路                     │
+│  查询改写 → dense+sparse → RRF融合   │
+│  → 父块取回 → CrossEncoder重排序     │
+│  → 关键词过滤 → 缓存 → top_k          │
+└──────┬───────────────────────────────┘
+       │
+┌──────▼───────────────────────────────┐
+│  Qdrant(向量) │ MongoDB(文档元数据)  │
+│  Redis(缓存)  │ SQLite(会话Checkpoint)│
+└──────────────────────────────────────┘
 ```
 
-## 🔧 配置说明
+---
 
-### AI 模型配置
+## 🔄 RAG 检索流程
 
-在 `backend/.env` 文件中配置 AI 模型：
-
-```bash
-# DeepSeek（推荐）
-AI_MODEL=deepseek/chat
-AI_API_KEY=sk-xxxxxxxxxxxxxxxx
-AI_BASE_URL=https://api.deepseek.com
-
-# OpenAI
-# AI_MODEL=openai/gpt-4o-mini
-# AI_API_KEY=sk-xxxxxxxxxxxxxxxx
-
-# Claude
-# AI_MODEL=anthropic/claude-sonnet-4-20250514
-# AI_API_KEY=sk-ant-xxxxxxxxxxxxxxxx
+```
+用户查询
+  ↓
+查询改写（规则增强 | 多轮指代消解 | LLM MultiQuery）
+  ↓
+并行混合检索：Qdrant dense 向量(child) + sparse 向量（BGE-M3 同源）
+  ↓
+加权 RRF 融合（dense:sparse = 1:1, k=60）
+  ↓
+父块取回（通过 parent_id 关联，投票加分）
+  ↓
+heading_path 相关性过滤/加权
+  ↓
+CrossEncoder 重排序（ONNX int8，候选 ≤ max(top_k,6)）
+  ↓
+结果缓存（Redis/内存，5 分钟 TTL）→ 返回 top_k
 ```
 
-### 数据库配置
+**关键参数**（`backend/.env` / `app/core/config.py`）：
 
-```bash
-MONGODB_URL=mongodb://localhost:27017
-MONGODB_DB_NAME=education_agent
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `RAG_TOP_K` | 8 | 最终返回条数（调参实验：8 比 4 提升 recall +0.094） |
+| `RAG_CANDIDATE_MULTIPLIER` | 3 | dense/sparse 各返回的候选倍数 |
+| `RAG_RRF_K` | 60 | RRF 融合常数 |
+| `RAG_REWRITE_MODE` | enhanced | 查询改写模式 |
+| `RAG_SEPARATE_PARENT_CHILD` | true | 父子分离存储 |
+| `RAG_MAX_CONTEXT_TOKENS` | 6000 | LLM 上下文 token 预算 |
+
+---
+
+## 🤖 Agent 设计
+
+### 图结构
+
+```
+START → route_intent → agent → should_continue ─┬→ tools → agent → ...（循环）
+                                                 └→ END（无工具调用 / max_steps 上限）
 ```
 
-## 📚 API 文档
+- **route_intent**：意图路由（运维诊断 / 通用知识 / 闲聊），分流进入 agent
+- **agent**：LLM 调用（绑定工具），输出 tool_calls 或直接回答
+- **tools**：ToolNode 执行工具
+- **证据充分性**：诊断 prompt 强制 ≥2 次 search_knowledge + 并行监控取证；`max_steps` 超限自动生成低置信度降级报告（旧版反思裁判节点已移除）
 
-启动后端后，访问以下地址查看 API 文档：
-
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
-### 核心 API
-
-#### 认证
-- `POST /api/auth/register` - 用户注册
-- `POST /api/auth/login` - 用户登录
-- `GET /api/auth/me` - 获取当前用户
-
-#### LangGraph Agent（主要问答接口）
-- `POST /api/langgraph/chat` - 智能问答（支持 RAG + Web Search + 记忆）
-- `POST /api/langgraph/chat/stream` - 流式问答
-- `GET /api/langgraph/graph` - 获取 Agent 图结构
-
-#### 文档管理
-- `POST /api/documents/upload` - 上传文档
-- `GET /api/documents/` - 文档列表
-- `DELETE /api/documents/{id}` - 删除文档
-
-#### 记忆管理
-- `GET /api/memory/profile` - 获取用户画像
-- `PUT /api/memory/profile` - 更新用户画像
-- `GET /api/memory/entries` - 获取档案记忆
-- `POST /api/memory/entries` - 添加档案记忆
-- `GET /api/memory/stats` - 记忆统计
-
-## 🛠️ 工具列表
+### 工具列表
 
 | 工具 | 说明 |
 |------|------|
-| search_knowledge | 搜索知识库（RAG） |
-| web_search | 搜索互联网（Tavily） |
-| crawl_webpage | 爬取网页内容 |
-| rag_search | RAG 混合检索 |
-| summarize_documents | 文档总结 |
-| generate_content | 生成内容 |
-| get_user_profile | 获取用户画像 |
-| save_memory | 保存记忆 |
-| search_memory | 搜索记忆 |
+| `query_metrics` | 查询监控指标（MCP，mock Prometheus/Loki） |
+| `query_logs` | 查询应用/慢 SQL 日志（MCP，mock） |
+| `analyze_chart` | 分析监控图表（VLM 在线理解） |
+| `search_knowledge` | 知识库 RAG 检索（支持 service + doc_type 精准过滤） |
+| `web_search` | 互联网搜索（Tavily） |
+| `crawl_webpage` | 网页内容爬取 |
+| `generate_content` | 内容生成 |
+| `get_user_profile` / `save_memory` / `search_memory` | 记忆工具 |
 
-## 📊 RAG Pipeline
+> MCP 工具加载成功后，会剔除本地同名的 `query_metrics`/`query_logs` mock，避免工具名冲突导致 LLM 调用失败。
 
-### 文档摄入
+---
 
-```
-文档/网页 → 智能分块 → 向量化 → ChromaDB 存储
-```
+## 📚 API 一览
 
-### 检索流程
-
-```
-问题 → 问题理解 → 三路检索 → 融合 → 重排序 → 引用溯源 → 结果
-```
-
-### 检索策略
-
-| 策略 | 权重 | 说明 |
+| 模块 | 端点 | 说明 |
 |------|------|------|
-| 关键词检索 | 50% | 精确匹配 |
-| 向量检索 | 30% | 语义匹配 |
-| BM25 检索 | 20% | 统计匹配 |
+| 认证 | `/api/auth/register` `/login` `/logout` `/me` | 注册/登录（Cookie+Bearer） |
+| 问答 | `/api/langgraph/chat` | Agent 问答（返回结构化诊断报告） |
+| 流式 | `/api/langgraph/chat/stream` | SSE 流式问答 |
+| 会话 | `/api/langgraph/sessions*` | 会话 CRUD / 历史消息 |
+| 反馈 | `/api/langgraph/feedback` | 答案反馈 + 统计 |
+| 文档 | `/api/documents/upload` `/{id}/status` `/{id}/retry` `/batch-upload` `/{id}` | 上传/状态/重试/批量/删除（写操作需管理员） |
+| 知识 | `/api/knowledge/documents/{id}` `/bm25/rebuild` `/stats` | 知识库管理 |
+| 管理 | `/api/admin/stats` `/users` `/users/{id}/role` `/tasks` | 统计/用户/角色/任务（仅管理员） |
+| 记忆 | `/api/memory/*` | 用户画像 / 档案记忆 |
+| 健康 | `/api/health` `/api/health/live` | 健康检查（live 供 Docker HEALTHCHECK） |
+
+---
+
+## ⚙️ 配置说明（`backend/.env`）
+
+```env
+# AI 模型（OpenAI 兼容格式，provider/model）
+AI_MODEL=deepseek-chat
+AI_API_KEY=sk-xxx
+
+# 向量存储
+VECTOR_STORE_BACKEND=qdrant        # chroma | qdrant（生产强制 qdrant）
+# Qdrant 嵌入式（本地开发）：
+QDRANT_PERSIST_DIR=./data/qdrant_db
+# Qdrant Server 模式（Docker 部署时由 compose 覆盖）：
+# QDRANT_HOST=qdrant
+# QDRANT_PORT=6333
+
+# MCP 监控工具（运维诊断核心）
+MCP_ENABLED=true
+
+# 异步导入（Docker 中由 compose 设为 true）
+USE_CELERY=false
+
+# 多模态（可选）
+MULTIMODAL_ENABLED=false
+MULTIMODAL_VECTOR_ENABLED=false
+
+# 超管初始化（首次注册该用户名自动授予 admin）
+SUPER_ADMIN_USERNAME=
+
+# 数据库
+MONGODB_URL=mongodb://localhost:27017
+REDIS_URL=                       # 留空使用内存缓存
+```
+
+完整参数见 [backend/app/core/config.py](backend/app/core/config.py)。
+
+---
 
 ## 🧪 测试
-
-### 运行测试
 
 ```bash
 cd backend
 python -m pytest tests/ -v
 ```
 
-### 测试结果
+主要测试套件：
+- `test_agent_graph_flow.py`：Agent 图流转（监控→知识库→诊断报告、循环保护、MCP 降级）
+- `test_admin_api.py` / `test_admin_permission.py`：RBAC 与管理 API
+- `test_ops_e2e.py`：运维诊断 E2E
+- `test_document_upload.py`：文档上传
+- 注：`test_documents.py` 等部分历史用例仍引用已移除的 `/api/topics` 接口，属遗留失败，与当前功能无关
 
-```
-237 passed, 11 failed（已有问题，与改造无关）
-```
+---
 
-## 🚢 部署
+## 📊 评测体系（RAG + Agent Evaluation）
 
-### Docker 部署
+### 检索级评测（250+ 条 / 8 类查询集）
+
+数据集 `backend/evaluation/data/queries_v3_*.json`，覆盖 **普通 / 长尾 / 口语化 / 多跳 / 多模态 / 跨文档 / 多轮 / 负向** 八类共 263 个查询实例，每类含 `expected_keywords / expected_doc_type / cross_doc_types` 等 ground truth：
 
 ```bash
-# 构建并启动所有服务
-docker-compose up -d
-
-# 查看日志
-docker-compose logs -f
-
-# 停止服务
-docker-compose down
+cd backend
+python evaluation/eval/eval_kb_v3.py [--top-k 8] [--categories normal,long_tail,...]
 ```
 
-### 手动部署
+- 指标：Recall@K、MRR、NDCG@K（按类别分项统计）
+- 多模态类：图片语义块召回率（image_recall，验证图文统一检索）
+- 负向类：无关率（irrelevance rate，验证拒答鲁棒性）
+- 多轮类：raw（未消解）vs rewritten（上下文改写近似）对比，验证指代消解价值
 
-参考 `docs/deployment.md` 文档。
+### Agent 级评估（端到端诊断质量）
 
-## 📈 后续优化
+场景集 `backend/evaluation/data/agent_eval_scenarios.json`（12 个，基于真实 Incident 设计），零侵入调用 `agent.run()` 采集 `tools_used / monitoring_evidence / diagnosis_report / citations`：
 
-| 方向 | 说明 |
-|------|------|
-| 前端完善 | 博客写作页面、知识库管理页面 |
-| 更多知识源 | GitHub、Notion、飞书接入 |
-| 知识图谱 | 实体关系可视化 |
-| 多 Agent 协作 | 多个 Agent 协同工作 |
-| 产品化 | 用户系统、付费功能 |
+```bash
+cd backend
+python evaluation/eval/agent_eval.py [--llm-judge]
+```
 
-## 🤝 贡献
+| 指标 | 定义 |
+|---|---|
+| Root Cause Accuracy | 诊断报告根因与期望根因的关键词命中率（可选 LLM-as-Judge 语义判定） |
+| Evidence Recall | 期望证据（监控指标/日志/知识库引用）在 Agent 输出中的覆盖率 |
+| Tool Call Accuracy | 期望工具覆盖率 + "监控优先于知识库检索"顺序正确率 |
+| Diagnosis Success Rate | 输出结构化诊断报告且置信度合格的占比 |
 
-欢迎提交 Issue 和 Pull Request！
+报告输出：`evaluation/results/kb_v3_eval_report.json`、`agent_eval_report.json`。
+
+---
+
+## 🚢 Docker 部署
+
+```bash
+# 生产环境
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+# 服务清单
+# frontend :3000   admin-frontend :8080   backend :8000
+# qdrant :6333/6334   mongodb :27017   redis :6379   celery-worker
+```
+
+**部署注意**：
+- 后端与 celery-worker 通过 `./backend/.env` + compose 覆盖注入环境变量（容器内用服务名访问 MongoDB/Qdrant/Redis）
+- Qdrant 用 **Server 模式**（`qdrant/qdrant` 容器），数据在 Docker volume `qdrant-data`
+- `./backend/data` 与 HF 模型缓存以 volume 挂载，避免容器内重复下载模型
+- 生产环境务必设置 `SECRET_KEY`（≥32 字节）、`ENV=production`（强制 qdrant + 收窄 CORS）
+
+---
+
+## 🗂️ 项目结构
+
+```
+education-agent/
+├── backend/
+│   ├── main.py                  # FastAPI 入口 + lifespan
+│   ├── app/
+│   │   ├── langgraph_agent/     # Agent（agent.py / tools.py / state.py）
+│   │   ├── knowledge/           # 统一知识存储（RAG 核心）
+│   │   ├── retrieval/           # qdrant_store / embeddings / reranker / fusion ...
+│   │   ├── document/            # 上传 / 分块 / 解析 / frontmatter
+│   │   ├── api/                 # langgraph / documents / auth / admin / memory ...
+│   │   ├── tasks/               # Celery 文档导入任务
+│   │   ├── core/                # config / database / cache / prompt_guard ...
+│   │   └── memory/              # 记忆系统
+│   ├── mcp_servers/             # ops_monitoring_server（FastMCP 监控工具）
+│   ├── scripts/                 # seed_ops_kb.py 等
+│   ├── data/                    # 向量库 / 模型缓存 / ops_docs 种子库
+│   └── tests/
+├── frontend/                    # 用户端前端（React + TS）
+├── admin-frontend/              # 管理后台（React + TS）
+├── docker-compose.yml           # 编排（dev / prod 覆盖文件）
+└── docs/ARCHITECTURE.md         # 架构设计文档
+```
+
+---
+
+## 📈 路线图
+
+已完成：
+- ✅ 真实监控源接入（Prometheus + node-exporter + Loki + Promtail）
+- ✅ 告警通知闭环（Alertmanager → Bridge → 飞书卡片，端到端验证通过）
+- ✅ 管理后台前端（监控看板 / 告警管理 / 日志查询 / 知识库 / 任务 / 用户）
+
+后续方向：
+- 多 Agent 协作（监控 Agent / 日志 Agent / 知识 Agent 分工协同）
+- 故障自动闭环（诊断 → 工单 → 变更执行）
+- 知识图谱（服务依赖 / 故障传播链可视化）
+- 接入云监控 API（阿里云云监控 / AWS CloudWatch），扩展多源数据
 
 ## 📄 许可证
 
-MIT License
-
-## 🙏 致谢
-
-- [FastAPI](https://fastapi.tiangolo.com/)
-- [React](https://react.dev/)
-- [LangGraph](https://langchain-ai.github.io/langgraph/)
-- [ChromaDB](https://www.trychroma.com/)
-- [sentence-transformers](https://www.sbert.net/)
+MIT License，详见 [LICENSE](LICENSE)。

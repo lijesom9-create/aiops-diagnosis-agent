@@ -1,360 +1,346 @@
-# 企业级知识库问答系统 - 架构设计
+# 智能运维故障诊断 Agent - 架构设计
 
-> 基于 LangGraph + RAG 的企业级知识库问答系统，支持父子分块混合检索、CrossEncoder 重排序、多级缓存、权限隔离和 Docker 部署。
-
----
-
-## 系统架构
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Frontend (React + TS)                     │
-│         ChatPage | DocumentsPage | LoginPage                │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ HTTP + SSE (Cookie 认证)
-┌──────────────────────────▼──────────────────────────────────┐
-│                    API Layer (FastAPI)                       │
-│  /api/langgraph | /api/documents | /api/auth | /api/health  │
-│  中间件: CORS | 请求ID追踪 | 限流(30RPM) | 异常处理          │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│               LangGraph Agent (核心)                         │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  Agent Loop (agent → tools → reflect → agent)        │    │
-│  │  工具: search_knowledge | web_search | memory        │    │
-│  └─────────────────────────────────────────────────────┘    │
-│  Checkpoint: AsyncSqliteSaver (会话记忆持久化)               │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│                  RAG 检索链路                                 │
-│  查询重写(三级) → 向量+BM25混合 → RRF融合 → 父块取回          │
-│  → CrossEncoder重排序(ONNX) → 关键词过滤 → 缓存              │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│                    Storage Layer                             │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │
-│  │ Qdrant   │ │ MongoDB  │ │ Redis    │ │ SQLite   │       │
-│  │(向量存储) │ │(文档元数据)│ │(多级缓存) │ │(Checkpoint)│      │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘       │
-└─────────────────────────────────────────────────────────────┘
-```
+> 基于 FastAPI + LangGraph + RAG 的企业级运维故障诊断系统。
+> 核心思路：**监控取证（实时指标/日志） + 知识库历史经验 双源交叉印证 → 证据驱动的根因诊断 → 结构化处置报告**。
 
 ---
 
-## 核心组件
+## 1. 系统架构
 
-### 1. LangGraph Agent
-
-**位置**: `backend/app/langgraph_agent/`
-
-**职责**: 智能决策、工具选择、多步推理
-
-**图结构**:
 ```
-START → agent → should_continue → tools → agent → ... → END
-                    ↓
-              reflection → agent (每3步反思)
+┌───────────────┐   ┌──────────────────┐
+│  用户端前端    │   │  管理后台前端     │
+│  React :3000  │   │  React :8080     │
+└──────┬────────┘   └────────┬─────────┘
+       │   HTTP + SSE (Cookie 认证)
+┌──────▼─────────────────────▼─────────┐
+│        API 层 (FastAPI :8000)         │
+│  /api/langgraph | /api/documents |   │
+│  /api/auth | /api/admin | /api/memory│
+│  /api/health | /api/knowledge        │
+│  中间件: CORS | request_id | 限流     │
+│  防护: Prompt注入检测 | 敏感信息脱敏   │
+└──────┬───────────────────────────────┘
+       │
+┌──────▼───────────────────────────────┐
+│      LangGraph Agent（诊断核心）      │
+│  ┌─────────────────────────────┐    │
+│  │ agent → tools → reflect     │    │
+│  │  Reflexion 循环 + 证据裁判    │    │
+│  │  工具: query_metrics/logs   │    │
+│  │  (MCP) + search_knowledge   │    │
+│  │        + web_search + memory│    │
+│  └─────────────────────────────┘    │
+│  Checkpoint: AsyncSqliteSaver(SQLite)│
+└──────┬───────────────────────────────┘
+       │
+┌──────▼───────────────────────────────┐
+│        RAG 检索链路                   │
+│  查询改写 → 向量+BM25 并行            │
+│  → 加权RRF融合 → 父块取回             │
+│  → heading_path过滤 → CrossEncoder   │
+│  → 缓存 → top_k                      │
+└──────┬───────────────────────────────┘
+       │
+┌──────▼───────────────────────────────┐
+│           存储层                      │
+│  Qdrant(向量)│MongoDB(元数据/会话)    │
+│  Redis(缓存,可选)│SQLite(Checkpoint)  │
+└──────────────────────────────────────┘
 ```
-
-**特性**:
-- 自动选择工具（RAG / Web Search / 记忆）
-- 每 3 步反思一次，优化决策
-- 会话记忆 SQLite 持久化（AsyncSqliteSaver 延迟初始化）
-- 系统提示强制知识类问题调用 search_knowledge
 
 ---
 
-### 2. RAG 检索链路
+## 2. LangGraph Agent
 
-**位置**: `backend/app/knowledge/unified_store.py` + `backend/app/retrieval/`
+**位置**：`backend/app/langgraph_agent/`（`agent.py` / `tools.py` / `state.py`）
 
-**文档入库流程**:
+### 2.1 图结构
+
 ```
-上传 → 解析(docling/pymupdf/text) → 父子分块 → 向量化(bge-small) → Qdrant存储
-                                         ↓
-                                   BM25倒排索引构建
+START → agent ──should_continue──┬→ tools → agent（循环）
+                                 ├→ reflect ──┬→ agent（证据不足继续收集）
+                                 └→ END       └→ END（证据充分/循环保护）
 ```
 
-**查询检索流程**:
+- **agent 节点**（`_call_agent`）：LLM 调用（`bind_tools`），输出 `tool_calls` 或直接作答。tool_calls 存在 → 进入 tools；无 tool_calls → 进入 reflect 裁判
+- **tools 节点**：`ToolNode` 执行工具，支持并行工具调用
+- **reflect 节点**（`_reflect`）：证据充分性裁判。回答含 `### 现象` 或判定 `EVIDENCE_SUFFICIENT` → 结束；`EVIDENCE_INSUFFICIENT` → 回到 agent 继续收集证据
+- **循环保护**：`max_steps=8`、`max_reflections=3`；第 3 次反思仍无诊断报告 → `_build_degraded_diagnosis` 生成低置信度降级报告
+
+### 2.2 Agent 状态（`state.py`）
+
+`AgentState(MessagesState)` 扩展字段：`tools_used`、`tool_results`、`retrieved_docs`（RAG 证据看板）、`citations`、`monitoring_evidence`（监控证据看板）、`diagnosis_report`（结构化诊断报告）、`reflection`、`reflection_count`、`step_count`、`max_steps`。
+
+### 2.3 工具（`tools.py`，9 个 + MCP 2 个）
+
+| 工具 | 类型 | 说明 |
+|------|------|------|
+| `query_metrics` | 监控 | 查询服务指标（MCP：mock Prometheus；本地 mock 兜底） |
+| `query_logs` | 监控 | 查询应用/慢 SQL 日志（MCP：mock Loki；本地 mock 兜底） |
+| `search_knowledge` | RAG | 知识库检索，支持 `service` + `doc_type` 精准过滤；低质量自动 LLM 改写重试 |
+| `web_search` / `crawl_webpage` | 外部 | Tavily / 网页爬取 |
+| `generate_content` | 生成 | 内容生成 |
+| `get_user_profile` / `save_memory` / `search_memory` | 记忆 | 用户画像 / 记忆读写 |
+
+**证据看板机制**：`_call_agent` 从 ToolMessage 中提取 RAG 结果 → `state.retrieved_docs`，监控工具结果 → `state.monitoring_evidence`，注入系统提示与反思提示，LLM 直接看到"证据完整性"而非原始工具文本。
+
+### 2.4 MCP 监控工具集成
+
+- **服务端**：`backend/mcp_servers/ops_monitoring_server.py`（FastMCP，stdio 协议），暴露 `query_metrics` / `query_logs`，返回模拟 Prometheus/Loki 数据
+- **客户端**：`init_mcp_tools` 通过 `MultiServerMCPClient`（langchain-mcp-adapters）加载，成功后再建图（新增工具数计入 Agent 工具总数）
+- **工具名去重**：本地 tools.py 已有 `query_metrics`/`query_logs` mock，MCP 同名工具加载时**剔除本地同名 mock**，避免重复工具名导致 LLM 端 `400: Tool names must be unique`
+- **降级保护**：加载超时/失败 → `_mcp_status=failed/timeout`，系统提示注入"监控工具降级"提示（跳过 2A 阶段、置信度最高"中"），不阻塞应用启动
+- 依赖：`langchain-mcp-adapters`、`mcp`（必须加入 requirements.txt，否则 Docker 中加载失败）
+
+### 2.5 会话持久化
+
+`MemorySaver` 首用，首次对话惰性切换为 `AsyncSqliteSaver`（`data/langgraph_checkpoints.db`）。上下文按 token 预算裁剪（`RAG_MAX_CONTEXT_TOKENS`）。
+
+---
+
+## 3. RAG 检索链路
+
+**位置**：`backend/app/knowledge/unified_store.py`（`UnifiedKnowledgeStore`）+ `backend/app/retrieval/`
+
+> 线上路径是 `UnifiedKnowledgeStore.hybrid_search_parent_child`。`retrieval/hybrid_retriever.py` 为早期测试对比用休眠代码，已移除。
+
+### 3.1 检索流水线
+
 ```
 用户查询
-    ↓
-查询重写(三级判断: 规则 → 历史缓存 → LLM重写)
-    ↓
-混合检索: 向量检索(Qdrant) + BM25关键词检索
-    ↓
-RRF 融合排序
-    ↓
-父块取回(通过 parent_id 关联)
-    ↓
-关键词重叠过滤(避免无关父块)
-    ↓
-CrossEncoder 重排序(ONNX加速, 候选≤max(top_k,6))
-    ↓
-结果缓存(Redis, TTL 5分钟)
-    ↓
-返回 top_k 结果
+  ↓ ① 查询改写
+规则增强(默认) | 多轮指代消解(conversation) | LLM MultiQuery(可选)
+  ↓ ② 并行混合检索（ThreadPoolExecutor）
+Qdrant 向量检索(child) + BM25 关键词检索(jieba 分词倒排)
+  ↓ ③ 加权 RRF 融合
+vector:bm25 = 1:1，k=60；CLIP 图像向量按 CLIP_FUSION_WEIGHT 融合
+  ↓ ④ 父块取回
+按 parent_id 聚合，投票加分 score = best_child_score + 0.1*(命中数-1)
+  ↓ ⑤ heading_path 相关性过滤/加权
+  ↓ ⑥ CrossEncoder 重排序（ONNX，候选 ≤ max(top_k,6)）
+  ↓ ⑦ 结果缓存（5 分钟 TTL）
+  ↓ 返回 top_k
 ```
 
-**关键组件**:
-- `parent_child_chunker.py` - 父子分块（保留 heading_path 元数据）
-- `qdrant_store.py` - Qdrant 向量存储（本地 sqlite + mmap 持久化）
-- `reranker.py` - CrossEncoder 重排序（ONNX Runtime 加速, PyTorch 降级）
-- `llm_query_rewriter.py` - 三级查询重写
-- `fusion.py` - RRF 融合算法
+### 3.2 检索过滤机制（pre-filter + 三路统一）
 
----
+> 2026-08 重构：org_id/user_id 从 Python post-filter 改为 Qdrant pre-filter，三路检索过滤条件统一。
 
-### 3. 记忆系统
+**统一过滤构造**：三路检索（向量/BM25/CLIP）共用 `_build_child_filter`，保证过滤行为一致：
 
-**位置**: `backend/app/memory/`
+```python
+# _build_child_filter = chunk_type=child + 可见性过滤
+filter = {
+    "$and": [
+        {"chunk_type": "child"},                    # 只检索子块
+        {"source": source} if source else {},       # 来源过滤
+        metadata_filter,                             # 业务元数据(service/doc_type)
+        {"$or_empty": {"key": "org_id", "value": org_id}},    # 公共组织 OR 本组织
+        {"$or_missing": {"key": "user_id", "value": user_id}}, # 公共用户 OR 本人
+    ]
+}
+```
 
-| 记忆类型 | 作用 | 存储方式 |
-|---------|------|---------|
-| CoreMemory | 用户画像、Agent 人设 | MongoDB |
-| RecallMemory | 对话历史 | SQLite Checkpoint |
-| ArchivalMemory | 用户笔记、长期记忆 | Qdrant |
+**$or_empty vs $or_missing**（对应不同存储约定）：
 
----
+| 操作符 | 字段 | 存储约定 | Qdrant 实现 |
+|--------|------|---------|------------|
+| `$or_empty` | org_id | `to_chroma` 强制写入，公共文档 `org_id=""` | `should [MatchValue(""), MatchValue(v)]` |
+| `$or_missing` | user_id | `cleaned` 移除空值，公共文档无此字段 | `must_not [MatchExcept([v])]` |
 
-### 4. 企业级特性
+> 注：`IsNullCondition` 在 Qdrant local mode 不生效，故 user_id 用 `must_not+MatchExcept` 反向排除方案。
 
-**位置**: `backend/app/core/`
+**三路过滤路径**：
 
-| 特性 | 文件 | 说明 |
-|------|------|------|
-| 权限隔离 | `auth.py` + `database.py` | 用户/组织隔离，公共文档可见 |
-| 限流 | `rate_limiter.py` | 滑动窗口 30 RPM，支持 Redis 分布式 |
-| 多级缓存 | `cache.py` | 检索缓存 + LLM响应缓存 + 查询重写缓存 |
-| 安全脱敏 | `sanitizer.py` | 手机号/身份证/API Key 过滤 |
-| 文档版本 | `documents.py` | 版本递增，更新时清除旧分块+缓存 |
-| 答案置信度 | `langgraph.py` | 低置信度自动重试/重写 query |
-| 健康检查 | `health.py` | 轻量 `/live` + 完整 `/health` |
-| 熔断器 | `circuit_breaker.py` | 外部服务故障保护 |
+| 路 | 过滤方式 | 说明 |
+|----|---------|------|
+| 向量 | Qdrant pre-filter | filter 传给 `query_points`，ANN 遍历时用 payload 索引过滤 |
+| BM25 | Python post-filter | 内存索引不支持原生 filter，用 `_match_metadata_filter`（等价语义） |
+| CLIP | Qdrant pre-filter | filter 传给 `search_by_vector`（2026-08 修复：原漏传 filters） |
 
----
+**为什么 pre-filter**：post-filter 时其他组织文档若语义更近会占满 top_k，过滤后召回不足。pre-filter 在可见文档池里检索，从根本上消除召回损失。向量/CLIP 路保留 Python 层 org/user 过滤兜底（防御性）。
 
-### 5. Web Search
+详见 `learning-notes/03-混合检索三路融合.md` 第六章。
 
-**位置**: `backend/app/langgraph_agent/tools.py`
+### 3.3 查询改写（`_rewrite_query`）
 
-**API**: Tavily AI Search
-
-**特性**:
-- 当知识库无结果时自动触发
-- 返回标题、URL、内容摘要
-- 结果作为引用来源显示
-
----
-
-## API 端点
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/auth/register` | POST | 用户注册 |
-| `/api/auth/login` | POST | 用户登录（Cookie + Bearer 双模式） |
-| `/api/langgraph/chat` | POST | LangGraph Agent 问答 |
-| `/api/langgraph/chat/stream` | POST | 流式问答（SSE） |
-| `/api/documents/` | GET | 文档列表（含公共文档） |
-| `/api/documents/upload` | POST | 上传文档（默认父子分块） |
-| `/api/documents/{id}` | DELETE | 删除文档（清除向量+缓存） |
-| `/api/memory/profile` | GET/PUT | 用户画像 |
-| `/api/memory/entries` | GET/POST | 档案记忆 |
-| `/api/health` | GET | 完整健康检查 |
-| `/api/health/live` | GET | 轻量存活检查（Docker HEALTHCHECK） |
-
----
-
-## 技术栈
-
-| 层级 | 技术 |
+| 模式 | 说明 |
 |------|------|
-| 前端 | React + TypeScript + Tailwind CSS + Zustand |
-| 后端 | FastAPI + LangGraph |
-| 向量库 | Qdrant（本地 sqlite + mmap 持久化） |
-| 文档库 | MongoDB |
-| 缓存 | Redis（检索/LLM响应/限流） |
-| 会话持久化 | SQLite（AsyncSqliteSaver） |
-| Embedding | BAAI/bge-small-zh-v1.5 (512维) |
-| Reranker | BAAI/bge-reranker-base（ONNX Runtime 加速） |
-| LLM | DeepSeek API (temperature=0.3, max_tokens=1500) |
-| Web Search | Tavily API |
-| 部署 | Docker Compose（backend + frontend + mongodb + redis） |
+| `enhanced`（默认） | 后缀剥离 + jieba 关键词组合 + 中英同义/缩写扩展，产出多路查询变体 |
+| `conversation` | 三层判断：指代词/上下文依赖规则 → chat_history 存在性 → LLM 指代消解改写（超时降级原句） |
+| `llm` / `enhanced_llm` | LLM MultiQuery（httpx 同步，LRU 缓存，相似度过滤） |
 
----
+### 3.4 向量存储（Qdrant）
 
-## 项目结构
+**双模式**：
 
-```
-education-agent/
-├── backend/
-│   ├── app/
-│   │   ├── api/                    # API 端点
-│   │   │   ├── langgraph.py        # Agent 问答 API
-│   │   │   ├── documents.py        # 文档管理 API
-│   │   │   ├── auth.py             # 认证 API
-│   │   │   ├── memory.py           # 记忆管理 API
-│   │   │   ├── knowledge.py        # 知识库管理 API
-│   │   │   └── health.py           # 健康检查 API
-│   │   │
-│   │   ├── core/                   # 核心基础设施
-│   │   │   ├── config.py           # 配置管理（环境隔离）
-│   │   │   ├── auth.py             # JWT 认证（Cookie+Bearer）
-│   │   │   ├── database.py         # MongoDB 操作
-│   │   │   ├── cache.py            # 多级缓存（Redis/Memory）
-│   │   │   ├── rate_limiter.py     # 滑动窗口限流
-│   │   │   ├── sanitizer.py        # 敏感信息脱敏
-│   │   │   └── circuit_breaker.py  # 熔断器
-│   │   │
-│   │   ├── langgraph_agent/        # LangGraph Agent
-│   │   │   ├── agent.py            # Agent 核心（LLM+工具+反思）
-│   │   │   ├── tools.py            # 工具定义
-│   │   │   └── state.py            # 状态定义
-│   │   │
-│   │   ├── knowledge/              # 统一知识存储
-│   │   │   └── unified_store.py    # 混合检索+重排序+缓存
-│   │   │
-│   │   ├── retrieval/              # 检索层
-│   │   │   ├── qdrant_store.py     # Qdrant 向量存储
-│   │   │   ├── embeddings.py       # BGE Embedding 模型
-│   │   │   ├── reranker.py         # CrossEncoder 重排序（ONNX）
-│   │   │   ├── llm_query_rewriter.py # 三级查询重写
-│   │   │   └── fusion.py           # RRF 融合
-│   │   │
-│   │   ├── document/               # 文档处理
-│   │   │   ├── parent_child_chunker.py # 父子分块
-│   │   │   ├── parser.py           # 文档解析
-│   │   │   └── uploader.py         # 文档上传
-│   │   │
-│   │   ├── memory/                 # 记忆系统
-│   │   ├── evaluation/             # 评估工具
-│   │   └── observability/          # 可观测性（指标）
-│   │
-│   ├── evaluation/                 # 性能测试与评估
-│   │   ├── perf/                   # 性能压测脚本
-│   │   └── results/                # 评估报告
-│   │
-│   ├── tests/                      # 测试用例（64个）
-│   ├── Dockerfile
-│   └── requirements.txt            # 锁定依赖版本
-│
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   └── App.tsx
-│   ├── Dockerfile
-│   └── nginx.conf                  # SSE 支持
-│
-├── docker-compose.yml              # 生产编排
-├── docker-compose.dev.yml          # 开发环境
-└── .github/workflows/ci.yml        # CI/CD
-```
-
----
-
-## 核心流程
-
-### RAG 问答流程
-
-```
-用户问题
-    ↓
-LangGraph Agent 决策
-    ↓
-┌─────────────────────┐
-│ search_knowledge    │ → 查询重写 → 混合检索 → RRF融合
-│                     │ → 父块取回 → CrossEncoder重排序
-│                     │ → 缓存检查(Redis)
-└────────┬────────────┘
-         ↓ (知识库无结果时)
-┌─────────────────────┐
-│ web_search          │ → Tavily API
-└────────┬────────────┘
-         ↓
-┌─────────────────────┐
-│ LLM 生成答案        │ → DeepSeek API (temp=0.3, max_tokens=1500)
-│                     │ → LLM响应缓存(10分钟TTL)
-└────────┬────────────┘
-         ↓
-答案脱敏 → 返回答案 + 引用来源
-```
-
-### 会话记忆流程
-
-```
-用户发送消息
-    ↓
-AsyncSqliteSaver 加载 Checkpoint（延迟初始化）
-    ↓
-加载历史消息上下文
-    ↓
-Agent 处理（包含历史上下文）
-    ↓
-保存新消息到 SQLite Checkpoint
-```
-
----
-
-## 部署
-
-### 环境变量
-
-```env
-# AI 服务
-AI_API_KEY=your_deepseek_api_key
-AI_MODEL=deepseek-chat
-
-# Web Search
-TAVILY_API_KEY=your_tavily_api_key
-
-# 数据库
-MONGODB_URL=mongodb://mongodb:27017
-REDIS_URL=redis://redis:6379/0
-
-# 向量库
-QDRANT_PATH=./data/qdrant
-
-# 环境
-ENV=production
-SECRET_KEY=your_secret_key
-```
-
-### Docker 部署
-
-```bash
-# 构建并启动所有服务
-docker compose up -d
-
-# 服务列表：
-# - frontend (nginx, 80端口)
-# - backend (uvicorn, 8000端口)
-# - mongodb (27017)
-# - redis (6379)
-```
-
-### 开发环境
-
-```bash
-# 后端
-cd backend
-python -m uvicorn main:app --reload --port 8000
-
-# 前端
-cd frontend
-npm run dev
-```
-
----
-
-## 性能指标
-
-| 指标 | 数值 | 说明 |
+| 模式 | 配置 | 场景 |
 |------|------|------|
-| 检索层 QPS | ~20 | CPU/GIL 瓶颈 |
-| 缓存命中 QPS | ~142 | LLM 响应缓存 |
-| 新问题端到端 | 6-7s | LLM 生成占主导 |
-| 缓存命中端到端 | 0.02s | 跳过检索+LLM |
-| rerank 耗时 | ~700ms | ONNX 6候选 |
+| 本地嵌入式 | `QDRANT_PERSIST_DIR=./data/qdrant_db`（共享客户端防锁冲突） | 本地开发 |
+| Server | `QDRANT_HOST` + `QDRANT_PORT`（Docker qdrant 容器，Web UI :6333/dashboard） | Docker 部署 |
+
+- HNSW 中等预设、COSINE 距离、512 维（bge-small-zh-v1.5）
+- 集合：`knowledge`（child）、`knowledge_parent`（parent）、`knowledge_clip_image`（多模态）
+- 索引字段（payload）：`chunk_type/source/user_id/org_id/document_id/topic_id/parent_id/doc_type/service/severity/incident_id`
+- ⚠️ 注意：本地嵌入式模式 `create_payload_index` 无效（Qdrant 库限制），服务端模式才真正建索引；过滤仍可用
+
+### 3.5 BM25 倒排索引
+
+- 内存 `BM25Index` + 磁盘 `data/bm25_index.pkl` 持久化
+- 惰性加载：pkl 条数与向量库 child 数一致则加载，否则全量重建
+- 文档入库时增量 `add_batch`（只索引子块）；删除时 `remove_document`
+
+### 3.6 重排序（`retrieval/reranker.py`）
+
+`CrossEncoderReranker`：ONNX Runtime 优先（`data/onnx_cache`），PyTorch 降级；模块级单例 + query/doc 对分数缓存。候选动态选取 `max(top_k, 6)`。
+
+### 3.7 缓存层级
+
+| 缓存 | 作用域 | TTL |
+|------|--------|-----|
+| LLM 响应缓存 | 相同问题跳过 LLM 生成 | 10 分钟 |
+| 检索结果缓存 | 相同查询复用检索结果 | 5 分钟 |
+| Embedding 缓存 | LRU 2048 + 磁盘 JSONL | 持久 |
+| Rerank 分数缓存 | query/doc 对 | 内存 |
+
+---
+
+## 4. 运维诊断工作流（Ops-Specific）
+
+系统提示（`agent.py`）内嵌企业运维诊断人设，强制 5 阶段流程：
+
+```
+阶段1 现象理解：提取 service / 错误现象 / 时间范围 / 影响范围
+阶段2 证据收集：
+  2A 实时监控取证（优先）：query_metrics(service, metric=all) 拿全指标
+     → 根据指标定向 query_logs（HikariPool / slow_query / error）
+  2B 知识库检索：search_knowledge(service, doc_type=manual|incident|sop|postmortem)
+     （诊断问题至少检索 2 次：manual + incident）
+阶段3 根因定位：监控证据 + 历史经验交叉印证，给出最可能根因 + 因果链
+阶段4 方案生成：短期止血 + 长期修复
+阶段5 结构化报告：### 现象 / 证据 / 根因分析 / 处置方案 / 置信度
+```
+
+**检索纪律**：诊断时优先 `service + doc_type` 精准过滤，避免全库噪声；监控优先于凭经验检索。
+
+### 运维元数据（frontmatter → chunk metadata）
+
+运维文档（手册/事故/SOP/复盘）头部用 YAML frontmatter 声明业务字段：
+
+```yaml
+---
+doc_type: incident
+service: payment-service
+severity: P1
+incident_id: INC-2026-001
+---
+```
+
+- 解析逻辑：`backend/app/document/frontmatter.py`（`parse_frontmatter` / `extract_business_metadata`）
+- API 上传 / 批量上传 / 重试 / Celery 任务 四条路径统一注入 `extra_metadata`
+- 字段注入每个 chunk 的 metadata → 支撑检索层 `metadata_filter` 精准过滤
+- ⚠️ 无 frontmatter 的文档按普通文档入库（无 service/doc_type），Agent 的 `service+doc_type` 过滤将命中不到——上传运维文档务必带 frontmatter
+
+### 监控数据（mock）
+
+`ops_monitoring_server` 内置模拟 Prometheus/Loki 数据集，与种子事故对齐（如 payment-service 连接池耗尽、order-service Redis 内存等），便于离线演示完整诊断链路。
+
+---
+
+## 5. 核心流程
+
+### 5.1 故障诊断问答
+
+```
+用户描述故障
+  ↓
+Prompt注入检测 → 会话校验 → LLM响应缓存检查
+  ↓
+LangGraph Agent 循环
+  query_metrics(现场指标) → query_logs(定向日志) → search_knowledge(历史经验)
+  ↓
+Reflect 证据裁判（双源交叉印证）
+  ↓
+结构化诊断报告（现象/证据/根因/处置/置信度）+ 引用溯源
+  ↓
+脱敏 → 返回 ChatResponse + 保存会话/记忆
+```
+
+### 5.2 文档入库
+
+```
+上传(PDF/DOCX/TXT/MD，管理员) → frontmatter 解析 → 文档记录入库
+  → (USE_CELERY=true 投递 Celery 任务 / 否则 BackgroundTasks)
+  → 解析(docling/pymupdf/text) → 父子分块 → 向量化 → Qdrant
+  → BM25 索引增量更新 → 状态更新(completed/failed)
+```
+
+### 5.3 多轮会话
+
+```
+用户消息 → 会话加载(Checkpoint) → 历史上下文注入
+  → 查询改写(指代消解) → Agent 处理 → 保存 Checkpoint
+  → 首次对话自动生成会话标题
+```
+
+---
+
+## 6. 存储层
+
+| 存储 | 用途 | 说明 |
+|------|------|------|
+| Qdrant | 向量 | child/parent/CLIP 三集合；本地嵌入式或 Server 模式 |
+| MongoDB | 文档元数据、用户、会话、任务 | Motor 异步驱动；`education_agent` 库 |
+| Redis | 检索/LLM/限流缓存 | 可选；留空降级内存缓存 |
+| SQLite | LangGraph Checkpoint | `data/langgraph_checkpoints.db` |
+
+---
+
+## 7. 部署架构
+
+### Docker（生产主路径）
+
+- 服务：`frontend:3000` / `admin-frontend:8080` / `backend:8000` / `qdrant:6333/6334` / `mongodb` / `redis` / `celery-worker`
+- 后端 + celery-worker 用 `./backend/.env` + compose 环境覆盖注入容器内地址（`mongodb:27017`、`redis:6379`、`qdrant:6333`）
+- Qdrant 用 **Server 模式**（`qdrant/qdrant` 容器，独立 `qdrant-data` volume）
+- `./backend/data`、HF 模型缓存以 volume 挂载（离线加载模型，`HF_HUB_OFFLINE=1`）
+- **USE_CELERY=true**：后端投递文档任务到 celery-worker（`--pool=solo`）
+- 开发 override：源码卷挂载 + uvicorn `--reload`；生产 override：`SECRET_KEY`/`CORS_ORIGINS` 强制校验、MongoDB 不对外、`backend-data` 命名卷
+
+### 本地开发
+
+- Python 3.12 + `requirements.txt`（含 MCP 依赖 `langchain-mcp-adapters`、`mcp`）
+- MongoDB 必选；Qdrant 本地嵌入式（`QDRANT_PERSIST_DIR`）或连 Docker qdrant；Redis 可选
+
+---
+
+## 8. 关键配置与参数
+
+见 `backend/app/core/config.py`（pydantic-settings，读 `backend/.env`）。
+
+重点参数：
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `AI_MODEL` / `AI_API_KEY` | deepseek-chat | LLM（OpenAI 兼容） |
+| `VECTOR_STORE_BACKEND` | chroma（旧默认）/ `.env` 设为 qdrant | 生产强制 qdrant |
+| `QDRANT_PERSIST_DIR` / `QDRANT_HOST/PORT` | 本地目录 / Docker | 嵌入式 vs Server |
+| `MCP_ENABLED` | false | 运维监控工具总开关 |
+| `USE_CELERY` | false | 异步文档导入 |
+| `RAG_TOP_K` / `RAG_CANDIDATE_MULTIPLIER` / `RAG_RRF_K` | 8 / 3 / 60 | 检索参数 |
+| `RAG_REWRITE_MODE` | enhanced | 查询改写 |
+| `RAG_MAX_CONTEXT_TOKENS` | 6000 | 上下文预算 |
+| `MULTIMODAL_ENABLED` / `MULTIMODAL_VECTOR_ENABLED` | false | 多模态开关 |
+| `SUPER_ADMIN_USERNAME` | 空 | 超管初始化 |
+| `SECRET_KEY` | 开发自动生成 | 生产必填 ≥32 字节 |
+
+---
+
+## 9. 已知注意事项
+
+- **本地 Qdrant 锁**：同一 `QDRANT_PERSIST_DIR` 只能被一个进程打开（`already accessed by another instance`）。测试/多进程场景用 Server 模式或临时目录
+- **工具名唯一**：MCP 与本地工具重名必须去重（见 2.4），否则 LLM API 拒绝请求
+- **文档 metadata**：运维文档检索依赖 frontmatter 元数据；旧数据（无 service/doc_type）需 `scripts/seed_ops_kb.py` 或重建索引补齐
+- **BM25 一致性**：BM25 索引按 child 条数懒加载/重建；向量库与 BM25 数据源不一致时检索会漂移
+- **LLM 响应缓存**：命中时 `step_count=0`（设计如此，表示跳过 LLM 调用）；内存缓存，重启即失效

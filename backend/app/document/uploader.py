@@ -12,7 +12,7 @@
 """
 
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pathlib import Path
 from loguru import logger
 
@@ -98,6 +98,7 @@ class DocumentUploader:
         user_id: Optional[str] = None,
         topic_id: Optional[str] = None,
         document_id: Optional[str] = None,
+        extra_metadata: Optional[Dict] = None,
     ) -> dict:
         """
         上传并索引文档（使用新的结构化管道，失败时降级到旧管道）
@@ -109,6 +110,8 @@ class DocumentUploader:
             course_id: 关联课程 ID（兼容旧版）
             user_id: 关联用户 ID
             topic_id: 关联主题 ID
+            extra_metadata: 文档级业务 metadata（运维场景：doc_type/service/severity 等，
+                           从 frontmatter 解析），会注入到每个 chunk 的 metadata
 
         Returns:
             dict: 上传结果，包含 document_id, chunk_count
@@ -132,6 +135,7 @@ class DocumentUploader:
                 content=content, filename=filename, title=title,
                 document_id=document_id, course_id=course_id,
                 user_id=user_id, topic_id=topic_id, file_info=file_info,
+                extra_metadata=extra_metadata,
             )
             return result
         except Exception as e:
@@ -140,12 +144,14 @@ class DocumentUploader:
                 content=content, filename=filename, title=title,
                 document_id=document_id, course_id=course_id,
                 user_id=user_id, topic_id=topic_id, file_info=file_info,
+                extra_metadata=extra_metadata,
             )
             return result
 
     async def _upload_new_pipeline(
         self, content, filename, title, document_id,
         course_id, user_id, topic_id, file_info,
+        extra_metadata: Optional[Dict] = None,
     ) -> dict:
         """使用新的结构化管道（ParserFactory + 可配置分块器 + 多模态增强）"""
         # 多模态模式下，把 image_store 注入到 DoclingParser，让解析阶段就保存图片
@@ -193,11 +199,13 @@ class DocumentUploader:
             chunks=chunks, document_id=document_id, filename=filename,
             title=title, course_id=course_id, user_id=user_id,
             topic_id=topic_id, file_info=file_info,
+            extra_metadata=extra_metadata,
         )
 
     async def _upload_legacy(
         self, content, filename, title, document_id,
         course_id, user_id, topic_id, file_info,
+        extra_metadata: Optional[Dict] = None,
     ) -> dict:
         """使用旧管道（DocumentParser + DocumentChunker，降级路径）"""
         text = self.parser.parse(content, filename)
@@ -225,11 +233,13 @@ class DocumentUploader:
             chunks=chunks, document_id=document_id, filename=filename,
             title=title, course_id=course_id, user_id=user_id,
             topic_id=topic_id, file_info=file_info,
+            extra_metadata=extra_metadata,
         )
 
     def _store_chunks(
         self, chunks, document_id, filename, title,
         course_id, user_id, topic_id, file_info,
+        extra_metadata: Optional[Dict] = None,
     ) -> dict:
         """将分块存储到统一知识库"""
         metadata_base = {
@@ -241,6 +251,10 @@ class DocumentUploader:
             "course_id": course_id,
             "source": "user_document",
         }
+        # 运维场景：注入文档级业务 metadata（doc_type/service/severity 等，从 frontmatter 解析）
+        # 这些字段会随 metadata_base 合并到每个 chunk，支撑 hybrid_search_parent_child 的 metadata_filter
+        if extra_metadata:
+            metadata_base.update(extra_metadata)
         if file_info:
             metadata_base["file_path"] = file_info.get("file_path")
             metadata_base["file_size"] = file_info.get("file_size")

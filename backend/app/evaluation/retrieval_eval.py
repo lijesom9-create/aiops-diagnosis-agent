@@ -118,22 +118,12 @@ def bm25_only_search(
     rrf_k: int = 60,
     **kwargs,
 ) -> List[str]:
-    """纯 BM25 检索（按 source 后过滤）"""
-    store._ensure_bm25_index()
-    candidates = store._bm25.search(query, top_k=top_k * 3)
-
-    ids = []
-    for doc_id, _ in candidates:
-        if len(ids) >= top_k:
-            break
-        record = store.vector_store.get_by_ids([doc_id])
-        if not record:
-            continue
-        meta = record[0].get("metadata", {})
-        if source and meta.get("source") != source:
-            continue
-        ids.append(doc_id)
-    return ids
+    """纯 sparse vector 检索（替代原 BM25，按 source 后过滤）"""
+    filters = {"source": source} if source else None
+    candidates = store.vector_store.sparse_search(
+        query=query, top_k=top_k * 3, filters=filters,
+    )
+    return [doc_id for doc_id, _, _ in candidates[:top_k]]
 
 
 def hybrid_rrf_search(

@@ -1,0 +1,444 @@
+{
+  "dataset": "agent_eval_scenarios",
+  "top_k": 8,
+  "llm_judge": false,
+  "summary": {
+    "scenario_count": 12,
+    "completed": 12,
+    "failed": 0,
+    "mcp_tools_loaded": 2,
+    "tool_call_accuracy": 0.861,
+    "tool_coverage": 0.889,
+    "tool_order_ok_rate": 0.833,
+    "evidence_recall": 0.185,
+    "evidence_metrics_channel": 0.264,
+    "evidence_logs_channel": 0.125,
+    "evidence_knowledge_channel": 0.167,
+    "root_cause_accuracy": 0.139,
+    "report_rate": 0.417,
+    "confidence_ok_rate": 0.417,
+    "diagnosis_success_rate": 0.417,
+    "avg_latency_s": 40.208
+  },
+  "per_scenario": [
+    {
+      "scenario_id": "SC-001",
+      "title": "支付服务大量 500 - 连接池耗尽",
+      "ground_truth_incident": "INC-2026-001",
+      "tools_used": [
+        "query_metrics",
+        "query_logs",
+        "search_knowledge",
+        "analyze_chart"
+      ],
+      "step_count": 8,
+      "tool_call": {
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.5,
+          "logs": 1.0,
+          "knowledge": 1.0
+        },
+        "recall": 0.833
+      },
+      "root_cause": {
+        "recall": 0.5,
+        "root_cause_extracted": "**最可能根因：营销活动流量突增（QPS 3.5 倍）+ 慢 SQL 拖垮数据库连接池，导致连接池耗尽，请求获取连接超时，大量接口返回 500。**\n\n因果链如下：\n\n1. **流量突增**：QPS 从基线 1200 飙升至 4200（3."
+      },
+      "diagnosis": {
+        "report_ok": 1.0,
+        "confidence_ok": 1.0,
+        "confidence_level": "medium",
+        "success": 1.0
+      },
+      "latency_s": 46.3
+    },
+    {
+      "scenario_id": "SC-002",
+      "title": "商品详情缓存雪崩",
+      "ground_truth_incident": "INC-2026-073",
+      "tools_used": [
+        "query_metrics",
+        "query_logs",
+        "search_knowledge",
+        "analyze_chart"
+      ],
+      "step_count": 8,
+      "tool_call": {
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.0,
+          "logs": 0.0,
+          "knowledge": 0.0
+        },
+        "recall": 0.0
+      },
+      "root_cause": {
+        "recall": 0.0,
+        "root_cause_extracted": ""
+      },
+      "diagnosis": {
+        "report_ok": 0.0,
+        "confidence_ok": 0.0,
+        "confidence_level": "",
+        "success": 0.0
+      },
+      "latency_s": 47.8
+    },
+    {
+      "scenario_id": "SC-003",
+      "title": "Kafka 消费延迟支付结果通知堆积",
+      "ground_truth_incident": "INC-2026-074",
+      "tools_used": [
+        "search_knowledge"
+      ],
+      "step_count": 3,
+      "tool_call": {
+        "coverage": 0.333,
+        "order_ok": 0.0,
+        "accuracy": 0.167
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.0,
+          "logs": 0.0,
+          "knowledge": 0.0
+        },
+        "recall": 0.0
+      },
+      "root_cause": {
+        "recall": 0.0,
+        "root_cause_extracted": ""
+      },
+      "diagnosis": {
+        "report_ok": 0.0,
+        "confidence_ok": 0.0,
+        "confidence_level": "",
+        "success": 0.0
+      },
+      "latency_s": 40.0
+    },
+    {
+      "scenario_id": "SC-004",
+      "title": "秒杀库存超卖",
+      "ground_truth_incident": "INC-2026-070",
+      "tools_used": [
+        "query_metrics",
+        "query_logs",
+        "search_knowledge"
+      ],
+      "step_count": 8,
+      "tool_call": {
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.0,
+          "logs": 0.0,
+          "knowledge": 0.0
+        },
+        "recall": 0.0
+      },
+      "root_cause": {
+        "recall": 0.0,
+        "root_cause_extracted": ""
+      },
+      "diagnosis": {
+        "report_ok": 0.0,
+        "confidence_ok": 0.0,
+        "confidence_level": "",
+        "success": 0.0
+      },
+      "latency_s": 43.4
+    },
+    {
+      "scenario_id": "SC-005",
+      "title": "全站 429 限流",
+      "ground_truth_incident": "INC-2026-068",
+      "tools_used": [
+        "query_metrics",
+        "query_logs",
+        "search_knowledge"
+      ],
+      "step_count": 5,
+      "tool_call": {
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.0,
+          "logs": 0.0,
+          "knowledge": 0.0
+        },
+        "recall": 0.0
+      },
+      "root_cause": {
+        "recall": 0.0,
+        "root_cause_extracted": ""
+      },
+      "diagnosis": {
+        "report_ok": 0.0,
+        "confidence_ok": 0.0,
+        "confidence_level": "",
+        "success": 0.0
+      },
+      "latency_s": 26.2
+    },
+    {
+      "scenario_id": "SC-006",
+      "title": "订单列表深分页慢 SQL",
+      "ground_truth_incident": "INC-2026-088",
+      "tools_used": [
+        "query_metrics",
+        "query_logs",
+        "search_knowledge"
+      ],
+      "step_count": 6,
+      "tool_call": {
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.667,
+          "logs": 0.0,
+          "knowledge": 0.0
+        },
+        "recall": 0.222
+      },
+      "root_cause": {
+        "recall": 0.25,
+        "root_cause_extracted": "**最可能的根因：订单列表接口存在深分页（Deep Pagination）问题，`LIMIT 800000` 大偏移量查询导致 MySQL 全表扫描。**\n\n因果链如下：\n\n1. **深分页 SQL 触发全表扫描**：`LIMIT 8000"
+      },
+      "diagnosis": {
+        "report_ok": 1.0,
+        "confidence_ok": 1.0,
+        "confidence_level": "medium",
+        "success": 1.0
+      },
+      "latency_s": 31.3
+    },
+    {
+      "scenario_id": "SC-007",
+      "title": "JVM Full GC 频繁",
+      "ground_truth_incident": "INC-2026-076",
+      "tools_used": [
+        "query_metrics",
+        "query_logs",
+        "analyze_chart",
+        "search_knowledge"
+      ],
+      "step_count": 8,
+      "tool_call": {
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.0,
+          "logs": 0.0,
+          "knowledge": 0.0
+        },
+        "recall": 0.0
+      },
+      "root_cause": {
+        "recall": 0.0,
+        "root_cause_extracted": ""
+      },
+      "diagnosis": {
+        "report_ok": 0.0,
+        "confidence_ok": 0.0,
+        "confidence_level": "",
+        "success": 0.0
+      },
+      "latency_s": 35.9
+    },
+    {
+      "scenario_id": "SC-008",
+      "title": "主从延迟读旧数据",
+      "ground_truth_incident": "INC-2026-075",
+      "tools_used": [
+        "search_knowledge"
+      ],
+      "step_count": 3,
+      "tool_call": {
+        "coverage": 0.333,
+        "order_ok": 0.0,
+        "accuracy": 0.167
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.0,
+          "logs": 0.0,
+          "knowledge": 0.0
+        },
+        "recall": 0.0
+      },
+      "root_cause": {
+        "recall": 0.0,
+        "root_cause_extracted": ""
+      },
+      "diagnosis": {
+        "report_ok": 0.0,
+        "confidence_ok": 0.0,
+        "confidence_level": "",
+        "success": 0.0
+      },
+      "latency_s": 25.4
+    },
+    {
+      "scenario_id": "SC-009",
+      "title": "支付回调丢失订单状态不一致",
+      "ground_truth_incident": "INC-2026-080",
+      "tools_used": [
+        "query_metrics",
+        "query_logs",
+        "search_knowledge"
+      ],
+      "step_count": 8,
+      "tool_call": {
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.667,
+          "logs": 0.0,
+          "knowledge": 0.333
+        },
+        "recall": 0.333
+      },
+      "root_cause": {
+        "recall": 0.0,
+        "root_cause_extracted": "**因果链**：\n\n1. **流量突增**：qps 从基线 1200 飙升至 4200（3.5 倍），结合运营反馈\"支付渠道回调波动\"，推测营销活动或渠道重试导致回调请求集中涌入 payment-service。\n\n2. **连接池耗尽**"
+      },
+      "diagnosis": {
+        "report_ok": 1.0,
+        "confidence_ok": 1.0,
+        "confidence_level": "high",
+        "success": 1.0
+      },
+      "latency_s": 45.5
+    },
+    {
+      "scenario_id": "SC-010",
+      "title": "支付创建死锁风暴",
+      "ground_truth_incident": "INC-2026-082",
+      "tools_used": [
+        "query_metrics",
+        "query_logs",
+        "search_knowledge",
+        "analyze_chart"
+      ],
+      "step_count": 8,
+      "tool_call": {
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.0,
+          "logs": 0.0,
+          "knowledge": 0.0
+        },
+        "recall": 0.0
+      },
+      "root_cause": {
+        "recall": 0.0,
+        "root_cause_extracted": ""
+      },
+      "diagnosis": {
+        "report_ok": 0.0,
+        "confidence_ok": 0.0,
+        "confidence_level": "",
+        "success": 0.0
+      },
+      "latency_s": 37.6
+    },
+    {
+      "scenario_id": "SC-011",
+      "title": "商品搜索不到索引不一致",
+      "ground_truth_incident": "INC-2026-095",
+      "tools_used": [
+        "query_metrics",
+        "query_logs",
+        "search_knowledge"
+      ],
+      "step_count": 7,
+      "tool_call": {
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.333,
+          "logs": 0.0,
+          "knowledge": 0.333
+        },
+        "recall": 0.222
+      },
+      "root_cause": {
+        "recall": 0.25,
+        "root_cause_extracted": "基于用户提供的明确线索 + 架构证据，根因链条如下：\n\n**因果链**：商品同步链路消费端**反序列化错误** → 消息消费失败 → 商品变更事件未写入 ES → 主库已更新但 ES 文档缺失 → App 搜索端查不到这 217 条商品。\n"
+      },
+      "diagnosis": {
+        "report_ok": 1.0,
+        "confidence_ok": 1.0,
+        "confidence_level": "medium",
+        "success": 1.0
+      },
+      "latency_s": 52.9
+    },
+    {
+      "scenario_id": "SC-012",
+      "title": "搜索服务 OOM 反复重启",
+      "ground_truth_incident": "INC-2026-085",
+      "tools_used": [
+        "query_metrics",
+        "search_knowledge"
+      ],
+      "step_count": 8,
+      "tool_call": {
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 1.0,
+          "logs": 0.5,
+          "knowledge": 0.333
+        },
+        "recall": 0.611
+      },
+      "root_cause": {
+        "recall": 0.667,
+        "root_cause_extracted": "基于现有证据，**最可能的根因是 search-service 存在内存泄漏**，因果链如下：\n\n1. **内存持续顶到 4G 上限**：search-service 的内存使用呈渐进性增长，每次重启后内存重新累积，约 30 分钟即打满 4"
+      },
+      "diagnosis": {
+        "report_ok": 1.0,
+        "confidence_ok": 1.0,
+        "confidence_level": "medium",
+        "success": 1.0
+      },
+      "latency_s": 50.2
+    }
+  ]
+}

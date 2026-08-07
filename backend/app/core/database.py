@@ -176,6 +176,32 @@ class Database:
                 return True
         return False
 
+    async def get_all_users(self, page: int = 1, page_size: int = 20) -> tuple:
+        """分页列出所有用户（管理员视角，过滤 hashed_password）
+
+        Returns:
+            (users, total): 用户列表（无敏感字段）+ 总数
+        """
+        await self.connect()
+        if self._use_mongo:
+            total = await self._mongo.users.count_documents({})
+            skip = (page - 1) * page_size
+            cursor = self._mongo.users.find({}, {"_id": 0, "hashed_password": 0}).sort("created_at", -1).skip(skip).limit(page_size)
+            users = await cursor.to_list(page_size)
+            return clean_mongo_docs(users), total
+        total = len(self._users)
+        start = (page - 1) * page_size
+        sorted_users = sorted(self._users, key=lambda x: x.get("created_at", ""), reverse=True)
+        users = [{k: v for k, v in u.items() if k != "hashed_password"} for u in sorted_users[start:start + page_size]]
+        return users, total
+
+    async def count_users(self) -> int:
+        """用户总数"""
+        await self.connect()
+        if self._use_mongo:
+            return await self._mongo.users.count_documents({})
+        return len(self._users)
+
     # ========== 主题操作 ==========
 
     async def create_topic(self, topic_data: dict) -> str:

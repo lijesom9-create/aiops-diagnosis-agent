@@ -1,0 +1,210 @@
+{
+  "dataset": "queries_v3",
+  "version": "3.0",
+  "category": "multi_turn",
+  "category_label": "多轮对话查询",
+  "description": "多轮对话场景，后续轮次依赖上下文与指代消解（它/这个/刚才/当时），评测多轮改写与上下文保持能力",
+  "count": 20,
+  "groups": [
+    {
+      "group_id": "mt-001",
+      "domain": "ops",
+      "topic": "支付服务 500",
+      "turns": [
+        {"query": "支付接口今天大量报 500 错误", "expected_keywords": ["500", "支付"]},
+        {"query": "之前有没有发生过类似问题？", "contextual": true, "expected_keywords": ["连接池耗尽", "INC-2026-001"]},
+        {"query": "当时是怎么解决的？", "contextual": true, "expected_keywords": ["扩容", "限流", "索引优化"]}
+      ]
+    },
+    {
+      "group_id": "mt-002",
+      "domain": "ops",
+      "topic": "数据库连接池",
+      "turns": [
+        {"query": "数据库连接池打满了", "expected_keywords": ["连接池", "打满"]},
+        {"query": "为什么会打满？", "contextual": true, "expected_keywords": ["并发", "慢查询", "容量"]},
+        {"query": "那接下来怎么处置？", "contextual": true, "expected_keywords": ["扩容", "限流", "慢SQL治理"]}
+      ]
+    },
+    {
+      "group_id": "mt-003",
+      "domain": "ops",
+      "topic": "缓存雪崩",
+      "turns": [
+        {"query": "早上十点缓存命中率突然暴跌", "expected_keywords": ["缓存", "命中率"]},
+        {"query": "这个现象是什么原因？", "contextual": true, "expected_keywords": ["缓存雪崩", "TTL", "集中过期"]},
+        {"query": "怎么预防再发生？", "contextual": true, "expected_keywords": ["随机抖动", "互斥重建", "降级"]}
+      ]
+    },
+    {
+      "group_id": "mt-004",
+      "domain": "ops",
+      "topic": "Kafka 消费延迟",
+      "turns": [
+        {"query": "Kafka 消费延迟一直在涨", "expected_keywords": ["Kafka", "LAG"]},
+        {"query": "它涨这么快的可能原因？", "contextual": true, "expected_keywords": ["poll阻塞", "消费者", "分区"]},
+        {"query": "有什么解决办法？", "contextual": true, "expected_keywords": ["扩容实例", "异步化", "退避"]}
+      ]
+    },
+    {
+      "group_id": "mt-005",
+      "domain": "ops",
+      "topic": "JWT 密钥轮换",
+      "turns": [
+        {"query": "我们计划做一次 JWT 密钥轮换", "expected_keywords": ["JWT", "密钥", "轮换"]},
+        {"query": "轮换的时候要注意什么？", "contextual": true, "expected_keywords": ["双密钥", "并行过渡", "灰度"]},
+        {"query": "如果全站掉线了怎么办？", "contextual": true, "expected_keywords": ["回滚", "旧密钥", "恢复"]}
+      ]
+    },
+    {
+      "group_id": "mt-006",
+      "domain": "ops",
+      "topic": "短信通道故障",
+      "turns": [
+        {"query": "验证码短信发不出去了", "expected_keywords": ["短信", "验证码"]},
+        {"query": "是不是通道出问题了？", "contextual": true, "expected_keywords": ["通道", "服务商", "备用"]},
+        {"query": "能切到备用通道吗？", "contextual": true, "expected_keywords": ["切换", "smb", "自动容灾"]}
+      ]
+    },
+    {
+      "group_id": "mt-007",
+      "domain": "ops",
+      "topic": "数据库死锁",
+      "turns": [
+        {"query": "支付创建接口报死锁错误", "expected_keywords": ["死锁", "支付"]},
+        {"query": "死锁一般是什么引起的？", "contextual": true, "expected_keywords": ["加锁顺序", "锁等待"]},
+        {"query": "要怎么彻底解决？", "contextual": true, "expected_keywords": ["统一加锁顺序", "重试", "索引"]}
+      ]
+    },
+    {
+      "group_id": "mt-008",
+      "domain": "ops",
+      "topic": "主从延迟",
+      "turns": [
+        {"query": "订单查询读到旧数据了", "expected_keywords": ["主从", "旧数据"]},
+        {"query": "为什么会读到旧数据？", "contextual": true, "expected_keywords": ["主从延迟", "读从库"]},
+        {"query": "怎么处理这个延迟？", "contextual": true, "expected_keywords": ["大事务拆分", "DDL", "强一致读"]}
+      ]
+    },
+    {
+      "group_id": "mt-009",
+      "domain": "ops",
+      "topic": "误删数据",
+      "turns": [
+        {"query": "DBA 误删了订单明细表", "expected_keywords": ["误删", "订单明细"]},
+        {"query": "数据还能恢复吗？", "contextual": true, "expected_keywords": ["binlog", "备份", "恢复"]},
+        {"query": "恢复大概要多长时间？", "contextual": true, "expected_keywords": ["全量备份", "时间点恢复", "RPO"]}
+      ]
+    },
+    {
+      "group_id": "mt-010",
+      "domain": "ops",
+      "topic": "定时任务重复执行",
+      "turns": [
+        {"query": "凌晨的定时任务好像跑了两次", "expected_keywords": ["定时任务", "重复"]},
+        {"query": "为什么会重复执行？", "contextual": true, "expected_keywords": ["租约", "调度", "双实例"]},
+        {"query": "如何防止这种情况？", "contextual": true, "expected_keywords": ["幂等", "调度锁", "唯一键"]}
+      ]
+    },
+    {
+      "group_id": "mt-011",
+      "domain": "ops",
+      "topic": "库存超卖",
+      "turns": [
+        {"query": "秒杀活动出现超卖了", "expected_keywords": ["超卖", "库存"]},
+        {"query": "这是什么导致的？", "contextual": true, "expected_keywords": ["分布式锁", "主从切换", "锁失效"]},
+        {"query": "怎么防止超卖再发生？", "contextual": true, "expected_keywords": ["Lua原子", "乐观锁", "扣减"]}
+      ]
+    },
+    {
+      "group_id": "mt-012",
+      "domain": "ops",
+      "topic": "DNS 故障",
+      "turns": [
+        {"query": "网站突然打不开了", "expected_keywords": ["打不开", "访问"]},
+        {"query": "服务器本身是正常的吗？", "contextual": true, "expected_keywords": ["内网", "DNS", "解析"]},
+        {"query": "怎么尽快恢复访问？", "contextual": true, "expected_keywords": ["备用解析商", "A记录", "TTL"]}
+      ]
+    },
+    {
+      "group_id": "mt-013",
+      "domain": "ops",
+      "topic": "ES 索引问题",
+      "turns": [
+        {"query": "新上架的商品搜索不到", "expected_keywords": ["搜索", "商品"]},
+        {"query": "是索引不同步吗？", "contextual": true, "expected_keywords": ["索引", "同步", "消费"]},
+        {"query": "如何修复并预防？", "contextual": true, "expected_keywords": ["全量重建", "死信", "对账"]}
+      ]
+    },
+    {
+      "group_id": "mt-014",
+      "domain": "ops",
+      "topic": "服务 OOM",
+      "turns": [
+        {"query": "搜索服务老是被 OOM 杀掉", "expected_keywords": ["OOM", "搜索"]},
+        {"query": "内存为什么会涨？", "contextual": true, "expected_keywords": ["缓存", "无上限", "泄漏"]},
+        {"query": "应该怎么修复？", "contextual": true, "expected_keywords": ["TTLCache", "有界缓存", "内存告警"]}
+      ]
+    },
+    {
+      "group_id": "mt-015",
+      "domain": "ops",
+      "topic": "限流误配置",
+      "turns": [
+        {"query": "全站突然全部 429 了", "expected_keywords": ["429", "限流"]},
+        {"query": "是不是限流规则出问题了？", "contextual": true, "expected_keywords": ["Sentinel", "规则", "误配置"]},
+        {"query": "现在怎么处理？", "contextual": true, "expected_keywords": ["回滚", "Nacos", "恢复"]}
+      ]
+    },
+    {
+      "group_id": "mt-016",
+      "domain": "ops",
+      "topic": "对账不平",
+      "turns": [
+        {"query": "财务说对账少了八万多", "expected_keywords": ["对账", "差额"]},
+        {"query": "哪些环节可能导致？", "contextual": true, "expected_keywords": ["退款", "流水", "回调"]},
+        {"query": "怎么排查这笔差异？", "contextual": true, "expected_keywords": ["渠道流水号", "逐笔核对", "补偿"]}
+      ]
+    },
+    {
+      "group_id": "mt-017",
+      "domain": "ops",
+      "topic": "深分页慢 SQL",
+      "turns": [
+        {"query": "订单列表接口越来越慢了", "expected_keywords": ["订单列表", "慢"]},
+        {"query": "翻页很深会有什么影响？", "contextual": true, "expected_keywords": ["深分页", "LIMIT", "扫描"]},
+        {"query": "怎么优化分页？", "contextual": true, "expected_keywords": ["游标", "覆盖索引", "深度限制"]}
+      ]
+    },
+    {
+      "group_id": "mt-018",
+      "domain": "ops",
+      "topic": "灰度发布回滚",
+      "turns": [
+        {"query": "新版本灰度后有报错", "expected_keywords": ["灰度", "报错"]},
+        {"query": "这个错误率算高吗？", "contextual": true, "expected_keywords": ["门禁", "0.5%", "回滚"]},
+        {"query": "怎么自动回滚？", "contextual": true, "expected_keywords": ["ArgoCD", "rollout undo", "自动回滚"]}
+      ]
+    },
+    {
+      "group_id": "mt-019",
+      "domain": "ops",
+      "topic": "节点驱逐",
+      "turns": [
+        {"query": "K8s 节点内存报警了", "expected_keywords": ["K8s", "节点", "内存"]},
+        {"query": "会有什么后果？", "contextual": true, "expected_keywords": ["驱逐", "Pod", "重建"]},
+        {"query": "怎么避免 Pod 被驱逐？", "contextual": true, "expected_keywords": ["PDB", "limits", "PriorityClass"]}
+      ]
+    },
+    {
+      "group_id": "mt-020",
+      "domain": "ops",
+      "topic": "支付回调丢失",
+      "turns": [
+        {"query": "用户付了钱订单还是待支付", "expected_keywords": ["待支付", "支付成功"]},
+        {"query": "什么原因造成的？", "contextual": true, "expected_keywords": ["回调丢失", "消费", "对账"]},
+        {"query": "如何避免这种情况？", "contextual": true, "expected_keywords": ["主动查单", "补偿", "双链路"]}
+      ]
+    }
+  ]
+}

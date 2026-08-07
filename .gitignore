@@ -105,3 +105,26 @@ chromadb/
 
 # Evaluation error logs
 *.err
+
+# ===========================================
+# 评测数据集（含版权教材 + 生成物）
+# ===========================================
+# 评测用 PDF/MD 教材（FastAPI 教程、Agent 书籍、RAG 书籍等版权内容，不入库）
+backend/evaluation/data/documents/
+# BM25 索引（运行时生成）
+backend/evaluation/data/bm25_index.pkl
+# Embedding 缓存（运行时生成）
+backend/evaluation/data/embedding_cache/
+# 评测结果图（生成物，仅保留 .json / .csv / .md 报告）
+backend/evaluation/results/*.png
+
+# ===========================================
+# 智能运维系统（AIOps）运行时数据
+# ===========================================
+# Prometheus / Loki / Alertmanager 数据卷（Docker volume 管理，不入库）
+prometheus-data/
+loki-data/
+alertmanager-data/
+
+# 飞书 CLI 凭据缓存（lark-cli 登录后生成）
+.lark/

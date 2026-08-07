@@ -1,0 +1,33 @@
+# Alertmanager 配置（单节点，学习/开发环境）
+# 文档：https://prometheus.io/docs/alerting/latest/configuration/
+#
+# 接收 Prometheus 推送的告警，提供 API 供 Agent 查询活跃告警。
+# 学习场景不配置外部通知渠道（邮件/钉钉等），只做告警聚合 + 查询。
+
+global:
+  resolve_timeout: 5m  # 告警恢复后等待多久才标记为 resolved
+
+# 告警路由：按 severity 分流（学习场景只分 critical/warning，都走默认接收器）
+route:
+  receiver: 'default'
+  group_by: ['alertname', 'severity']
+  group_wait: 10s       # 同组告警等待 10s 聚合后一起发
+  group_interval: 30s   # 同组告警下次发送间隔
+  repeat_interval: 1h   # 重复告警发送间隔
+
+receivers:
+  - name: 'default'
+    # 告警通知 Bridge：backend 的 webhook 端点接收后转发到飞书
+    # send_resolved: true 表示告警恢复时也推送通知
+    webhook_configs:
+      - url: 'http://backend:8000/api/alerts/webhook'
+        send_resolved: true
+
+# 告警抑制规则（高优先级告警触发时抑制低优先级）
+inhibit_rules:
+  # critical 告警触发时，抑制相同服务的 warning 告警
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['category']

@@ -39,8 +39,66 @@ from loguru import logger
 from app.core.ai_service import MockProvider, create_ai_provider
 from app.evaluation.retrieval_eval import build_eval_index_from_files, load_file_queries
 from app.memory.memory_manager import MemoryManager
-from app.memory.rag_generator import RAGGenerator
 from app.shared_services import RAGRetrieverAdapter
+
+
+async def _generate_answer(
+    memory: MemoryManager,
+    llm,
+    query: str,
+    max_rag_results: int = 5,
+    rag_content_limit: int = 400,
+) -> str:
+    """轻量 RAG 生成：build_context + LLM 调用 + 引用拼接
+
+    原 RAGGenerator 的核心生成逻辑内联（仅保留评测所需 use_rag 路径，
+    移除 web_search / memory_update / save_to_memory 等未用功能）。
+    """
+    context = memory.build_context(
+        query=query,
+        user_id="ragas_eval_user",
+        session_id="ragas_eval_session",
+        include_core=False,
+        include_recall=False,
+        include_archival=False,
+        include_rag=True,
+        max_rag_results=max_rag_results,
+        rag_content_limit=rag_content_limit,
+    )
+
+    prompt = f"""{context}
+
+## 用户问题
+{query}
+
+## 要求
+1. 基于提供的上下文回答问题
+2. 如果是追问，理解对话历史的上下文
+3. **重要**：如果用户问的是"刚才问了什么"、"我们聊了什么"等关于对话历史的问题，请只基于对话历史部分回答，不需要引用知识库或网络搜索结果
+4. 引用知识库来源时使用 [1]、[2] 等标记
+5. 如果上下文没有相关信息，明确说明
+6. 保持回答简洁、准确、有帮助
+7. 回答中应明确覆盖用户问题里的关键概念，如技术术语、命令、关键字等，并对每个关键概念给出具体说明，避免只给出简要结论
+
+## 回答"""
+
+    try:
+        messages = [
+            {"role": "system", "content": "你是一个专业的知识助手，基于提供的上下文回答用户问题。"},
+            {"role": "user", "content": prompt},
+        ]
+        if hasattr(llm, "generate"):
+            answer = await llm.generate(prompt)
+        elif hasattr(llm, "chat"):
+            response = await llm.chat(messages)
+            answer = response.get("content", "")
+        else:
+            answer = "抱歉，AI 服务不可用。"
+    except Exception as e:
+        logger.error(f"LLM 生成失败: {e}")
+        answer = f"抱歉，生成答案时出现错误：{str(e)}"
+
+    return answer
 
 
 DOCS_DIR = Path(__file__).parent.parent.parent / "evaluation" / "data" / "documents"
@@ -397,7 +455,6 @@ async def run_ragas_eval(
             rag_retriever=rag_retriever,
         )
         llm = create_ai_provider()
-        generator = RAGGenerator(llm_service=llm, memory_manager=memory)
 
         evaluator = RAGASEvaluator(
             llm=llm,
@@ -420,30 +477,25 @@ async def run_ragas_eval(
                 contexts = [c[:rag_content_limit] for c in contexts]
 
             # 2. 生成答案
-            result = await generator.generate(
+            answer = await _generate_answer(
+                memory=memory,
+                llm=llm,
                 query=question,
-                user_id="ragas_eval_user",
-                session_id="ragas_eval_session",
-                use_core_memory=False,
-                use_recall_memory=False,
-                use_archival_memory=False,
-                use_rag=True,
-                use_web_search=False,
                 max_rag_results=max_rag_results,
-                save_to_memory=False,
+                rag_content_limit=rag_content_limit,
             )
 
             # 3. RAGAS 评分
             scores = await evaluator.evaluate(
                 question=question,
-                answer=result.answer,
+                answer=answer,
                 contexts=contexts,
                 ground_truth=ground_truth,
             )
             per_query_scores.append(scores)
             raw_results.append({
                 "question": question,
-                "answer": result.answer,
+                "answer": answer,
                 "contexts": contexts,
                 "ground_truth": ground_truth,
                 "scores": scores,

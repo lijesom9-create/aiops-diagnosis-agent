@@ -84,6 +84,29 @@ class Settings(BaseSettings):
     # 父子分离存储（推荐 True：BM25 精度 +29pp）
     RAG_SEPARATE_PARENT_CHILD: bool = True
 
+    # ========== MCP (Model Context Protocol) 监控工具集成 ==========
+    # 启用后 Agent 会在 lifespan 阶段加载 MCP server，支撑运维诊断"查监控"环节
+    MCP_ENABLED: bool = False
+    # MCP server 类型（决定加载哪个子进程）：
+    #   ops_monitoring:    模拟 Prometheus+Loki 的 mock 数据（payment-service 故障场景）
+    #   system_monitoring: 基于 psutil 查本机真实 CPU/内存/磁盘/进程指标（接你自己的电脑）
+    MCP_SERVER_TYPE: str = "ops_monitoring"
+    # MCP 工具加载超时（秒）：stdio 启动子进程 + get_tools() 的总超时
+    # 超时后降级为纯知识库模式，不阻塞应用启动（生产化保护）
+    MCP_LOAD_TIMEOUT: float = 30.0
+
+    # Loki 日志查询地址（prometheus 模式下双 server 之一）
+    # 与 Prometheus 配合：prometheus 管指标，loki 管日志
+    LOKI_URL: str = "http://loki:3100"
+
+    # Alertmanager 告警查询地址（prometheus 模式下三 server 之一）
+    # 与 Prometheus/Loki 配合：prometheus 管指标，loki 管日志，alertmanager 管告警
+    ALERTMANAGER_URL: str = "http://alertmanager:9093"
+
+    # Prometheus 时序指标查询地址（前端监控看板 + Agent 诊断共用）
+    # 容器内通过服务名访问，宿主机通过 localhost:9090
+    PROMETHEUS_URL: str = "http://prometheus:9090"
+
     # ========== P1-2: 上下文 Token 预算控制 ==========
     # LLM 上下文窗口 token 预算（不含用户查询和系统提示）
     # DeepSeek/Qwen 32k 模型推荐 6000（给 RAG 留余地，剩余留给 LLM 输出）
@@ -113,6 +136,12 @@ class Settings(BaseSettings):
     RATE_LIMIT_CAPACITY: int = 5
     # API 请求限流：每用户每分钟最大请求数（聊天接口）
     RATE_LIMIT_RPM: int = 30
+
+    # ========== LLM 请求超时（生产化保护）==========
+    # LLM 单次请求超时（秒）：覆盖 Agent 主调用、反思、查询重写等所有 ChatOpenAI 调用
+    # 超时后抛 TimeoutError，由上层 try/except 捕获并降级
+    # DeepSeek/Qwen 常规对话 60s 足够；复杂工具调用 + 长上下文可适当放宽
+    LLM_REQUEST_TIMEOUT: float = 60.0
 
     # ========== 多模态 RAG ==========
     # 总开关：是否启用多模态（图片 caption + 表格 summary）
@@ -162,6 +191,11 @@ class Settings(BaseSettings):
     # 飞书 CLI 配置（新方式）
     FEISHU_CLI_PATH: str = "lark"  # 飞书 CLI 可执行文件路径
     FEISHU_USER_OPEN_ID: Optional[str] = None  # 用户 open_id（ou_xxx）
+
+    # 飞书自建应用（告警通知 Bridge：Alertmanager webhook → 飞书卡片消息）
+    FEISHU_APP_ID: Optional[str] = None  # 自建应用 app_id（cli_xxx）
+    FEISHU_APP_SECRET: Optional[str] = None  # 自建应用 app_secret
+    FEISHU_ALERT_OPEN_ID: Optional[str] = None  # 接收告警的用户 open_id
 
     # 意图分类器配置
     INTENT_CLASSIFIER_THRESHOLD: float = 0.7

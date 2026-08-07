@@ -6,7 +6,7 @@ LangGraph API
 
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from loguru import logger
 from starlette.responses import StreamingResponse
 
@@ -21,12 +21,36 @@ router = APIRouter(prefix="/api/langgraph", tags=["LangGraph Agent"])
 
 # ========== 请求/响应模型 ==========
 
+# 输入长度上限（字符数）：防止超长输入导致 token 超限或 DoS
+# 8000 字符约等于 4000-6000 tokens（中文偏多），覆盖正常运维诊断提问场景
+_MAX_MESSAGE_CHARS = 8000
+
+
 class ChatRequest(BaseModel):
     """聊天请求"""
-    message: str = Field(..., description="用户消息")
+    # min_length=1 防止空字符串；max_length 防止超长输入 DoS
+    # Field 的约束在 Pydantic v2 下自动生成 422 响应，无需手写校验代码
+    message: str = Field(
+        ...,
+        min_length=1,
+        max_length=_MAX_MESSAGE_CHARS,
+        description="用户消息（1-8000 字符）",
+    )
     session_id: Optional[str] = Field(default=None, description="会话 ID")
     use_web_search: bool = Field(default=False, description="是否使用 Web Search")
     context: Optional[Dict[str, Any]] = Field(default=None, description="额外上下文")
+
+    @field_validator("message")
+    @classmethod
+    def _validate_message_content(cls, v: str) -> str:
+        """消息内容校验：去除首尾空白后必须非空
+
+        Field 的 min_length=1 能拦截空字符串，但无法拦截纯空白字符串（"   "）。
+        这里用 validator 做语义校验，避免 LLM 收到空消息产生无意义响应。
+        """
+        if not v or not v.strip():
+            raise ValueError("消息内容不能为空或纯空白")
+        return v.strip()
 
 
 class ChatResponse(BaseModel):
@@ -35,6 +59,7 @@ class ChatResponse(BaseModel):
     tools_used: list
     citations: list
     step_count: int
+    diagnosis_report: Optional[dict] = Field(default=None, description="结构化诊断报告（运维诊断 Agent 专用，非诊断问题为 null）")
     session_id: Optional[str] = Field(default=None, description="会话 ID（首次对话时返回新创建的会话 ID）")
 
 
@@ -213,6 +238,19 @@ async def chat(
     使用 LangGraph Agent 处理用户消息。
     若未传 session_id，会自动创建新会话并在响应中返回 session_id。
     """
+    # Prompt Injection 检测：高风险拦截，中低风险放行
+    # 必须在 agent 调用前执行，避免恶意指令劫持 Agent 行为
+    from ..core.prompt_guard import detect_prompt_injection
+    should_block, block_reason, risk_level = detect_prompt_injection(request.message)
+    if should_block:
+        logger.warning(
+            f"用户 {current_user.user_id} 请求被 prompt injection 检测拦截: {block_reason}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"请求被拒绝：{block_reason}",
+        )
+
     try:
         agent = get_agent()
 
@@ -236,6 +274,7 @@ async def chat(
                 "content": _cached_resp["content"],
                 "tools_used": _cached_resp["tools_used"],
                 "citations": _cached_resp["citations"],
+                "diagnosis_report": _cached_resp.get("diagnosis_report"),
                 "step_count": 0,
             }
             _skip_title = True
@@ -285,12 +324,14 @@ async def chat(
                 "content": sanitized_content,
                 "tools_used": result["tools_used"],
                 "citations": result["citations"],
+                "diagnosis_report": result.get("diagnosis_report"),
             }, _llm_cache_key)
 
         return ChatResponse(
             content=sanitized_content,
             tools_used=result["tools_used"],
             citations=result["citations"],
+            diagnosis_report=result.get("diagnosis_report"),
             step_count=result["step_count"],
             session_id=session_id,
         )
@@ -321,12 +362,24 @@ async def chat_stream(
     - {"type": "tool_calls", "tools": ["search_knowledge"]} 工具调用开始
     - {"type": "tool_result", "name": "...", "content": "..."} 工具结果
     - {"type": "token", "content": "你"}                  LLM token（核心，逐字输出）
-    - {"type": "reflection", "content": "正在反思..."}     反思阶段
     - {"type": "done", "tools_used": [...], "step_count": N, "session_id": "..."} 完成
     - {"type": "error", "content": "..."}                  错误
     """
     import json
     import asyncio
+
+    # Prompt Injection 检测：与 /chat 保持一致，高风险拦截
+    # 流式端点同样需要在 agent 调用前拦截，避免恶意指令在流式过程中劫持
+    from ..core.prompt_guard import detect_prompt_injection
+    should_block, block_reason, risk_level = detect_prompt_injection(request.message)
+    if should_block:
+        logger.warning(
+            f"用户 {current_user.user_id} 流式请求被 prompt injection 检测拦截: {block_reason}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"请求被拒绝：{block_reason}",
+        )
 
     try:
         agent = get_agent()
@@ -362,6 +415,7 @@ async def chat_stream(
                         final_meta["tools_used"] = event.get("tools_used", [])
                         final_meta["step_count"] = event.get("step_count", 0)
                         final_meta["citations"] = event.get("citations", [])
+                        final_meta["diagnosis_report"] = event.get("diagnosis_report")
                         # done 事件补上 session_id，前端据此更新会话列表
                         event["session_id"] = session_id
 

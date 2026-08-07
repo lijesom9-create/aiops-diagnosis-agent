@@ -1,0 +1,191 @@
+{
+  "dataset": "agent_eval_scenarios",
+  "version": "1.0",
+  "name": "Agent 级故障诊断评估场景集",
+  "description": "12 个故障诊断场景，基于真实 incident 设计。每个场景定义期望工具序列、期望根因、期望证据与期望知识库命中，用于计算 Root Cause Accuracy / Evidence Recall / Tool Call Accuracy / Diagnosis Success Rate",
+  "created_at": "2026-08-04",
+  "monitoring_tools": ["query_metrics", "query_logs"],
+  "kb_tool": "search_knowledge",
+  "scenarios": [
+    {
+      "scenario_id": "SC-001",
+      "title": "支付服务大量 500 - 连接池耗尽",
+      "user_input": "支付网关告警 payment-service 大量接口返回 HTTP 500，错误率从 0.1% 飙到 38%，下单支付链路受损，请诊断根因并给出处置方案。",
+      "ground_truth_incident": "INC-2026-001",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "expected_root_cause": ["连接池耗尽", "HikariCP", "慢查询", "容量"],
+      "expected_evidence": {
+        "metrics": ["hikaricp", "错误率", "500", "连接"],
+        "logs": ["Connection is not available", "HikariPool"],
+        "knowledge": ["连接池耗尽", "排查", "SOP"]
+      },
+      "expected_doc_types": ["incident", "manual", "sop"]
+    },
+    {
+      "scenario_id": "SC-002",
+      "title": "商品详情缓存雪崩",
+      "user_input": "早上十点商品详情接口突然变得非常慢，P99 从 60ms 涨到 3.8s，缓存命中率从 90% 跌到 12%，数据库连接快满了，怎么回事？",
+      "ground_truth_incident": "INC-2026-073",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "search_knowledge"],
+      "expected_root_cause": ["缓存雪崩", "TTL", "集中过期", "回源"],
+      "expected_evidence": {
+        "metrics": ["缓存命中率", "连接", "P99"],
+        "logs": ["cache miss"],
+        "knowledge": ["缓存雪崩", "TTL", "随机抖动"]
+      },
+      "expected_doc_types": ["incident", "config", "postmortem"]
+    },
+    {
+      "scenario_id": "SC-003",
+      "title": "Kafka 消费延迟支付结果通知堆积",
+      "user_input": "用户反馈支付成功后 App 一直显示处理中，payment.result 消费组 LAG 到了 85 万还在涨，通知服务消费者只有一个实例，什么原因？",
+      "ground_truth_incident": "INC-2026-074",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "expected_root_cause": ["poll阻塞", "消费延迟", "LAG", "实例不足"],
+      "expected_evidence": {
+        "metrics": ["LAG", "消费", "Kafka"],
+        "logs": ["rebalance", "push failed"],
+        "knowledge": ["消费延迟", "LAG", "异步化"]
+      },
+      "expected_doc_types": ["incident", "middleware", "postmortem"]
+    },
+    {
+      "scenario_id": "SC-004",
+      "title": "秒杀库存超卖",
+      "user_input": "秒杀活动开始后 15 分钟，监控发现可用库存出现负值，实际售出超出库存 6%，请紧急定位根因并给处置方案。",
+      "ground_truth_incident": "INC-2026-070",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "search_knowledge"],
+      "expected_root_cause": ["分布式锁失效", "锁丢失", "降级执行", "超卖"],
+      "expected_evidence": {
+        "metrics": ["库存", "锁", "redisson"],
+        "logs": ["lock acquire", "deduct failed"],
+        "knowledge": ["超卖", "分布式锁", "乐观锁"]
+      },
+      "expected_doc_types": ["incident", "postmortem"]
+    },
+    {
+      "scenario_id": "SC-005",
+      "title": "全站 429 限流",
+      "user_input": "全站接口突然大面积返回 429 系统繁忙，下单支付都受限，网关 blocked_requests 飙到 12 万，但下游服务本身是正常的，什么导致的？",
+      "ground_truth_incident": "INC-2026-068",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "search_knowledge"],
+      "expected_root_cause": ["限流规则", "误配置", "Sentinel"],
+      "expected_evidence": {
+        "metrics": ["429", "blocked", "限流"],
+        "logs": ["BlockedRequest", "QpsExceeded"],
+        "knowledge": ["限流", "规则", "变更"]
+      },
+      "expected_doc_types": ["incident", "api", "change"]
+    },
+    {
+      "scenario_id": "SC-006",
+      "title": "订单列表深分页慢 SQL",
+      "user_input": "订单列表接口越来越慢，P99 到了 5 秒，数据库慢查询日志里有一条 LIMIT 800000 的 SQL 跑了 12 秒，订单查询都快被它拖垮了，怎么处理？",
+      "ground_truth_incident": "INC-2026-088",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "expected_root_cause": ["深分页", "慢SQL", "游标", "覆盖索引"],
+      "expected_evidence": {
+        "metrics": ["P99", "慢查询", "数据库"],
+        "logs": ["Query_time", "LIMIT"],
+        "knowledge": ["深分页", "游标", "慢SQL治理"]
+      },
+      "expected_doc_types": ["incident", "database"]
+    },
+    {
+      "scenario_id": "SC-007",
+      "title": "JVM Full GC 频繁",
+      "user_input": "order-service 每两分钟一次 Full GC，每次停 3-5 秒，接口 P99 到了 6.5 秒，堆使用率一直顶在 3G 不下来，怀疑内存有问题，怎么排查？",
+      "ground_truth_incident": "INC-2026-076",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "search_knowledge"],
+      "expected_root_cause": ["内存泄漏", "缓存无上限", "Full GC"],
+      "expected_evidence": {
+        "metrics": ["Full GC", "堆", "GC"],
+        "logs": ["Full GC", "Allocation Failure"],
+        "knowledge": ["JVM", "GC", "heap dump"]
+      },
+      "expected_doc_types": ["incident", "performance", "postmortem"]
+    },
+    {
+      "scenario_id": "SC-008",
+      "title": "主从延迟读旧数据",
+      "user_input": "凌晨订单查询读到旧状态，支付成功的订单显示待支付，查了主从复制 Seconds_Behind_Master 有 480 秒，是什么导致的？",
+      "ground_truth_incident": "INC-2026-075",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "expected_root_cause": ["主从延迟", "大事务", "DDL", "读从库"],
+      "expected_evidence": {
+        "metrics": ["主从延迟", "Seconds_Behind_Master"],
+        "logs": ["UPDATE", "ALTER TABLE"],
+        "knowledge": ["主从延迟", "复制", "强一致读"]
+      },
+      "expected_doc_types": ["incident", "database"]
+    },
+    {
+      "scenario_id": "SC-009",
+      "title": "支付回调丢失订单状态不一致",
+      "user_input": "运营反馈部分用户已扣款但订单还是待支付，对账发现支付成功订单和订单状态有 1500 笔不一致，支付渠道今天回调服务有波动，怎么办？",
+      "ground_truth_incident": "INC-2026-080",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "search_knowledge"],
+      "expected_root_cause": ["回调丢失", "主动查单", "对账补偿"],
+      "expected_evidence": {
+        "metrics": ["回调", "对账", "订单状态"],
+        "logs": ["callback", "poll"],
+        "knowledge": ["回调", "查单", "对账"]
+      },
+      "expected_doc_types": ["incident", "postmortem"]
+    },
+    {
+      "scenario_id": "SC-010",
+      "title": "支付创建死锁风暴",
+      "user_input": "午间高峰支付创建接口报错率 6%，错误日志全是 Deadlock found when trying to get lock，这个死锁是怎么形成的？",
+      "ground_truth_incident": "INC-2026-082",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "expected_root_cause": ["加锁顺序", "死锁", "锁等待", "索引"],
+      "expected_evidence": {
+        "metrics": ["死锁", "错误率"],
+        "logs": ["Deadlock found", "LOCK S", "LOCK X"],
+        "knowledge": ["死锁", "加锁顺序", "锁等待"]
+      },
+      "expected_doc_types": ["incident", "database", "sop"]
+    },
+    {
+      "scenario_id": "SC-011",
+      "title": "商品搜索不到索引不一致",
+      "user_input": "运营反馈 200 多个已上架商品 App 里搜不到，对比主库和 ES 文档数少了 217 条，商品同步链路前两天消费有反序列化错误，怎么定位？",
+      "ground_truth_incident": "INC-2026-095",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "search_knowledge"],
+      "expected_root_cause": ["索引不同步", "反序列化失败", "死信", "对账"],
+      "expected_evidence": {
+        "metrics": ["索引", "文档数", "LAG"],
+        "logs": ["deserialize error", "message dropped"],
+        "knowledge": ["索引", "死信", "全量重建"]
+      },
+      "expected_doc_types": ["incident", "middleware", "postmortem"]
+    },
+    {
+      "scenario_id": "SC-012",
+      "title": "搜索服务 OOM 反复重启",
+      "user_input": "search-service 的 Pod 每半小时被 OOMKilled 重启一次，内存一直顶到 4G 上限，搜索接口间歇性不可用，什么原因？",
+      "ground_truth_incident": "INC-2026-085",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "search_knowledge"],
+      "expected_root_cause": ["内存泄漏", "缓存无上限", "OOM"],
+      "expected_evidence": {
+        "metrics": ["OOM", "内存", "重启"],
+        "logs": ["OOMKilled", "exit code 137"],
+        "knowledge": ["OOM", "缓存", "TTL"]
+      },
+      "expected_doc_types": ["incident", "kubernetes", "performance"]
+    }
+  ]
+}
