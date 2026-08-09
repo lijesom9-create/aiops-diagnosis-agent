@@ -2,12 +2,14 @@
 # VM 自动部署 workflow
 #
 # 触发：
-#   - 手动（workflow_dispatch）：当前端/后端镜像已推送后可使用
-#   - push 到 master/main 时自动触发：代码合并 → CI 构建推送镜像 → 本 workflow 在 VM 拉镜像重启
+#   - 手动（workflow_dispatch）：前端/后端镜像已推送后可使用
+#   - push 到 master/main 时自动触发：CI 构建推送镜像 → 本 workflow 在 VM 拉镜像重启
 #
 # 运行环境：VM 上常驻的 self-hosted runner（label: agent-vm）
-#   VM 无公网 IP，GitHub Actions 无法直连 SSH，故在 VM 本机执行 docker compose
-#   runner 尚未注册时此 workflow 会保持排队（不阻塞 ci.yml）
+#   注意：VM 访问 github 慢，且实际部署目录为 /home/jesom/rag-src（非 git 仓库），
+#   故不用 checkout，直接在 VM 部署目录执行 docker compose pull && up
+#   compose 文件（docker-compose.linux.yml + docker-compose.linux.prod.yml）
+#   由运维一次性 scp 同步到 VM，CI 只负责拉新镜像重启
 # ===========================================
 name: Deploy to VM
 
@@ -24,13 +26,15 @@ jobs:
       contents: read
       packages: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Pull images & redeploy
         run: |
+          cd /home/jesom/rag-src
           docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml pull backend frontend
           docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml up -d backend frontend
+
+      - name: Logout GHCR
+        if: ${{ always() }}
+        run: docker logout ghcr.io
