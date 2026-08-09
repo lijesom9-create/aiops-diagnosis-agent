@@ -2,8 +2,17 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# 构建阶段是否走国内镜像（VM/CI 网络到 deb.debian.org 慢，构建卡死）。
+# 传入 --build-arg APT_MIRROR=1 时切清华镜像，默认官方源。
+ARG APT_MIRROR=0
 # 安装系统依赖（gcc 编译 C 扩展，curl 健康检查，git 拉取模型，poppler-utils 供 pdf2image OCR）
-RUN apt-get update && apt-get install -y \
+RUN if [ "$APT_MIRROR" = "1" ]; then \
+        sed -i 's|deb.debian.org/debian|mirrors.tuna.tsinghua.edu.cn/debian|g; s|security.debian.org/debian-security|mirrors.tuna.tsinghua.edu.cn/debian-security|g' \
+            /etc/apt/sources.list.d/debian.sources; \
+        sed -i 's|deb.debian.org/debian|mirrors.tuna.tsinghua.edu.cn/debian|g; s|security.debian.org/debian-security|mirrors.tuna.tsinghua.edu.cn/debian-security|g' \
+            /etc/apt/sources.list 2>/dev/null || true; \
+    fi && \
+    apt-get update && apt-get install -y \
     gcc \
     g++ \
     curl \
