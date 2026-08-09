@@ -1,0 +1,16 @@
+# ===========================================
+# Linux 生产部署 override（CI/CD 自动部署专用）
+# 用法（在 /home/jesom/rag-src 下）：
+#   docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml pull
+#   docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml up -d
+#
+# 与 docker-compose.linux.yml 的区别：
+#   - backend/frontend 不再 build，改为从 ghcr.io 拉取 CI 构建的版本化镜像
+#   - 注册表凭据由 CI 部署任务注入（GITHUB_TOKEN 登录 ghcr）
+# ===========================================
+services:
+  frontend:
+    image: ghcr.io/lijesom9-create/agent-frontend:latest
+
+  backend:
+    image: ghcr.io/lijesom9-create/agent-backend:latest

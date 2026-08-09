@@ -1,0 +1,118 @@
+# ===========================================
+# Linux 精简部署（自包含，不依赖 Windows 版 base compose）
+# 适用：Ubuntu 虚拟机，Docker + Docker Compose
+# 范围：backend + frontend + qdrant + mongodb（无 Redis/Celery/监控全家桶）
+# 不修改任何原文件，仅新增本文件
+#
+# 使用步骤：
+#   1. 在项目根目录准备 .env（复制 backend/.env 并确认 AI_API_KEY 已填）
+#   2. docker compose -f docker-compose.linux.yml up -d --build
+#   3. 导入知识库：docker compose -f docker-compose.linux.yml exec backend python scripts/seed_ops_kb.py
+#   4. 访问：
+#       用户端问答   http://<VM_IP>:3000
+#       后端 API     http://<VM_IP>:8000/docs
+#       Qdrant UI    http://<VM_IP>:6333/dashboard
+#   5. 停止：docker compose -f docker-compose.linux.yml down
+# ===========================================
+
+services:
+  # 用户端前端（RAG 问答）
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # 后端服务
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      # 容器网络内用服务名互访（覆盖 .env 中的 localhost 地址）
+      - MONGODB_URL=mongodb://mongodb:27017
+      # Qdrant Server 模式（覆盖本地嵌入式模式）
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      # 精简部署无 Redis：留空自动降级内存缓存
+      - REDIS_URL=
+      # 精简部署无 Celery worker：文档导入走 BackgroundTasks 同步处理
+      - USE_CELERY=false
+      # 精简部署无监控全家桶：关闭 MCP，避免启动时等待 30s 超时
+      - MCP_ENABLED=false
+      # 国内 HuggingFace 镜像：模型（bge-m3/reranker）走 hf-mirror.com 下载
+      - HF_ENDPOINT=https://hf-mirror.com
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/uploads:/app/uploads
+      # 模型缓存挂到项目内目录，首次下载后持久复用
+      - ./backend/data/hf_cache:/home/appuser/.cache/huggingface
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+
+  # Qdrant 向量数据库
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # MongoDB 数据库
+  mongodb:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # 管理后台前端（可选，用于文档导入/用户管理）
+  # 需要时取消注释即可：
+  # admin-frontend:
+  #   build:
+  #     context: ./admin-frontend
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - "8080:80"
+  #   depends_on:
+  #     backend:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+
+volumes:
+  qdrant-data:
+  mongodb-data:
