@@ -5,12 +5,11 @@
 #   docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml up -d
 #
 # 与 docker-compose.linux.yml 的区别：
-#   - backend/frontend 不再 build，改为从 ghcr.io 拉取 CI 构建的版本化镜像
+#   - frontend 从 ghcr.io 拉取 CI 构建的版本化镜像（小镜像，网络友好）
+#   - backend 保持本地 build（含 3.5GB torch 层，拉 ghcr 在弱带宽下不可行；
+#     且后镜像代码变更只重建 COPY 层，成本低）
 #   - 注册表凭据由 CI 部署任务注入（GITHUB_TOKEN 登录 ghcr）
 # ===========================================
 services:
   frontend:
     image: ghcr.io/lijesom9-create/agent-frontend:latest
-
-  backend:
-    image: ghcr.io/lijesom9-create/agent-backend:latest

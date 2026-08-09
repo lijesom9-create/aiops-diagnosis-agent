@@ -6,10 +6,11 @@
 #   - push 到 master/main 时自动触发：CI 构建推送镜像 → 本 workflow 在 VM 拉镜像重启
 #
 # 运行环境：VM 上常驻的 self-hosted runner（label: agent-vm）
-#   注意：VM 访问 github 慢，且实际部署目录为 /home/jesom/rag-src（非 git 仓库），
-#   故不用 checkout，直接在 VM 部署目录执行 docker compose pull && up
-#   compose 文件（docker-compose.linux.yml + docker-compose.linux.prod.yml）
-#   由运维一次性 scp 同步到 VM，CI 只负责拉新镜像重启
+#   注意：VM 访问 github/ghcr 慢，backend 含 3.5GB torch 层，从 ghcr 拉取不可行，
+#   故 backend 在 VM 本地构建（SSH deploy key pull 源码 → docker build）。
+#   frontend 走 ghcr（62MB）。
+#   VM 部署目录 /home/jesom/rag-src 是 git 仓库（origin = git@github.com）。
+#   compose 文件已随库入库，CI 负责 git pull → 拉 frontend 镜像 → 重建 backend
 # ===========================================
 name: Deploy to VM
 
@@ -29,10 +30,21 @@ jobs:
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Pull images & redeploy
+      - name: Update source code
         run: |
           cd /home/jesom/rag-src
-          docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml pull backend frontend
+          git fetch origin master
+          git reset --hard origin/master
+
+      - name: Pull frontend image
+        run: |
+          cd /home/jesom/rag-src
+          docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml pull frontend
+
+      - name: Rebuild & redeploy
+        run: |
+          cd /home/jesom/rag-src
+          docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml build backend
           docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml up -d backend frontend
 
       - name: Logout GHCR
