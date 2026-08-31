@@ -35,7 +35,6 @@ class TestAuthFlow:
             username=unique_name,
             password="test123456",
             email=f"{unique_name}@test.com",
-            role="student",
             org_name=f"org_{uuid.uuid4().hex[:8]}",
         )
         token = await register_user(user_data)
@@ -49,20 +48,25 @@ class TestAuthFlow:
 
     @pytest.mark.asyncio
     async def test_register_rejects_admin_role(self):
-        """注册接口拒绝 admin 角色"""
-        from app.core.auth import UserCreate, UserRole
+        """注册模型不接收 role 字段（防提权：注册角色不信任客户端输入）
 
-        # UserRole 枚举只允许 student/teacher/admin
-        user = UserCreate(
-            username="hacker",
-            password="test123456",
-            email="h@h.com",
-            role=UserRole.ADMIN,
-            org_name="test-org",
-        )
-        # 角色被接受为枚举值，但 register_user 会正确存储
-        assert user.role == UserRole.ADMIN
-        assert user.role.value == "admin"
+        UserCreate 已移除 role 字段；角色只能由 register_user 内部决定
+        （固定 student，或用户名匹配 SUPER_ADMIN_USERNAME 时为 admin）。
+        """
+        from app.core.auth import UserCreate
+
+        # role 字段已从注册模型移除
+        assert "role" not in UserCreate.model_fields
+
+        # 模拟恶意客户端在 payload 中携带 role：模型不应保留该字段
+        user = UserCreate(**{
+            "username": "hacker",
+            "password": "test123456",
+            "email": "h@h.com",
+            "org_name": "test-org",
+            "role": "admin",
+        })
+        assert not hasattr(user, "role")
 
     @pytest.mark.asyncio
     async def test_password_too_short(self):

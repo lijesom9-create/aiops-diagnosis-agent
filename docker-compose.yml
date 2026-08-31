@@ -79,6 +79,14 @@ services:
       - LOKI_URL=http://loki:3100
       # Alertmanager 告警查询地址（prometheus 模式下三 MCP server 之一）
       - ALERTMANAGER_URL=http://alertmanager:9093
+      # 告警 webhook 共享密钥：与 alertmanager/alertmanager.yml 的
+      # webhook_configs.http_config.authorization.credentials 保持一致，
+      # backend 用它验证 /api/alerts/webhook 请求，防伪造告警
+      - ALERT_WEBHOOK_SECRET=${ALERT_WEBHOOK_SECRET:-}
+      # 会话 checkpoint 落 Mongo（多副本共享会话现场，任一实例可恢复同一事故会话）
+      - CHECKPOINT_BACKEND=mongodb
+      # 自动诊断服务的组织可见性：诊断可读公共 + 该组织的运维文档
+      - DIAGNOSIS_ORG_ID=${DIAGNOSIS_ORG_ID:-}
       # HTTP 代理：容器内访问 DeepSeek/OpenAI 等海外 API 时走宿主机代理
       # host.docker.internal 是 Docker Desktop 提供的指向宿主机的特殊 DNS
       # 仅对走公网的请求生效；Docker 内网通信（prometheus/loki/qdrant 等）不受影响

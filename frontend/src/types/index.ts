@@ -25,7 +25,7 @@ export interface RegisterRequest {
   username: string;
   password: string;
   email: string;
-  role?: string;
+  // 安全约束：后端不接受客户端角色（注册固定 student，仅超管用户名例外）
   org_name?: string;
 }
 

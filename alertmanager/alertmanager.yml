@@ -19,9 +19,15 @@ receivers:
   - name: 'default'
     # 告警通知 Bridge：backend 的 webhook 端点接收后转发到飞书
     # send_resolved: true 表示告警恢复时也推送通知
+    # authorization: backend 校验 ALERT_WEBHOOK_SECRET（.env 配置），
+    # 两边必须一致，否则 webhook 返回 401
     webhook_configs:
       - url: 'http://backend:8000/api/alerts/webhook'
         send_resolved: true
+        http_config:
+          authorization:
+            type: Bearer
+            credentials: 'CHANGE_ME_ALERT_WEBHOOK_SECRET'
 
 # 告警抑制规则（高优先级告警触发时抑制低优先级）
 inhibit_rules:

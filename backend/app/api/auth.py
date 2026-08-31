@@ -9,9 +9,10 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional
 
 from ..core.auth import (
-    UserCreate, UserLogin, Token, UserResponse, UserRole,
+    UserCreate, UserLogin, Token, UserResponse,
     register_user, login_user, get_current_user
 )
+from ..core.rate_limiter import auth_rate_limit_dep
 from ..core.config import settings
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
@@ -46,11 +47,14 @@ def _clear_auth_cookie(response: Response):
 
 
 class RegisterRequest(BaseModel):
-    """注册请求"""
+    """注册请求
+
+    安全约束：不接收 role 字段，注册固定 student 角色；
+    仅 SUPER_ADMIN_USERNAME 匹配的用户名会自动获得 admin（超管初始化）。
+    """
     username: str
     password: str
     email: str
-    role: UserRole = UserRole.STUDENT
     org_name: str
 
 
@@ -61,15 +65,17 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/register", response_model=Token)
-async def register(request: RegisterRequest, response: Response):
+async def register(request: RegisterRequest, response: Response, _: None = Depends(auth_rate_limit_dep)):
     """
     用户注册
 
     - **username**: 用户名（唯一）
     - **password**: 密码
     - **email**: 邮箱
-    - **role**: 角色（student/teacher/admin）
+    - **org_name**: 组织名
 
+    注册角色固定为 student（不接受客户端传入角色，防提权）；
+    用户名匹配 SUPER_ADMIN_USERNAME 时自动获得 admin（超管初始化）。
     注册成功后自动设置 httpOnly cookie，无需前端手动管理 token
     """
 
@@ -77,7 +83,6 @@ async def register(request: RegisterRequest, response: Response):
         username=request.username,
         password=request.password,
         email=request.email,
-        role=request.role,
         org_name=request.org_name,
     )
 
@@ -87,7 +92,7 @@ async def register(request: RegisterRequest, response: Response):
 
 
 @router.post("/login", response_model=Token)
-async def login(request: LoginRequest, response: Response):
+async def login(request: LoginRequest, response: Response, _: None = Depends(auth_rate_limit_dep)):
     """
     用户登录
 

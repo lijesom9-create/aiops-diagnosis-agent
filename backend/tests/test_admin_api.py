@@ -26,13 +26,28 @@ def client():
 
 
 def _register(client, role="student", username=None):
-    """注册用户并返回 token"""
-    username = username or f"u_{uuid.uuid4().hex[:8]}"
+    """注册用户并返回 token
+
+    role="admin" 时生成唯一用户名并临时将其设为 SUPER_ADMIN_USERNAME
+    （用户名匹配自动获得 admin），注册后还原配置，避免污染其他测试。
+    """
+    if role == "admin" and username is None:
+        username = f"super_{uuid.uuid4().hex[:8]}"
+        from app.core.config import settings
+        prev = settings.SUPER_ADMIN_USERNAME
+        settings.SUPER_ADMIN_USERNAME = username
+        try:
+            return _do_register(client, username)
+        finally:
+            settings.SUPER_ADMIN_USERNAME = prev
+    return _do_register(client, username or f"u_{uuid.uuid4().hex[:8]}")
+
+
+def _do_register(client, username: str) -> str:
     resp = client.post("/api/auth/register", json={
         "username": username,
         "password": "test123456",
         "email": f"{username}@test.com",
-        "role": role,
         "org_name": f"org_{uuid.uuid4().hex[:8]}",
     })
     assert resp.status_code == 200, resp.text

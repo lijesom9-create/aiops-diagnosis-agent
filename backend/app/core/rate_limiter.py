@@ -101,19 +101,21 @@ class RateLimiter:
         now = _time.time()
         cutoff = now - self.window
 
+        # 先统计窗口内请求数，仅在未超限时才写入当前请求——
+        # 被拒绝的请求不计入窗口，避免持续重试导致"越刷锁越久"
         pipe = self._redis.pipeline()
-        # 1. 移除过期成员
         pipe.zremrangebyscore(key, 0, cutoff)
-        # 2. 统计当前窗口内请求数
         pipe.zcard(key)
-        # 3. 如果未超限，添加当前请求
-        pipe.zadd(key, {str(now): now})
-        # 4. 设置 key 过期时间（避免内存泄漏）
         pipe.expire(key, self.window + 10)
         results = pipe.execute()
 
         current_count = results[1]
-        return current_count < self.max_requests
+        if current_count >= self.max_requests:
+            return False
+
+        self._redis.zadd(key, {str(now): now})
+        self._redis.expire(key, self.window + 10)
+        return True
 
 
 # ========== 全局限流器实例 ==========
@@ -161,5 +163,56 @@ async def rate_limit_dep(request: Request):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"请求过于频繁，请 {_WINDOW} 秒后重试",
+            headers={"Retry-After": str(_WINDOW)},
+        )
+
+
+# ========== 认证端点限流（按 IP，防暴力破解） ==========
+
+_auth_rate_limiter: Optional[RateLimiter] = None
+
+
+def get_auth_rate_limiter() -> RateLimiter:
+    """获取认证端点限流器单例（独立于聊天限流，阈值更严）"""
+    global _auth_rate_limiter
+    if _auth_rate_limiter is None:
+        _auth_rate_limiter = RateLimiter(
+            max_requests=getattr(settings, "AUTH_RATE_LIMIT_PER_MIN", 20),
+            window=_WINDOW,
+        )
+    return _auth_rate_limiter
+
+
+def reset_auth_rate_limiter():
+    """重置认证限流器单例（配置变更后用，测试场景）"""
+    global _auth_rate_limiter
+    _auth_rate_limiter = None
+
+
+def _client_ip(request: Request) -> str:
+    """提取客户端 IP（优先 X-Forwarded-For 首跳，适配反代部署）"""
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+async def auth_rate_limit_dep(request: Request):
+    """FastAPI 依赖：按客户端 IP 限流
+
+    用于登录/注册等未认证端点——rate_limit_dep 按 user_id 限流，
+    对未认证请求直接放行，无法防暴力破解；本依赖按 IP 计数。
+
+    用法：
+        @router.post("/login")
+        async def login(..., _: None = Depends(auth_rate_limit_dep)):
+    """
+    ip = _client_ip(request)
+    limiter = get_auth_rate_limiter()
+    if not limiter.check(f"ip:{ip}"):
+        logger.warning(f"认证端点限流触发: ip={ip}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"尝试过于频繁，请 {_WINDOW} 秒后重试",
             headers={"Retry-After": str(_WINDOW)},
         )

@@ -31,11 +31,16 @@ class UserRole(str, Enum):
 
 
 class UserCreate(BaseModel):
-    """用户注册请求"""
+    """用户注册请求
+
+    安全约束：不接收 role 字段。注册角色只能有两种来源：
+    1. 默认 student
+    2. 用户名匹配 SUPER_ADMIN_USERNAME → admin（用于全新部署初始化超管）
+    后续提权走已有 admin 的 /api/admin/users/{id}/role 或 promote_admin.py 脚本。
+    """
     username: str = Field(..., min_length=2, max_length=50)
     password: str = Field(..., min_length=6, max_length=128)
     email: str
-    role: UserRole = UserRole.STUDENT
     org_name: str = Field(..., min_length=1, max_length=100)
 
 
@@ -223,9 +228,10 @@ async def register_user(user_data: UserCreate) -> Token:
     # 创建组织
     org_id = await db.create_org(name=user_data.org_name, owner_id=user_id)
 
-    # 角色判定：若用户名匹配超管配置，强制赋予 admin 角色（用于全新部署初始化）
-    # 仅在注册时生效；已存在用户的提权请用 backend/promote_admin.py 脚本
-    effective_role = user_data.role.value if isinstance(user_data.role, Enum) else user_data.role
+    # 角色判定：注册角色不信任客户端输入，固定 student；
+    # 仅当用户名匹配超管配置时强制赋予 admin 角色（用于全新部署初始化）。
+    # 已存在用户的提权请用 backend/promote_admin.py 脚本或已有 admin 的角色管理 API
+    effective_role = UserRole.STUDENT.value
     if settings.SUPER_ADMIN_USERNAME and user_data.username == settings.SUPER_ADMIN_USERNAME:
         effective_role = UserRole.ADMIN.value
         logger.info(f"用户名匹配 SUPER_ADMIN_USERNAME，自动赋予 admin 角色: {user_data.username}")

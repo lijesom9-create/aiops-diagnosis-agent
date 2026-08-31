@@ -136,6 +136,8 @@ class Settings(BaseSettings):
     RATE_LIMIT_CAPACITY: int = 5
     # API 请求限流：每用户每分钟最大请求数（聊天接口）
     RATE_LIMIT_RPM: int = 30
+    # 认证端点限流：每 IP 每分钟最大请求数（登录/注册，防暴力破解）
+    AUTH_RATE_LIMIT_PER_MIN: int = 20
 
     # ========== LLM 请求超时（生产化保护）==========
     # LLM 单次请求超时（秒）：覆盖 Agent 主调用、反思、查询重写等所有 ChatOpenAI 调用
@@ -196,6 +198,41 @@ class Settings(BaseSettings):
     FEISHU_APP_ID: Optional[str] = None  # 自建应用 app_id（cli_xxx）
     FEISHU_APP_SECRET: Optional[str] = None  # 自建应用 app_secret
     FEISHU_ALERT_OPEN_ID: Optional[str] = None  # 接收告警的用户 open_id
+    # 告警 webhook 共享密钥：Alertmanager 通过 http_config.authorization 携带 Bearer 头。
+    # 未配置时 /api/alerts/webhook 拒绝处理（503），防伪造告警
+    ALERT_WEBHOOK_SECRET: Optional[str] = None
+    # 告警自动诊断：webhook 收到 firing 告警后自动调用 Agent 诊断并推送飞书
+    ALERT_AUTO_DIAGNOSIS_ENABLED: bool = True
+    # 同一事故重诊最小间隔（秒），兼作告警冷却窗口
+    ALERT_DIAG_COOLDOWN_SECONDS: int = 900
+    # ==== 事故生命周期（初诊 → 重诊 → 恢复摘要）====
+    # 每个 incident 重诊次数上限（含升级/心跳触发），成本硬护栏
+    DIAG_MAX_REDIAG_PER_INCIDENT: int = 3
+    # 触发诊断的最低告警级别（低于此级别只推告警卡片、不进 Agent）
+    ALERT_MIN_SEVERITY: str = "warning"
+    # 抖动复用窗口：fingerprint resolved 后 N 秒内复燃 → 重新打开原事故（不重新初诊）
+    INCIDENT_FLAPPING_WINDOW: int = 1800
+    # 恢复摘要安静期：全部 fingerprint resolved 后等 N 秒确认不复燃再闭案生成摘要
+    INCIDENT_RESOLVE_QUIET_PERIOD: int = 600
+    # 新告警归入活跃事故的服务关联窗口（秒）
+    INCIDENT_SERVICE_JOIN_WINDOW: int = 1800
+    # 告警 → 服务名静态映射（JSON 字符串，如 '{"node-exporter": "host-infra"}'），
+    # 优先级高于 labels 自动提取；用于告警规则无 service 标签的环境
+    ALERT_SERVICE_MAP: Optional[str] = None
+    # ==== 执行层可靠性 ====
+    # 诊断任务表：每任务最大尝试次数（超过标 dead）
+    DIAG_TASK_MAX_ATTEMPTS: int = 3
+    # 失败重试退避：回队后 N 秒内不再被认领（防 drain 循环瞬时烧光重试次数）
+    DIAG_TASK_RETRY_BACKOFF_SECONDS: int = 60
+    # running 任务超过 N 秒未完成视为处理实例已死，回队列（僵尸回收窗口）
+    DIAG_TASK_STALE_SECONDS: int = 900
+    # worker 空闲轮询间隔（秒）；入队会主动唤醒，此值只影响兜底延迟
+    DIAG_TASK_POLL_SECONDS: float = 5.0
+    # 诊断服务的组织 ID：自动诊断检索时以此 org 过滤（公共 + 该组织文档可见），
+    # 解决"自动诊断看不到团队私有运维文档"问题
+    DIAGNOSIS_ORG_ID: str = ""
+    # 会话 checkpoint 后端：sqlite（单机开发）/ mongodb（多副本共享，生产推荐）
+    CHECKPOINT_BACKEND: str = "sqlite"
 
     # 意图分类器配置
     INTENT_CLASSIFIER_THRESHOLD: float = 0.7

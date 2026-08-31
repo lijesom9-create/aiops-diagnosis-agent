@@ -31,13 +31,28 @@ def client():
 
 
 def _register(client, role="student", username=None):
-    """注册用户并返回 token"""
-    username = username or f"u_{uuid.uuid4().hex[:8]}"
+    """注册用户并返回 token
+
+    role="admin" 时生成唯一用户名并临时将其设为 SUPER_ADMIN_USERNAME
+    （用户名匹配自动获得 admin），注册后还原配置，避免污染其他测试。
+    """
+    if role == "admin" and username is None:
+        username = f"super_{uuid.uuid4().hex[:8]}"
+        from app.core.config import settings
+        prev = settings.SUPER_ADMIN_USERNAME
+        settings.SUPER_ADMIN_USERNAME = username
+        try:
+            return _do_register(client, username)
+        finally:
+            settings.SUPER_ADMIN_USERNAME = prev
+    return _do_register(client, username or f"u_{uuid.uuid4().hex[:8]}")
+
+
+def _do_register(client, username: str) -> str:
     resp = client.post("/api/auth/register", json={
         "username": username,
         "password": "test123456",
         "email": f"{username}@test.com",
-        "role": role,
         "org_name": f"org_{uuid.uuid4().hex[:8]}",
     })
     assert resp.status_code == 200, resp.text
@@ -63,7 +78,11 @@ class TestWriteOpsRequireAdmin:
         assert resp.status_code == 403, resp.text
 
     def test_teacher_upload_forbidden(self, client):
-        """教师上传文档 → 403（教师无管理后台权限）"""
+        """教师上传文档 → 403（教师无管理后台权限）
+
+        注册角色固定 student（不可自选），教师账号只能由已有 admin 通过
+        角色管理 API 授予；此处验证非 admin 注册用户一律 403。
+        """
         token = _register(client, role="teacher")
         resp = client.post(
             "/api/documents/upload",
@@ -141,7 +160,7 @@ class TestSuperAdminBootstrap:
         assert me.json()["role"] == "admin"
 
     def test_non_super_admin_username_stays_student(self, client, monkeypatch):
-        """用户名不匹配 SUPER_ADMIN_USERNAME → 保持申请时的角色"""
+        """用户名不匹配 SUPER_ADMIN_USERNAME → 固定 student（注册角色不可自选）"""
         from app.core.config import settings
         monkeypatch.setattr(settings, "SUPER_ADMIN_USERNAME", "someone_else")
 
@@ -149,6 +168,49 @@ class TestSuperAdminBootstrap:
         me = client.get("/api/auth/me", headers=auth_header(token))
         assert me.status_code == 200
         assert me.json()["role"] == "student"
+
+
+class TestRegistrationNoPrivilegeEscalation:
+    """回归测试：注册接口不接受客户端角色（防提权）"""
+
+    def test_register_with_role_admin_stays_student(self, client):
+        """注册请求携带 role=admin → 实际仍是 student，且无法访问 admin API"""
+        username = f"u_{uuid.uuid4().hex[:8]}"
+        resp = client.post("/api/auth/register", json={
+            "username": username,
+            "password": "test123456",
+            "email": f"{username}@test.com",
+            "role": "admin",  # 恶意客户端尝试自选角色
+            "org_name": f"org_{uuid.uuid4().hex[:8]}",
+        })
+        assert resp.status_code == 200, resp.text
+        token = resp.json()["access_token"]
+
+        me = client.get("/api/auth/me", headers=auth_header(token))
+        assert me.status_code == 200
+        assert me.json()["role"] == "student"
+
+        # admin API 必须拒绝
+        stats = client.get("/api/admin/stats", headers=auth_header(token))
+        assert stats.status_code == 403, stats.text
+
+    def test_register_with_role_admin_cannot_delete_documents(self, client):
+        """自选 role=admin 的注册用户删除文档 → 403"""
+        username = f"u_{uuid.uuid4().hex[:8]}"
+        resp = client.post("/api/auth/register", json={
+            "username": username,
+            "password": "test123456",
+            "email": f"{username}@test.com",
+            "role": "admin",
+            "org_name": f"org_{uuid.uuid4().hex[:8]}",
+        })
+        token = resp.json()["access_token"]
+
+        resp = client.delete(
+            "/api/documents/doc_nonexistent",
+            headers=auth_header(token),
+        )
+        assert resp.status_code == 403, resp.text
 
 
 class TestRetryApi:

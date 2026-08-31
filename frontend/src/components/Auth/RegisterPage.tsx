@@ -13,7 +13,6 @@ export default function RegisterPage() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [role, setRole] = useState('student');
   const { register, isLoading, error, clearError } = useAuthStore();
   const navigate = useNavigate();
   const [localError, setLocalError] = useState('');
@@ -34,7 +33,7 @@ export default function RegisterPage() {
     }
 
     try {
-      await register({ username, password, email, role, org_name: `个人_${username}` });
+      await register({ username, password, email, org_name: `个人_${username}` });
       navigate('/');
     } catch {
       // 错误已在 store 中处理
@@ -88,37 +87,6 @@ export default function RegisterPage() {
               required
               disabled={isLoading}
             />
-          </div>
-
-          {/* 角色选择 */}
-          <div>
-            <label className="block text-[13px] font-medium text-zinc-700 mb-1.5">
-              角色
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setRole('student')}
-                className={`px-3 py-2 rounded-lg text-[13px] font-medium border transition-colors ${
-                  role === 'student'
-                    ? 'border-zinc-900 bg-zinc-900 text-white'
-                    : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'
-                }`}
-              >
-                学生
-              </button>
-              <button
-                type="button"
-                onClick={() => setRole('teacher')}
-                className={`px-3 py-2 rounded-lg text-[13px] font-medium border transition-colors ${
-                  role === 'teacher'
-                    ? 'border-zinc-900 bg-zinc-900 text-white'
-                    : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'
-                }`}
-              >
-                教师
-              </button>
-            </div>
           </div>
 
           <div>

@@ -64,15 +64,16 @@ jobs:
           npm run build
 
   # ──────────────────────────────────────────────
-  # Backend: install core deps, verify critical
-  # tests. Not blocking if tests fail — heavy ML
-  # deps (chromadb, sentence-transformers) aren't
-  # installed here to avoid dependency conflicts.
+  # Backend: install core deps, run critical tests.
+  # Tests are blocking — failure fails the pipeline
+  # and blocks image publish (docker job needs this
+  # job). Heavy ML deps aren't installed here; the
+  # selected suites cover auth/permission/documents
+  # without them.
   # ──────────────────────────────────────────────
   backend:
     name: Backend Tests
     runs-on: ubuntu-latest
-    continue-on-error: true
     services:
       mongodb:
         image: mongo:7
@@ -111,7 +112,8 @@ jobs:
                   tests/test_document_upload.py::TestDocumentParser \
                   tests/test_document_upload.py::TestDocumentChunker \
                   tests/test_admin_api.py \
-                  tests/test_feishu.py \
+                  tests/test_admin_permission.py \
+                  tests/test_security_hardening.py \
                   -v --tb=short --no-header
         timeout-minutes: 5
         env:
@@ -127,7 +129,7 @@ jobs:
   docker:
     name: Docker Build & Push
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-    needs: [frontend, admin-frontend]
+    needs: [frontend, admin-frontend, backend]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -30,6 +30,13 @@ os.environ.setdefault("USE_REACT", "false")
 os.environ.setdefault("RERANKER_ENABLED", "false")
 os.environ.setdefault("MULTIMODAL_ENABLED", "false")
 os.environ.setdefault("RATE_LIMIT_RPM", "3")
+# 注册角色不信任客户端输入；测试里 admin 统一通过该超管用户名注册获得
+os.environ.setdefault("SUPER_ADMIN_USERNAME", "admin_root")
+# 认证端点（登录/注册）按 IP 限流，测试内大量注册会触发，测试环境放大阈值
+os.environ.setdefault("AUTH_RATE_LIMIT_PER_MIN", "100000")
+# 禁用 Redis（优先级高于 .env）：避免每次限流/缓存操作先探测不存在的 Redis，
+# 探测耗时会让时间敏感的窗口过期测试 flaky
+os.environ.setdefault("REDIS_URL", "")
 
 import asyncio
 import pytest

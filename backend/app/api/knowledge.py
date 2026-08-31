@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from loguru import logger
 
-from ..core.auth import get_current_user, UserResponse
+from ..core.auth import require_admin, UserResponse
 
 
 router = APIRouter(prefix="/api/knowledge", tags=["知识库管理"])
@@ -72,10 +72,10 @@ class KnowledgeStatsResponse(BaseModel):
 
 @router.get("/stats", response_model=KnowledgeStatsResponse)
 async def get_knowledge_stats(
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(require_admin),
 ):
     """
-    获取知识库统计信息
+    获取知识库统计信息（仅管理员）
 
     返回：
     - 各集合记录数（child / parent / clip_image）
@@ -135,12 +135,13 @@ async def get_knowledge_stats(
 @router.get("/documents/{document_id}")
 async def get_document_chunks(
     document_id: str,
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(require_admin),
 ):
     """
-    查询指定文档的所有知识块
+    查询指定文档的所有知识块（仅管理员）
 
     返回该文档在向量库中的所有 chunk（父子块合并）。
+    chunk 内容与 metadata 可能含跨组织数据，不允许普通用户访问。
     """
     try:
         store = _get_store()
@@ -178,13 +179,13 @@ async def get_document_chunks(
 @router.delete("/documents/{document_id}")
 async def delete_document_from_knowledge(
     document_id: str,
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: UserResponse = Depends(require_admin),
 ):
     """
-    从知识库删除文档的所有向量数据
+    从知识库删除文档的所有向量数据（仅管理员）
 
     仅删除向量库中的数据，不删除 DB 文档记录和图片文件。
-    用于向量数据修复场景。
+    用于向量数据修复场景。与 /api/documents/{id} 删除端点的 admin 校验保持一致。
     """
     try:
         store = _get_store()
