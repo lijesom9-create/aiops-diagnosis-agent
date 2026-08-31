@@ -23,10 +23,10 @@ sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
 from loguru import logger
+
 from app.knowledge.unified_store import UnifiedKnowledgeStore
 from app.retrieval.embeddings import create_embedding_model
 from app.retrieval.reranker import CrossEncoderReranker
-
 
 QUERIES = [
     "什么是智能体？它有哪些基本要素？",

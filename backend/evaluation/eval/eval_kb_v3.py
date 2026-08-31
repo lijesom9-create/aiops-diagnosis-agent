@@ -29,10 +29,10 @@ from loguru import logger
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
+from app.core.config import settings
 from app.knowledge.unified_store import UnifiedKnowledgeStore
 from app.retrieval.embeddings import create_embedding_model
 from app.retrieval.reranker import CrossEncoderReranker
-from app.core.config import settings
 
 DATA_DIR = ROOT / "evaluation" / "data"
 RESULTS_DIR = ROOT / "evaluation" / "results"

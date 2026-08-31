@@ -209,9 +209,9 @@ async def main():
     logger.info(f"加载 {len(scenarios)} 个诊断场景")
 
     # 初始化知识库 + Agent + MCP 监控工具（参考 verify_agent_diagnosis.py）
-    from app.shared_services import init_knowledge_store
-    from app.langgraph_agent.agent import LangGraphAgent
     from app.core.config import settings
+    from app.langgraph_agent.agent import LangGraphAgent
+    from app.shared_services import init_knowledge_store
 
     store = init_knowledge_store()
     agent = LangGraphAgent(

@@ -9,12 +9,11 @@
     $env:PYTHONPATH = "."; .\venv\Scripts\python.exe evaluation\perf\e2e_qps_test.py
 """
 
-import os
-import sys
-import time
 import statistics
-import requests
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
 
 API_BASE = "http://localhost:8000"
 
@@ -129,7 +128,7 @@ def main():
 
     # 场景3：串行基准（5 个请求串行，对比并发收益）
     print(f"\n{'='*60}")
-    print(f"场景3: 串行基准（5 个请求）")
+    print("场景3: 串行基准（5 个请求）")
     print(f"{'='*60}")
     serial_times = []
     t_start = time.perf_counter()

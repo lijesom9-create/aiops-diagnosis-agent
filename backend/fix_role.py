@@ -1,5 +1,7 @@
 import asyncio
+
 from app.core.database import db
+
 
 async def main():
     await db.connect()

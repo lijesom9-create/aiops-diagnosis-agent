@@ -42,7 +42,7 @@ def check(name: str, condition: bool, detail: str = ""):
 
 
 # 构造 Agent 实例（mock LLM，不真实调用）
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 
 def make_agent(max_context_tokens=32000, reserved_for_output=4000):

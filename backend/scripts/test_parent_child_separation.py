@@ -3,14 +3,14 @@
 验证 P0-1/P0-2/P1 修复后基本功能正常
 """
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from app.knowledge.unified_store import KnowledgeItem, UnifiedKnowledgeStore
 from app.retrieval.embeddings import TFIDFModel
-from app.knowledge.unified_store import UnifiedKnowledgeStore, KnowledgeItem
 
 
 def main():

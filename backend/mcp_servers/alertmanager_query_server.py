@@ -29,7 +29,6 @@ Alertmanager 告警查询 MCP Server（查真实活跃告警）
 import json
 import os
 from datetime import datetime
-from typing import Optional
 
 import requests
 from mcp.server.fastmcp import FastMCP

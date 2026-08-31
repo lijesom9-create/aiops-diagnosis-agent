@@ -19,7 +19,7 @@
 import os
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -44,8 +44,7 @@ def check(name: str, condition: bool, detail: str = ""):
         print(f"  [FAIL] {name} {detail}")
 
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
-
+from langchain_core.messages import AIMessage, HumanMessage
 
 # ============================================================
 # 1. set_conversation_context 正确提取对话文本

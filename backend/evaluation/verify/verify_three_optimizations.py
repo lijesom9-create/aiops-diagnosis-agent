@@ -11,7 +11,6 @@
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 # 避免模型联网检查
@@ -152,11 +151,14 @@ print("  ✓ 磁盘 Embedding 缓存增量写入验证通过")
 print("\n【验证 3】text_in_image 纳入分块（图片型 PDF 文字 → 父块/子块）")
 print("-" * 70)
 
-from app.document.parent_child_chunker import ParentChildChunker
 from app.document.models import (
-    ElementType, StructuredDocument, DocumentElement, DocumentMetadata,
+    DocumentElement,
+    DocumentMetadata,
     ElementMetadata,
+    ElementType,
+    StructuredDocument,
 )
+from app.document.parent_child_chunker import ParentChildChunker
 
 chunker = ParentChildChunker(parent_max_chars=1500, child_max_chars=300)
 
@@ -204,33 +206,33 @@ print(f"  分块结果: {len(parent_chunks)} 父块, {len(child_chunks)} 子块 
 # 验证父块包含 ocr_text
 assert len(parent_chunks) >= 1, "应至少有 1 个父块"
 parent_text = parent_chunks[0].text
-print(f"\n  父块文本 (前 300 字符):")
-print(f"  ---")
+print("\n  父块文本 (前 300 字符):")
+print("  ---")
 print(f"  {parent_text[:300]}")
-print(f"  ---")
+print("  ---")
 
 # 关键断言：父块必须包含 text_in_image 中的代码内容
 assert "@app.get" in parent_text, "父块应包含 text_in_image 的代码内容"
 assert "read_item" in parent_text, "父块应包含函数名 read_item"
 assert "[图片文字]" in parent_text, "父块应有 [图片文字] 前缀标记"
-print(f"\n  ✓ 父块包含 text_in_image 内容: '@app.get' / 'read_item' / '[图片文字]'")
+print("\n  ✓ 父块包含 text_in_image 内容: '@app.get' / 'read_item' / '[图片文字]'")
 
 # 验证图片子块包含 ocr_text
 assert len(image_children) >= 1, "应至少有 1 个图片子块"
 img_child_text = image_children[0].text
-print(f"\n  图片子块文本 (前 300 字符):")
-print(f"  ---")
+print("\n  图片子块文本 (前 300 字符):")
+print("  ---")
 print(f"  {img_child_text[:300]}")
-print(f"  ---")
+print("  ---")
 
 assert "@app.get" in img_child_text, "图片子块应包含 text_in_image 代码内容"
 assert "图中文字" in img_child_text, "图片子块应有 '图中文字' 前缀"
 assert "FastAPI" in img_child_text, "图片子块应包含关键词"
-print(f"\n  ✓ 图片子块包含 text_in_image 内容: '@app.get' / '图中文字' / 关键词")
+print("\n  ✓ 图片子块包含 text_in_image 内容: '@app.get' / '图中文字' / 关键词")
 
 # 验证装饰图过滤不会误伤内容型图片（image_type=code 应保留）
 assert len(image_children) == 1, f"code 类型图片应保留（不视为装饰图），实际 {len(image_children)} 个"
-print(f"  ✓ 内容型图片 (image_type=code) 未被装饰图过滤误伤")
+print("  ✓ 内容型图片 (image_type=code) 未被装饰图过滤误伤")
 
 print("\n  ✓ text_in_image 纳入分块验证通过")
 

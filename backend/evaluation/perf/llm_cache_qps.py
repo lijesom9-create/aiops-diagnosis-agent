@@ -1,9 +1,9 @@
 """LLM 缓存命中下的并发 QPS 测试"""
-import sys
-import time
 import statistics
-import requests
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
 
 API_BASE = "http://localhost:8000"
 

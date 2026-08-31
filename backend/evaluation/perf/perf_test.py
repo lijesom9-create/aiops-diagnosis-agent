@@ -14,9 +14,9 @@ RAG 性能优化实测脚本
 """
 
 import os
+import statistics
 import sys
 import time
-import statistics
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -25,13 +25,13 @@ os.chdir(ROOT)
 
 # 降低日志级别，避免输出干扰测试结果
 from loguru import logger
+
 logger.remove()
 logger.add(sys.stderr, level="WARNING")
 
+from app.knowledge.unified_store import UnifiedKnowledgeStore
 from app.retrieval.embeddings import create_embedding_model
 from app.retrieval.reranker import CrossEncoderReranker
-from app.knowledge.unified_store import UnifiedKnowledgeStore
-
 
 # ========== 测试用例 ==========
 

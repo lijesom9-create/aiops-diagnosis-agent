@@ -14,13 +14,15 @@
 
 注意：此测试会真实调用 LLM 并消耗 API 额度。
 """
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import uuid
+
 from fastapi.testclient import TestClient
+
 from main import app
 
 
@@ -39,7 +41,7 @@ def main():
         assert resp.status_code == 200, resp.text
         token = resp.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
-        print(f"  注册成功")
+        print("  注册成功")
 
         # 2. 创建会话
         print("[2/5] 创建会话")

@@ -12,19 +12,17 @@ RAG 性能优化验证脚本
 - rerank 候选数（动态裁剪效果）
 """
 import asyncio
-import time
 import sys
-import os
+import time
 from pathlib import Path
 
 # 添加 backend 到 path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from app.core.config import settings
 from app.knowledge.unified_store import UnifiedKnowledgeStore
 from app.retrieval.reranker import CrossEncoderReranker
 from app.shared_services import get_embedding_model, set_knowledge_store
-from app.core.config import settings
-
 
 # 测试 query（覆盖 Agent/FastAPI/RAG 三大领域）
 TEST_QUERIES = [
@@ -76,7 +74,7 @@ def benchmark_first_search(store: UnifiedKnowledgeStore):
 
     # 统计
     latencies = [r["elapsed_ms"] for r in results]
-    print(f"\n汇总：")
+    print("\n汇总：")
     print(f"  平均延迟: {sum(latencies)/len(latencies):.0f}ms")
     print(f"  最小延迟: {min(latencies):.0f}ms")
     print(f"  最大延迟: {max(latencies):.0f}ms")
@@ -106,7 +104,7 @@ def benchmark_cache_hit(store: UnifiedKnowledgeStore):
         print(f"[Q{i}] {elapsed*1000:.0f}ms | results={len(result)}")
         results.append(elapsed * 1000)
 
-    print(f"\n汇总：")
+    print("\n汇总：")
     print(f"  平均延迟: {sum(results)/len(results):.0f}ms")
     return results
 
@@ -201,19 +199,19 @@ async def main():
     first_latencies = [r["elapsed_ms"] for r in first_results]
     cache_latencies = cache_results
 
-    print(f"\n首次检索（无缓存）:")
+    print("\n首次检索（无缓存）:")
     print(f"  平均: {sum(first_latencies)/len(first_latencies):.0f}ms")
     print(f"  最小: {min(first_latencies):.0f}ms")
     print(f"  最大: {max(first_latencies):.0f}ms")
 
-    print(f"\n缓存命中:")
+    print("\n缓存命中:")
     print(f"  平均: {sum(cache_latencies)/len(cache_latencies):.0f}ms")
     print(f"  加速比: {sum(first_latencies)/sum(cache_latencies):.1f}x")
 
-    print(f"\n优化项验证:")
-    print(f"  ✓ ONNX 加速: reranker 使用 ONNX Runtime（首次导出后缓存到磁盘）")
-    print(f"  ✓ 缓存失效: 文档增删改时自动清空 query/rewrite 缓存")
-    print(f"  ✓ 动态 rerank: 清晰查询裁剪候选，模糊查询保留全部")
+    print("\n优化项验证:")
+    print("  ✓ ONNX 加速: reranker 使用 ONNX Runtime（首次导出后缓存到磁盘）")
+    print("  ✓ 缓存失效: 文档增删改时自动清空 query/rewrite 缓存")
+    print("  ✓ 动态 rerank: 清晰查询裁剪候选，模糊查询保留全部")
 
 
 if __name__ == "__main__":

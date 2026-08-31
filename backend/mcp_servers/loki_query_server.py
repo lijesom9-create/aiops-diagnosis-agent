@@ -23,7 +23,6 @@ Loki 日志查询 MCP Server（查真实容器日志）
 """
 import json
 import os
-import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -69,7 +68,7 @@ def _query_loki_range(logql: str, minutes: int = 10, limit: int = 50) -> dict:
         for stream in result:
             labels = stream.get("stream", {})
             container = labels.get("container", "")
-            filename = labels.get("filename", "")
+            _filename = labels.get("filename", "")
             for ts, line in stream.get("values", []):
                 # ts 是纳秒级字符串时间戳，转为可读格式
                 try:

@@ -32,8 +32,10 @@ print("\n【测试 1】search_knowledge 返回带编号文本 + 写入 buffer")
 print("-" * 70)
 
 from app.langgraph_agent.tools import (
-    search_knowledge, set_knowledge_store, _tool_cache,
-    pop_retrieval_buffer, _retrieval_buffer,
+    _tool_cache,
+    pop_retrieval_buffer,
+    search_knowledge,
+    set_knowledge_store,
 )
 
 # 清空缓存和 buffer
@@ -77,16 +79,16 @@ text = search_knowledge.invoke({"query": "FastAPI 路由", "limit": 5})
 assert isinstance(text, str), f"应返回字符串，实际 {type(text)}"
 print(f"  返回类型: {type(text).__name__}")
 print(f"  文本长度: {len(text)} 字符")
-print(f"\n  文本前 200 字符:")
-print(f"  ---")
+print("\n  文本前 200 字符:")
+print("  ---")
 print(f"  {text[:200]}")
-print(f"  ---")
+print("  ---")
 
 # 验证文本带 [1][2] 编号
 assert "[1]" in text, "文本应包含 [1] 编号"
 assert "[2]" in text, "文本应包含 [2] 编号"
 assert "请在回答中使用 [1]、[2] 等编号引用上述来源" in text, "文本应提示 LLM 使用引用编号"
-print(f"\n  ✓ 文本带 [1][2] 编号 + 引用提示")
+print("\n  ✓ 文本带 [1][2] 编号 + 引用提示")
 
 # 验证 buffer 已写入结构化数据
 buffered = pop_retrieval_buffer()
@@ -100,11 +102,11 @@ assert buffered[0]["heading_path"] == "第一章 > 1.1 FastAPI 简介"
 assert buffered[0]["score"] == 0.89
 assert buffered[0]["source"] == "knowledge_base"
 assert buffered[1]["image_path"] == "images/route_demo.png", "第二条应有 image_path"
-print(f"  ✓ 结构正确: index/doc_id/title/heading_path/score/source/image_path")
+print("  ✓ 结构正确: index/doc_id/title/heading_path/score/source/image_path")
 
 # 验证 buffer 读取后已清空
 assert len(pop_retrieval_buffer()) == 0, "buffer 读取后应清空"
-print(f"  ✓ buffer 读取后已清空")
+print("  ✓ buffer 读取后已清空")
 
 # 验证空结果
 _tool_cache.clear()
@@ -115,7 +117,7 @@ set_knowledge_store(mock_store_empty)
 empty_text = search_knowledge.invoke({"query": "不存在的内容", "limit": 5})
 assert empty_text == "未找到相关知识"
 assert len(pop_retrieval_buffer()) == 0, "空结果不应写入 buffer"
-print(f"  ✓ 空结果不写入 buffer")
+print("  ✓ 空结果不写入 buffer")
 
 print("\n  ✓ 测试 1 通过")
 
@@ -165,7 +167,7 @@ docs_with_dupes = [
 merged = LangGraphAgent._merge_retrieved_docs(docs_with_dupes)
 assert len(merged) == 3, f"去重后应为 3 条，实际 {len(merged)}"
 print(f"  原始 {len(docs_with_dupes)} 条 -> 去重后 {len(merged)} 条")
-print(f"  ✓ 去重正确")
+print("  ✓ 去重正确")
 
 
 # ============================================================
@@ -206,12 +208,12 @@ assert img_citations[0]["image_path"] == "img1.png"
 print(f"\n  ✓ 去重: {len(raw_docs)} -> {len(citations)} 条")
 print(f"  ✓ 排序: 按分数降序 ({[c['score'] for c in citations]})")
 print(f"  ✓ 编号: 重新从 1 开始 ({[c['index'] for c in citations]})")
-print(f"  ✓ 精简: 不含 content 字段")
+print("  ✓ 精简: 不含 content 字段")
 print(f"  ✓ 图片引用: {len(img_citations)} 条带 image_path")
 
 # 测试空输入
 assert LangGraphAgent._build_citations([]) == []
-print(f"  ✓ 空输入返回空列表")
+print("  ✓ 空输入返回空列表")
 
 print("\n  ✓ 测试 4 通过")
 
@@ -259,7 +261,7 @@ print(f"  第 2 轮工具调用后: retrieved_docs={len(retrieved_after_round2)}
 
 # 生成最终 citations
 final_citations = LangGraphAgent._build_citations(retrieved_after_round2)
-print(f"\n  最终 citations:")
+print("\n  最终 citations:")
 for c in final_citations:
     print(f"    [{c['index']}] score={c['score']:.2f} | {c['title']} | {c['heading_path']}")
 

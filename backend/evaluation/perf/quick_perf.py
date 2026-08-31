@@ -11,11 +11,12 @@
     python evaluation/perf/quick_perf.py
 """
 
-import time
-import statistics
 import concurrent.futures
-import requests
+import statistics
+import time
 from collections import Counter
+
+import requests
 
 BASE_URL = "http://localhost:8000"
 

@@ -30,11 +30,10 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
+from app.core.config import settings
 from app.knowledge.unified_store import UnifiedKnowledgeStore
 from app.retrieval.embeddings import create_embedding_model
 from app.retrieval.reranker import CrossEncoderReranker
-from app.core.config import settings
-
 
 # ========== 评估问题集（覆盖当前知识库） ==========
 
@@ -116,7 +115,7 @@ class CurrentKBEvaluator:
             try:
                 reranker = CrossEncoderReranker(model_name="BAAI/bge-reranker-base")
                 reranker._load_model()
-                logger.info(f"Reranker 加载完成")
+                logger.info("Reranker 加载完成")
             except Exception as e:
                 logger.warning(f"Reranker 加载失败，将禁用: {e}")
 
@@ -184,7 +183,6 @@ class CurrentKBEvaluator:
 
     async def evaluate_generation(self) -> Dict[str, Any]:
         """生成评估：使用 LLM 基于检索结果生成回答，再评估"""
-        import asyncio
         from app.core.ai_service import ai_service
 
         logger.info("开始生成评估（自动指标，无需 LLM Judge）")

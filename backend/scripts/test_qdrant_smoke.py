@@ -4,14 +4,14 @@ Qdrant 后端冒烟测试
 验证 QdrantVectorStore 与 ChromaDBVectorStore 接口一致性，能完成基本 CRUD + 搜索。
 """
 import os
+import shutil
 import sys
 import tempfile
-import shutil
 
 # 添加 backend 到 path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.retrieval.embeddings import TFIDFModel, create_embedding_model
+from app.retrieval.embeddings import TFIDFModel
 from app.retrieval.qdrant_store import QdrantVectorStore
 
 
@@ -62,7 +62,7 @@ def main():
             top_k=3,
             filters={"chunk_type": "child"},
         )
-        print(f"\nsearch 结果 (query='装饰器怎么用', filter chunk_type=child):")
+        print("\nsearch 结果 (query='装饰器怎么用', filter chunk_type=child):")
         for doc_id, score, meta in results:
             print(f"  - id={doc_id}, score={score:.4f}, content={meta.get('content', '')[:50]}")
 
@@ -72,13 +72,13 @@ def main():
             top_k=2,
             filters=None,
         )
-        print(f"\nsearch 结果 (query='Redis 缓存', no filter):")
+        print("\nsearch 结果 (query='Redis 缓存', no filter):")
         for doc_id, score, meta in results2:
             print(f"  - id={doc_id}, score={score:.4f}")
 
         # get_by_ids
         records = store.get_by_ids(["doc_0", "doc_2"])
-        print(f"\nget_by_ids 结果:")
+        print("\nget_by_ids 结果:")
         for r in records:
             print(f"  - id={r['id']}, content={r['content'][:40]}, meta={r['metadata']}")
 

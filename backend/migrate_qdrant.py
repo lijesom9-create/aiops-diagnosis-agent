@@ -2,7 +2,6 @@
 Qdrant 迁移脚本：本地嵌入模式 → Server 模式
 读取本地 qdrant_db 的所有向量，上传到 Qdrant Server
 """
-import sys
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 
@@ -39,14 +38,14 @@ def migrate():
         # 确保_server 有对应集合（backend 已创建，但确认一下）
         try:
             server.get_collection(name)
-            print(f"  Server 集合已存在")
+            print("  Server 集合已存在")
         except Exception:
             from qdrant_client.models import Distance, VectorParams
             server.create_collection(
                 collection_name=name,
                 vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
             )
-            print(f"  Server 集合已创建")
+            print("  Server 集合已创建")
 
         # 分批读取并上传
         offset = None

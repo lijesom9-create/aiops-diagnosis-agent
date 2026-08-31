@@ -1,12 +1,13 @@
 """快速验证动态 rerank 和缓存失效"""
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from app.core.config import settings
 from app.knowledge.unified_store import UnifiedKnowledgeStore
 from app.retrieval.reranker import CrossEncoderReranker
 from app.shared_services import get_embedding_model, set_knowledge_store
-from app.core.config import settings
 
 # 初始化
 embedding_model = get_embedding_model()
@@ -48,6 +49,7 @@ print(f"失效后: query={len(store._query_cache)}, rewrite={len(store._rewrite_
 # 测试 ONNX vs PyTorch 性能对比
 print("\n=== ONNX vs PyTorch 性能对比 ===")
 import time
+
 pairs = [
     ("什么是智能体", f"内容片段_{i} 智能体是能自主行动的AI系统" if i % 3 == 0 else f"内容片段_{i} FastAPI Web框架")
     for i in range(24)

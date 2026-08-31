@@ -24,9 +24,7 @@ Prometheus 监控 MCP Server（查真实时序指标）
 """
 import json
 import os
-import time
 from datetime import datetime, timedelta
-from typing import Optional
 
 import requests
 from mcp.server.fastmcp import FastMCP

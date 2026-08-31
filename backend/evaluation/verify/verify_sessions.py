@@ -11,11 +11,11 @@
     cd backend
     python evaluation/verify_sessions.py
 """
+import asyncio
 import os
 import sys
-import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -144,8 +144,9 @@ asyncio.run(test_db_session_crud())
 print("\n【测试 2】_ensure_session 辅助函数")
 print("-" * 70)
 
-from app.api.langgraph import _ensure_session
 from fastapi import HTTPException
+
+from app.api.langgraph import _ensure_session
 
 
 async def test_ensure_session():
@@ -278,6 +279,7 @@ print("-" * 70)
 with patch("app.api.langgraph.get_agent"), \
      patch("app.shared_services.get_knowledge_store"):
     from fastapi.testclient import TestClient
+
     from main import app
 
     # Mock 认证：所有请求都当作 test_user_api
