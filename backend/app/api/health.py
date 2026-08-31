@@ -7,13 +7,13 @@ Health & Metrics API - 健康检查与运行时指标
 """
 
 import time
-from typing import Dict, Any
+from typing import Any, Dict
+
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel
 from loguru import logger
+from pydantic import BaseModel
 
 from ..observability.metrics import get_metrics
-
 
 router = APIRouter(prefix="/api/health", tags=["健康检查"])
 
@@ -47,8 +47,60 @@ class HealthResponse(BaseModel):
 
 @router.get("/live")
 async def liveness_check():
-    """轻量存活检查（用于 Docker HEALTHCHECK，不查询向量库）"""
+    """存活检查（liveness）：进程活着即 ok，不查依赖——依赖故障应触发
+    readiness 失败而非重启容器（重启解决不了 Mongo 挂了）"""
     return {"status": "ok"}
+
+
+@router.get("/ready")
+async def readiness_check():
+    """就绪检查（readiness）：真实探测依赖——Mongo / Redis / Qdrant 知识库
+
+    Docker HEALTHCHECK 与编排依赖使用本端点：/live 恒真导致"容器永远 healthy、
+    依赖全挂也照常"的空壳问题由本端点修正。
+    """
+    checks: Dict[str, Any] = {}
+    ready = True
+
+    # MongoDB
+    try:
+        from ..core.database import db
+        await db.connect()
+        await db._mongo.command("ping")
+        checks["mongodb"] = {"status": "ok"}
+    except Exception as e:
+        ready = False
+        checks["mongodb"] = {"status": "error", "message": str(e)[:120]}
+
+    # Redis（可选项：未配置/降级内存不视为不就绪）
+    try:
+        from ..core.cache import get_cache
+        cache = get_cache()
+        redis_client = getattr(cache, "_redis", None)
+        if redis_client is not None:
+            redis_client.ping()
+            checks["redis"] = {"status": "ok"}
+        else:
+            checks["redis"] = {"status": "disabled", "mode": "memory_fallback"}
+    except Exception as e:
+        # Redis 配置了但挂了：降级内存缓存仍可服务，标记降级而非不就绪
+        checks["redis"] = {"status": "degraded", "message": str(e)[:120]}
+
+    # Qdrant 知识库
+    try:
+        store = _get_store()
+        checks["knowledge_store"] = {"status": "ok", "records": store.vector_store.size()}
+    except Exception as e:
+        ready = False
+        checks["knowledge_store"] = {"status": "error", "message": str(e)[:120]}
+
+    if not ready:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"status": "not_ready", "checks": checks},
+        )
+
+    return {"status": "ready", "timestamp": time.time(), "checks": checks}
 
 
 @router.get("", response_model=HealthResponse)

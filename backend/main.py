@@ -5,26 +5,27 @@
 
 # 必须在所有 import 之前设置，否则 sentence-transformers 仍会联网检查更新
 import os
+
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
 
-import sys
 import asyncio
+import re
+import sys
 import uuid
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
-from contextlib import asynccontextmanager
 from loguru import logger
+from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.api import admin, alerts, auth, documents, health, knowledge, langgraph, memory, monitoring
 from app.core.config import settings
 from app.core.database import db
-from app.api import auth, documents, memory, langgraph, knowledge, health, admin, alerts, monitoring
-
 
 # ========== 结构化日志配置 ==========
 # request_id 贯穿请求生命周期，便于生产环境追踪完整调用链
@@ -67,8 +68,8 @@ async def lifespan(app: FastAPI):
 
     # 初始化统一知识存储（复用 shared_services.init_knowledge_store，celery worker 也用同一函数）
     from app.api.documents import set_knowledge_store
-    from app.api.knowledge import set_knowledge_store as set_kb_store
     from app.api.health import set_knowledge_store as set_health_store
+    from app.api.knowledge import set_knowledge_store as set_kb_store
     from app.shared_services import init_knowledge_store
 
     knowledge_store = init_knowledge_store()
@@ -207,6 +208,43 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 
+# ========== HTTP 指标中间件：请求计数/延迟（AIOps 自观测——Agent 看得见自己） ==========
+from prometheus_client import make_asgi_app
+
+REQUEST_COUNT = "http_requests_total"
+REQUEST_LATENCY = "http_request_duration_seconds"
+
+
+@app.middleware("http")
+async def http_metrics_middleware(request: Request, call_next):
+    """记录每个请求的计数与延迟（标签：method/路径模板/status）
+
+    路径取路由模板（如 /api/knowledge/documents/{document_id}）避免高基数；
+    未匹配路由的请求退化为原路径（数字段归一）。
+    """
+    import time as _time
+    start = _time.perf_counter()
+    response = await call_next(request)
+    try:
+        route = request.scope.get("route")
+        path = getattr(route, "path", None) or re.sub(r"/\d+", "/{id}", request.url.path)
+        from app.observability.metrics import get_metrics
+        m = get_metrics()
+        m.increment(REQUEST_COUNT, 1, labels={
+            "method": request.method, "path": path, "status": str(response.status_code),
+        })
+        m.observe(REQUEST_LATENCY, _time.perf_counter() - start, labels={
+            "method": request.method, "path": path,
+        })
+    except Exception:
+        pass  # 指标采集失败不影响请求
+    return response
+
+
+# /metrics 端点：Prometheus 标准暴露格式（prometheus.yml 采集 backend:8000/metrics）
+app.mount("/metrics", make_asgi_app())
+
+
 # 注册路由
 app.include_router(auth.router)
 app.include_router(documents.router)
@@ -231,18 +269,8 @@ async def root():
     }
 
 
-# 健康检查
-@app.get("/api/health")
-async def health_check():
-    """健康检查"""
-    return {
-        "status": "healthy",
-        "version": settings.APP_VERSION,
-        "architecture": "RAG + Memory"
-    }
-
-
-# 配置信息（仅开发环境可用）
+# 健康检查（真实实现见 app/api/health.py 的 /api/health 与 /api/health/ready；
+# 此处静态版为早期死代码，路由已被 router 版本覆盖，保留会造成"看似有健康检查"的错觉）
 @app.get("/api/config")
 async def get_config():
     """获取配置信息（仅显示非敏感信息，仅开发环境可用）"""

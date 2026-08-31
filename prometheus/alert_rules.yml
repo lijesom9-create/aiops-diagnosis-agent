@@ -77,3 +77,14 @@ groups:
         annotations:
           summary: "网络入流量过高 ({{ $value | humanize1024 }}B/s)"
           description: "网络入流量超过 100MB/s 已持续 3 分钟"
+
+      # backend 应用不可达（应用自观测：Prometheus 采集 /metrics 失败）
+      - alert: BackendDown
+        expr: up{job="backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: service
+        annotations:
+          summary: "backend 服务不可达超过 1 分钟"
+          description: "Prometheus 无法采集 backend:8000/metrics，服务可能已宕机或 /metrics 暴露异常"

@@ -20,13 +20,14 @@ import asyncio
 import hmac
 import re
 from datetime import timedelta
-from typing import Dict, Any, List, Optional, Tuple
-from fastapi import APIRouter, BackgroundTasks, Depends, Request, HTTPException, status
-from pydantic import BaseModel, Field
-from loguru import logger
+from typing import Any, Dict, List, Optional, Tuple
 
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from loguru import logger
+from pydantic import BaseModel, Field
+
+from ..core.auth import UserResponse, require_admin
 from ..core.config import settings
-from ..core.auth import require_admin, UserResponse
 from ..core.database import db
 from ..notify.feishu import FeishuClient
 
@@ -204,7 +205,6 @@ def _build_rediagnosis_prompt(incident: Dict[str, Any], new_alerts: List[Dict[st
 
 def _build_summary_prompt(incident: Dict[str, Any]) -> str:
     """恢复摘要输入：时间线 + 历次诊断演变 + 复盘要点"""
-    from datetime import datetime as _dt
 
     parts = [
         "线上事故已恢复，请生成事故摘要与复盘要点。",
@@ -359,7 +359,6 @@ async def enqueue_diagnosis_tasks(alerts_data: List[Dict[str, Any]]) -> int:
             g["trigger"] = trigger
         g["alerts"].append(alert)
 
-    from datetime import datetime as _dt
     created = 0
     for g in grouped.values():
         await db.save_diagnosis_task({
@@ -510,11 +509,23 @@ async def _process_diagnosis_task(task: Dict[str, Any]):
             else:
                 logger.error(f"事故 {task['incident_id']} 诊断报告推送失败")
         await db.update_diagnosis_task(task_id, {"status": "done"})
+        try:
+            from ..observability.metrics import get_metrics
+            get_metrics().increment("ops_diagnosis_total", 1, labels={
+                "trigger": trigger, "result": "done"})
+        except Exception:
+            pass
     except Exception as e:
         attempts = task.get("attempts") or 1
         if attempts >= settings.DIAG_TASK_MAX_ATTEMPTS:
             await db.update_diagnosis_task(task_id, {
                 "status": "dead", "last_error": str(e)[:500]})
+            try:
+                from ..observability.metrics import get_metrics
+                get_metrics().increment("ops_diagnosis_total", 1, labels={
+                    "trigger": task.get("trigger", "unknown"), "result": "dead"})
+            except Exception:
+                pass
             logger.error(f"诊断任务 {task_id} 达到重试上限，标记 dead: {e}", exc_info=True)
         else:
             from datetime import datetime as _dt

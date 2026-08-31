@@ -1,172 +1,170 @@
 """
-Metrics - 指标收集器
+Metrics - 指标收集器（prometheus_client 后端）
 
-收集 Agent 执行指标，支持：
-- 计数器
-- 直方图
-- 仪表盘
+设计：
+- 真实 Prometheus 指标：Counter/Gauge/Histogram 注册到全局 REGISTRY，
+  由 /metrics 端点（main.py 挂载 make_asgi_app）暴露，Prometheus 采集
+- 快照视图：保留 JSON 快照能力（/api/health/metrics 使用），只存最新值——
+  旧实现的无界 history 列表是长运行进程的内存泄漏，已改为有界 deque
+- API 兼容：increment/observe/set_gauge/get_all_metrics 签名不变，
+  unified_store 等既有埋点零改动
+
+线程安全：prometheus_client 原生线程安全；快照 dict 有锁保护。
 """
 
-from typing import Dict, List, Any, Optional
-from enum import Enum
-from dataclasses import dataclass, field
-from datetime import datetime
+import re
+import threading
+from collections import deque
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
 
+try:
+    from prometheus_client import Counter, Gauge, Histogram
+    HAS_PROMETHEUS = True
+except ImportError:  # prometheus-client 未安装时降级为纯快照模式（不阻塞启动）
+    HAS_PROMETHEUS = False
 
-class MetricType(Enum):
-    """指标类型"""
-    COUNTER = "counter"      # 计数器（递增）
-    GAUGE = "gauge"          # 仪表盘（可增可减）
-    HISTOGRAM = "histogram"  # 直方图（分布）
+# Prometheus 指标名/标签名合法字符（其余替换为下划线）
+_NAME_RE = re.compile(r"[^a-zA-Z0-9_]")
 
 
-@dataclass
-class Metric:
-    """指标"""
-    name: str
-    type: MetricType
-    value: float = 0.0
-    labels: Dict[str, str] = field(default_factory=dict)
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
-
-    def to_dict(self) -> Dict:
-        return {
-            "name": self.name,
-            "type": self.type.value,
-            "value": self.value,
-            "labels": self.labels,
-            "timestamp": self.timestamp,
-        }
+def _safe_name(name: str) -> str:
+    return _NAME_RE.sub("_", name)
 
 
 class Metrics:
-    """
-    指标收集器
+    """指标收集器：prometheus_client 真实指标 + 有界 JSON 快照"""
 
-    收集 Agent 执行指标。
-    """
+    # 快照历史有界（旧实现无界 list 是内存泄漏）
+    _HISTORY_MAX = 500
 
     def __init__(self):
-        self.metrics: Dict[str, Metric] = {}
-        self.history: List[Metric] = []
+        self._lock = threading.Lock()
+        # 快照：name{labels} -> 最新值（供 /api/health/metrics JSON 视图）
+        self.metrics: Dict[str, Dict[str, Any]] = {}
+        self.history = deque(maxlen=self._HISTORY_MAX)
+        self._prom_objects: Dict[str, Any] = {}
 
-    def increment(self, name: str, value: float = 1.0, labels: Dict = None):
-        """增加计数器"""
-        key = self._get_key(name, labels)
-        if key not in self.metrics:
-            self.metrics[key] = Metric(
-                name=name,
-                type=MetricType.COUNTER,
-                labels=labels or {},
-            )
-
-        self.metrics[key].value += value
-        self.metrics[key].timestamp = datetime.now().isoformat()
-
-        # 记录历史
-        self.history.append(Metric(
-            name=name,
-            type=MetricType.COUNTER,
-            value=value,
-            labels=labels or {},
-        ))
-
-    def set_gauge(self, name: str, value: float, labels: Dict = None):
-        """设置仪表盘"""
-        key = self._get_key(name, labels)
-        self.metrics[key] = Metric(
-            name=name,
-            type=MetricType.GAUGE,
-            value=value,
-            labels=labels or {},
-            timestamp=datetime.now().isoformat(),
-        )
-
-    def observe(self, name: str, value: float, labels: Dict = None):
-        """记录直方图观测值"""
-        key = self._get_key(name, labels)
-        if key not in self.metrics:
-            self.metrics[key] = Metric(
-                name=name,
-                type=MetricType.HISTOGRAM,
-                labels=labels or {},
-            )
-
-        # 简化：只记录最新值
-        self.metrics[key].value = value
-        self.metrics[key].timestamp = datetime.now().isoformat()
-
-        # 记录历史
-        self.history.append(Metric(
-            name=name,
-            type=MetricType.HISTOGRAM,
-            value=value,
-            labels=labels or {},
-        ))
-
-    def get_metric(self, name: str, labels: Dict = None) -> Optional[Metric]:
-        """获取指标"""
-        key = self._get_key(name, labels)
-        return self.metrics.get(key)
-
-    def get_all_metrics(self) -> List[Dict]:
-        """获取所有指标"""
-        return [m.to_dict() for m in self.metrics.values()]
-
-    def get_history(self, name: str = None, limit: int = 100) -> List[Dict]:
-        """获取历史记录"""
-        history = self.history
-        if name:
-            history = [m for m in history if m.name == name]
-        return [m.to_dict() for m in history[-limit:]]
+    def _get_prom(self, name: str, metric_type: str, label_keys: tuple):
+        """获取或创建 prometheus_client 指标对象（按名字+类型+标签键缓存）"""
+        if not HAS_PROMETHEUS:
+            return None
+        safe = _safe_name(name)
+        cache_key = f"{metric_type}:{safe}:{','.join(sorted(label_keys))}"
+        if cache_key in self._prom_objects:
+            return self._prom_objects[cache_key]
+        try:
+            if metric_type == "counter":
+                obj = Counter(safe, f"metric {safe}", list(label_keys) if label_keys else [])
+            elif metric_type == "gauge":
+                obj = Gauge(safe, f"metric {safe}", list(label_keys) if label_keys else [])
+            elif metric_type == "histogram":
+                obj = Histogram(safe, f"metric {safe}", list(label_keys) if label_keys else [])
+            else:
+                return None
+        except Exception as e:
+            # 名称冲突等注册异常只告警一次，快照视图继续可用
+            logger.debug(f"Prometheus 指标注册失败（仅快照模式）: {name}: {e}")
+            obj = None
+        self._prom_objects[cache_key] = obj
+        return obj
 
     def _get_key(self, name: str, labels: Dict = None) -> str:
-        """获取指标键"""
         if not labels:
             return name
         label_str = ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
         return f"{name}{{{label_str}}}"
 
+    def increment(self, name: str, value: float = 1.0, labels: Dict = None):
+        """增加计数器"""
+        labels = labels or {}
+        prom = self._get_prom(name, "counter", tuple(labels.keys()))
+        if prom is not None:
+            try:
+                prom.labels(**labels).inc(value) if labels else prom.inc(value)
+            except Exception as e:
+                logger.debug(f"prometheus inc 失败: {name}: {e}")
+        key = self._get_key(name, labels)
+        with self._lock:
+            entry = self.metrics.setdefault(key, {
+                "name": name, "type": "counter", "value": 0.0, "labels": labels,
+            })
+            entry["value"] += value
+            self.history.append({"name": name, "type": "counter", "value": value, "labels": labels})
+
+    def set_gauge(self, name: str, value: float, labels: Dict = None):
+        """设置仪表盘"""
+        labels = labels or {}
+        prom = self._get_prom(name, "gauge", tuple(labels.keys()))
+        if prom is not None:
+            try:
+                prom.labels(**labels).set(value) if labels else prom.set(value)
+            except Exception as e:
+                logger.debug(f"prometheus set 失败: {name}: {e}")
+        key = self._get_key(name, labels)
+        with self._lock:
+            self.metrics[key] = {
+                "name": name, "type": "gauge", "value": value, "labels": labels,
+            }
+            self.history.append({"name": name, "type": "gauge", "value": value, "labels": labels})
+
+    def observe(self, name: str, value: float, labels: Dict = None):
+        """记录直方图观测值（真实分桶，不再只记录最新值）"""
+        labels = labels or {}
+        prom = self._get_prom(name, "histogram", tuple(labels.keys()))
+        if prom is not None:
+            try:
+                prom.labels(**labels).observe(value) if labels else prom.observe(value)
+            except Exception as e:
+                logger.debug(f"prometheus observe 失败: {name}: {e}")
+        key = self._get_key(name, labels)
+        with self._lock:
+            self.metrics[key] = {
+                "name": name, "type": "histogram", "value": value, "labels": labels,
+            }
+            self.history.append({"name": name, "type": "histogram", "value": value, "labels": labels})
+
+    def get_metric(self, name: str, labels: Dict = None) -> Optional[Dict]:
+        """获取指标快照"""
+        with self._lock:
+            entry = self.metrics.get(self._get_key(name, labels))
+            return dict(entry) if entry else None
+
+    def get_all_metrics(self) -> List[Dict]:
+        """获取所有指标快照"""
+        with self._lock:
+            return [
+                {"name": e["name"], "type": e["type"], "value": e["value"], "labels": e["labels"]}
+                for e in self.metrics.values()
+            ]
+
+    def get_history(self, name: str = None, limit: int = 100) -> List[Dict]:
+        """获取近期观测历史（有界）"""
+        with self._lock:
+            items = list(self.history)
+        if name:
+            items = [m for m in items if m["name"] == name]
+        return items[-limit:]
+
     def reset(self):
-        """重置所有指标"""
-        self.metrics.clear()
-        self.history.clear()
-
-
-# 预定义指标
-AGENT_EXECUTION_TOTAL = "agent_execution_total"
-AGENT_EXECUTION_DURATION = "agent_execution_duration_ms"
-AGENT_EXECUTION_ERRORS = "agent_execution_errors"
-TOOL_CALL_TOTAL = "tool_call_total"
-TOOL_CALL_DURATION = "tool_call_duration_ms"
-TOOL_CALL_ERRORS = "tool_call_errors"
-LLM_CALL_TOTAL = "llm_call_total"
-LLM_CALL_DURATION = "llm_call_duration_ms"
-LLM_CALL_TOKENS = "llm_call_tokens"
-
-
-def create_default_metrics() -> Metrics:
-    """创建默认指标"""
-    metrics = Metrics()
-
-    # 初始化计数器
-    metrics.set_gauge(AGENT_EXECUTION_TOTAL, 0)
-    metrics.set_gauge(AGENT_EXECUTION_ERRORS, 0)
-    metrics.set_gauge(TOOL_CALL_TOTAL, 0)
-    metrics.set_gauge(TOOL_CALL_ERRORS, 0)
-    metrics.set_gauge(LLM_CALL_TOTAL, 0)
-
-    return metrics
+        """重置快照视图（prometheus 指标不支持反注册，跨测试隔离只影响快照）"""
+        with self._lock:
+            self.metrics.clear()
+            self.history.clear()
 
 
 # 全局指标实例
 _metrics: Optional[Metrics] = None
+_metrics_lock = threading.Lock()
 
 
 def get_metrics() -> Metrics:
-    """获取全局指标"""
+    """获取全局指标（线程安全单例）"""
     global _metrics
-    if _metrics is None:
-        _metrics = create_default_metrics()
-    return _metrics
+    with _metrics_lock:
+        if _metrics is None:
+            _metrics = Metrics()
+            if not HAS_PROMETHEUS:
+                logger.warning("prometheus-client 未安装，指标仅快照模式（无 /metrics 暴露）")
+        return _metrics

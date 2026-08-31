@@ -107,9 +107,10 @@ services:
       alertmanager:
         condition: service_started
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/live"]
+      # readiness 探测（Mongo/Redis/Qdrant 真实可用）；/live 是恒真空壳已弃用
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/ready"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
       start_period: 60s
     volumes:
@@ -295,6 +296,27 @@ services:
       - education-network
     restart: unless-stopped
 
+  # Grafana：可视化看板（应用 HTTP/RAG/诊断指标）——运维 Agent 看得见自己
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: ops-grafana
+    ports:
+      - "3001:3000"   # 与用户端前端 3000 区分
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - education-network
+    restart: unless-stopped
+
   # Celery Worker（文档导入异步处理，需 USE_CELERY=true）
   celery-worker:
     build:
@@ -346,3 +368,4 @@ volumes:
   prometheus-data:
   loki-data:
   alertmanager-data:
+  grafana-data:

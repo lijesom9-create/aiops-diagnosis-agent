@@ -96,6 +96,13 @@ MCP 降级时总分封顶 50），与 LLM 自报置信度并列展示于飞书�
 "建议采信级别"取两者中较低者——校准多步工具调用后模型的过度自信。
 事故诊断历史同步落库充分度分数，支撑按充分度分层的诊断质量统计。
 
+**应用自观测**：`observability/metrics.py` 以 prometheus_client 为后端
+（Counter/Gauge/Histogram 真实分桶，旧自造计数器的无界 history 内存泄漏已修），
+`/metrics` ASGI 挂载暴露，prometheus.yml 采集 backend:8000；HTTP 中间件记录
+请求计数/延迟（路由模板避免高基数）；Grafana 看板（monitoring/grafana/，8 面板：
+QPS/错误率/P95/RAG 各阶段延迟/诊断速率与失败占比）；`/api/health/ready` 真实
+探测依赖（liveness/readiness 分离，HEALTHCHECK 弃用恒真 /live）。
+
 **知识新鲜度**：`valid_until` 过期文档在 rerank 后软降权（×0.5，不硬过滤——覆盖优先），
 引用列表与 LLM 上下文标注"已过期，仅供参考"；`effective_date` 供 prompt 层
 历史结论冲突时"取更新者"。字段随 BUSINESS_FIELDS 走 frontmatter → extra_metadata 全路径。

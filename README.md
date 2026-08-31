@@ -66,6 +66,11 @@ FeishuClient → 飞书告警卡片（firing 红 / resolved 绿）
 - **21 类多来源知识库**（`backend/data/ops_docs/`）：架构设计 / API 文档 / 配置指南 / 监控告警 / 数据库运维 / 中间件运维 / K8s / 容量规划 / 安全基线 / 变更管理 / 值班手册 / 灾备预案 / 性能调优 / 第三方依赖 / 网络排障 / CI-CD / 数据字典 + 事故 INC-2026-001~100 / 复盘 Postmortem 50 篇 / 手册 / SOP，共 **206 篇**，一键导入脚本
 - **Celery 异步导入**：文档解析/向量化异步化，任务状态 + 重试 API
 
+### 📊 应用自观测（运维 Agent 看得见自己）
+- prometheus_client 暴露 `/metrics`（HTTP 请求计数/延迟、RAG 各阶段延迟直方图、自动诊断计数）
+- Grafana 看板（:3001，8 面板：QPS/错误率/P95/诊断失败占比）+ BackendDown 告警规则
+- 真实 readiness 健康检查（`/api/health/ready` 探测 Mongo/Redis/Qdrant，liveness/readiness 分离）
+
 ### 🔐 管理与安全
 - **管理后台**（独立前端，8080）：文档导入、用户管理、任务监控
 - **RBAC**：写操作限定管理员；`SUPER_ADMIN_USERNAME` 超管初始化机制
@@ -262,7 +267,7 @@ START → route_intent → agent → should_continue ─┬→ tools → agent �
 | 知识 | `/api/knowledge/documents/{id}` `/bm25/rebuild` `/stats` | 知识库管理 |
 | 管理 | `/api/admin/stats` `/users` `/users/{id}/role` `/tasks` | 统计/用户/角色/任务（仅管理员） |
 | 记忆 | `/api/memory/*` | 用户画像 / 档案记忆 |
-| 健康 | `/api/health` `/api/health/live` | 健康检查（live 供 Docker HEALTHCHECK） |
+| 健康 | `/api/health` `/api/health/live` `/api/health/ready` | 健康检查：live 存活探针（恒真）/ ready 就绪探针（真实探测 Mongo/Redis/Qdrant，Docker HEALTHCHECK 使用） |
 
 ---
 

@@ -32,3 +32,10 @@ scrape_configs:
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
+
+  # 3. backend：应用自观测（HTTP 请求/RAG 检索/诊断执行指标）
+  #    "运维 Agent 看得见自己"——RAG P99 延迟、诊断失败率由此可查
+  - job_name: 'backend'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['backend:8000']

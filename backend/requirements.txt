@@ -26,6 +26,7 @@ langchain-text-splitters==1.1.1  # 文档分块
 langgraph==1.1.6
 langgraph-checkpoint-sqlite==3.0.3  # LangGraph SQLite 持久化检查点
 langgraph-checkpoint-mongodb==0.4.0  # LangGraph Mongo 检查点（多副本共享会话，CHECKPOINT_BACKEND=mongodb）
+prometheus-client==0.25.0  # /metrics 指标暴露（应用自观测，Prometheus 采集）
 aiosqlite==0.22.1  # 异步 SQLite（AsyncSqliteSaver 所需）
 
 # MCP (Model Context Protocol) 监控工具集成
