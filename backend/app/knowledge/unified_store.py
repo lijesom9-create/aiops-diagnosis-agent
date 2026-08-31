@@ -560,19 +560,22 @@ class UnifiedKnowledgeStore:
             filters=filters if filters else None,
         )
 
-        # 后处理：组织隔离 + 用户隔离
+        # 后处理：组织隔离 + 用户隔离（与 _build_visibility_filter 语义一致：
+        # shared_to_diagnosis="true" 的文档旁路隔离，对诊断服务可见）
         output = []
         for doc_id, score, metadata in results:
+            shared_to_diagnosis = metadata.get("shared_to_diagnosis") == "true"
+
             # 组织隔离：只返回同一组织的数据
             if org_id:
                 doc_org_id = metadata.get("org_id")
-                if doc_org_id and doc_org_id != org_id:
+                if doc_org_id and doc_org_id != org_id and not shared_to_diagnosis:
                     continue  # 跳过其他组织的数据
 
             # 用户隔离：如果指定了 user_id，只返回公共知识或该用户的私有知识
             if user_id:
                 doc_user_id = metadata.get("user_id")
-                if doc_user_id and doc_user_id != user_id:
+                if doc_user_id and doc_user_id != user_id and not shared_to_diagnosis:
                     continue  # 跳过其他用户的私有知识
 
             output.append({
@@ -700,13 +703,15 @@ class UnifiedKnowledgeStore:
         合并：
         - source: 来源过滤
         - metadata_filter: 业务元数据过滤（如 service/doc_type）
-        - org_id: 用 $or_empty 表达（字段一定存在，空串=公共），should [MatchValue(""), MatchValue(org_id)]
-        - user_id: 用 $or_missing 表达（字段可能不存在，cleaned 移除空值），
-          must_not [MatchExcept([user_id])] 排除非目标值，字段缺失则保留
+        - 可见性语义：shared OR (org 条件 AND user 条件)
+          shared_to_diagnosis="true" 的文档对诊断服务可见（显式共享，旁路隔离）；
+          未共享的文档保持原有 AND 语义——不能把 org/user 条件彼此 OR
+          （否则"别人组织下的他人私有文档"会漏出来）
 
         存储约定差异：
         - org_id: KnowledgeItem.to_chroma 强制写入（公共文档 org_id=""），故用 $or_empty
         - user_id: uploader._store_chunks 的 cleaned 会移除空值（公共文档无 user_id 字段），故用 $or_missing
+        - shared_to_diagnosis: 字符串 "true"/"false" 显式共享标记（缺失 = 未共享）
 
         Returns:
             filter dict，可能为 {}（无条件）。供 Qdrant pre-filter 和 BM25 Python post-filter 共用。
@@ -716,10 +721,16 @@ class UnifiedKnowledgeStore:
             f = self._merge_filters(f, {"source": source})
         if metadata_filter:
             f = self._merge_filters(f, metadata_filter)
+        visibility_conds: List[Dict[str, Any]] = []
         if org_id:
-            f = self._merge_filters(f, {"$or_empty": {"key": "org_id", "value": org_id}})
+            visibility_conds.append({"$or_empty": {"key": "org_id", "value": org_id}})
         if user_id:
-            f = self._merge_filters(f, {"$or_missing": {"key": "user_id", "value": user_id}})
+            visibility_conds.append({"$or_missing": {"key": "user_id", "value": user_id}})
+        if visibility_conds:
+            f = self._merge_filters(f, {"$or": [
+                {"shared_to_diagnosis": "true"},
+                {"$and": visibility_conds},
+            ]})
         return f
 
     def _build_child_filter(
@@ -732,6 +743,47 @@ class UnifiedKnowledgeStore:
         """构造子块检索 filter = chunk_type=child + 可见性过滤"""
         visibility = self._build_visibility_filter(source, metadata_filter, org_id, user_id)
         return self._merge_filters({"chunk_type": "child"}, visibility)
+
+    # ========== 知识新鲜度衰减 ==========
+
+    # 已过期文档的分数衰减系数（软降权不是硬过滤：过期文档仍可召回，只是排在有效文档后）
+    FRESHNESS_EXPIRED_FACTOR = 0.5
+
+    @staticmethod
+    def _is_expired(metadata: Dict[str, Any], now: Optional[Any] = None) -> bool:
+        """判断文档是否已过 valid_until（缺失/格式非法 → 视为长期有效）"""
+        if not metadata:
+            return False
+        valid_until = metadata.get("valid_until")
+        if not valid_until:
+            return False
+        if isinstance(valid_until, (int, float)):
+            import datetime as _dt
+            return now is not None and _dt.datetime.now().timestamp() > float(valid_until)
+        try:
+            from datetime import datetime as _dt
+            parsed = _dt.fromisoformat(str(valid_until).replace("Z", "").replace("/", "-"))
+            ref = now or _dt.now()
+            if isinstance(ref, str):
+                ref = _dt.fromisoformat(ref)
+            return parsed < ref
+        except Exception:
+            return False
+
+    @classmethod
+    def _apply_freshness_decay(cls, results: List[Dict[str, Any]],
+                               now: Optional[Any] = None) -> List[Dict[str, Any]]:
+        """对已过 valid_until 的文档做分数软降权，并在 metadata 打 _expired 标记
+
+        过期知识仍可召回（覆盖优先），但排名让位给有效文档；
+        _expired 标记供引用卡片展示"已于 X 过期，结论仅供参考"。
+        """
+        for r in results or []:
+            meta = r.get("metadata") or {}
+            if cls._is_expired(meta, now):
+                r["score"] = r.get("score", 0) * cls.FRESHNESS_EXPIRED_FACTOR
+                r["metadata"] = {**meta, "_expired": True}
+        return results
 
     # ========== 混合检索 ==========
 
@@ -1175,7 +1227,8 @@ class UnifiedKnowledgeStore:
                 logger.warning(f"Parent-child rerank 失败，使用原始排序: {e}")
         _rerank_ms = (_time.time() - _t3) * 1000
 
-        # 8. 按分数排序、过滤、截断
+        # 8. 新鲜度衰减 + 按分数排序、过滤、截断
+        parent_results = self._apply_freshness_decay(parent_results)
         parent_results.sort(key=lambda x: x["score"], reverse=True)
         result = [r for r in parent_results if r.get("score", 0) >= min_score][:top_k]
 

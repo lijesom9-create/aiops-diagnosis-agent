@@ -190,14 +190,18 @@ async def run_scenario(agent, scenario: Dict) -> Dict[str, Any]:
 async def main():
     parser = argparse.ArgumentParser(description="Agent 级故障诊断评估")
     parser.add_argument("--scenarios", type=str, default="", help="逗号分隔的场景 ID，如 SC-001,SC-002；空=全部")
+    parser.add_argument("--scenarios-file", type=str, default="",
+                        help="场景集文件名（evaluation/data/ 下），默认 agent_eval_scenarios.json；"
+                             "可指定 agent_eval_scenarios_real.json 跑真实事故回放集")
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument("--llm-judge", action="store_true", help="启用 LLM 根因语义判定（需要 LLM 可用）")
     args = parser.parse_args()
 
-    if not SCENARIOS_PATH.exists():
-        logger.error(f"场景集不存在: {SCENARIOS_PATH}")
+    scenarios_path = DATA_DIR / args.scenarios_file if args.scenarios_file else SCENARIOS_PATH
+    if not scenarios_path.exists():
+        logger.error(f"场景集不存在: {scenarios_path}")
         return
-    dataset = json.loads(SCENARIOS_PATH.read_text(encoding="utf-8"))
+    dataset = json.loads(scenarios_path.read_text(encoding="utf-8"))
     scenarios = dataset["scenarios"]
     if args.scenarios:
         want = {s.strip() for s in args.scenarios.split(",") if s.strip()}
@@ -294,7 +298,9 @@ async def main():
         "per_scenario": per_scenario,
     }
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out = RESULTS_DIR / "agent_eval_report.json"
+    # 真实事故回放集的报告单独落盘，避免覆盖 mock 集主报告
+    report_name = "agent_eval_report_real.json" if args.scenarios_file else "agent_eval_report.json"
+    out = RESULTS_DIR / report_name
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(f"评估报告已保存: {out}")
 

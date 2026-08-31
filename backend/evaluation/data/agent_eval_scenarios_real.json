@@ -1,0 +1,72 @@
+{
+  "dataset": "agent_eval_real",
+  "version": "1.0",
+  "name": "真实公开事故回放场景集",
+  "description": "基于公开可查的知名生产事故构建的回放评测，用于诚实评估'知识库无对应历史经验时'的诊断能力边界。与 agent_eval_scenarios.json（mock 数据集，与种子知识库对齐）隔离：本场景集的监控工具返回 mock 数据与真实事故无关，诊断只能依赖告警描述推理 + 通用知识库，预期 Root Cause Accuracy 显著低于 mock 集——这正是本数据集的评估意义。",
+  "disclaimer": "事故时间线与根因结论均来自公开的事故报告/官方复盘，仅用于评估用途；user_input 按诊断回放需要做了改写，非原始告警原文。",
+  "created_at": "2026-08-31",
+  "monitoring_tools": ["query_metrics", "query_logs"],
+  "kb_tool": "search_knowledge",
+  "scenarios": [
+    {
+      "scenario_id": "REAL-001",
+      "title": "Cloudflare 全球 500 - 正则回溯灾难（2019-07-02）",
+      "user_input": "边缘节点告警：全球范围 HTTP 500 大面积爆发，error_rate 从 0.2% 飙升到 82%，CPU 使用率同步打满 100%，影响所有边缘数据中心。故障前运维在 WAF 防火墙规则里启用了一条新的 PCRE 正则表达式用于拦截垃圾请求。请诊断根因并给出处置方案。",
+      "ground_truth_incident": "Cloudflare-2019-07-02",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "search_knowledge"],
+      "expected_root_cause": ["正则", "回溯", "PCRE", "ReDoS", "灾难性回溯", "catastrophic backtracking", "CPU"],
+      "expected_evidence": {
+        "metrics": ["error_rate", "CPU", "500"],
+        "logs": ["500", "regex", "worker"],
+        "knowledge": ["正则", "回溯", "CPU"]
+      },
+      "expected_doc_types": ["manual", "incident"]
+    },
+    {
+      "scenario_id": "REAL-002",
+      "title": "GitLab.com 数据丢失 - 误操作主库（2017-01-31）",
+      "user_input": "数据库告警：GitLab 主库 db1.cluster 负载异常，运维在排查时误在主库执行了 gitlab-rake db:drop 命令，随后发现数据库被删除，约 5TB 用户数据中丢失了 300GB（含 issue/代码片段/项目元数据）。恢复时发现 PostgreSQL 的 pg_dump 备份任务因磁盘只读长期失败未被感知，仅剩几小时前的 LVM 快照。请诊断根因并给出处置方案。",
+      "ground_truth_incident": "GitLab-2017-01-31",
+      "expected_tools": ["query_logs", "search_knowledge"],
+      "required_tools": ["search_knowledge"],
+      "expected_root_cause": ["误操作", "误删", "备份", "pg_dump", "备份失效", "权限", "主库", "删除"],
+      "expected_evidence": {
+        "metrics": ["数据库", "负载"],
+        "logs": ["db:drop", "备份失败", "pg_dump"],
+        "knowledge": ["备份", "误删", "恢复"]
+      },
+      "expected_doc_types": ["incident", "sop", "postmortem"]
+    },
+    {
+      "scenario_id": "REAL-003",
+      "title": "AWS us-east-1 大面积故障 - DynamoDB 元数据服务雪崩（2021-12-07）",
+      "user_input": "云平台告警：us-east-1 区域大量 API 请求失败，EC2 实例创建/注册失败，EBS 挂载超时，多个依赖服务级联不可用。流量峰值期间 DynamoDB 用于存储 EC2/AutoScaling 元数据的终端节点网络异常，大量客户端自动重试进一步放大了流量（重试风暴），最终元数据服务过载雪崩。请诊断根因并给出处置方案。",
+      "ground_truth_incident": "AWS-us-east-1-2021-12-07",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "search_knowledge"],
+      "expected_root_cause": ["重试风暴", "雪崩", "过载", "元数据", "DynamoDB", "级联", "网络"],
+      "expected_evidence": {
+        "metrics": ["API", "失败率", "流量"],
+        "logs": ["timeout", "retry", "throttl"],
+        "knowledge": ["雪崩", "过载", "重试"]
+      },
+      "expected_doc_types": ["manual", "incident", "postmortem"]
+    },
+    {
+      "scenario_id": "REAL-004",
+      "title": "Facebook 全球断网 - BGP 配置下线（2021-10-04）",
+      "user_input": "网络告警：全公司所有对外服务（Facebook/Instagram/WhatsApp）全球不可达，DNS 解析失败，数据中心内部通信中断，远程办公员工连内网 VPN 都无法登录导致紧急响应受阻。故障源于一次例行维护中错误下发了命令，撤掉了承载全部对外 BGP 路由广播的骨干路由器配置，且 DNS 服务器因设计上依赖这些路由而同时从公网消失。请诊断根因并给出处置方案。",
+      "ground_truth_incident": "Facebook-2021-10-04",
+      "expected_tools": ["query_metrics", "search_knowledge"],
+      "required_tools": ["query_metrics", "search_knowledge"],
+      "expected_root_cause": ["BGP", "路由", "配置", "DNS", "下线", "广播", "撤销"],
+      "expected_evidence": {
+        "metrics": ["不可达", "DNS", "流量"],
+        "logs": ["BGP", "route", "peer"],
+        "knowledge": ["BGP", "路由", "DNS"]
+      },
+      "expected_doc_types": ["manual", "incident", "postmortem"]
+    }
+  ]
+}

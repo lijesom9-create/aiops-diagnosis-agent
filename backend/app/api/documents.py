@@ -222,6 +222,7 @@ async def upload_document(
     title_utf8: Optional[str] = None,  # UTF-8 编码的标题（用于修复中文乱码）
     skip_duplicate: bool = Form(True),  # 默认开启去重
     category: str = Form("other"),  # 文档分类
+    shared_to_diagnosis: bool = Form(True),  # 共享给自动诊断（旁路组织隔离，敏感文档可关闭）
     current_user: UserResponse = Depends(require_admin),
     db: Database = Depends(get_db),
 ):
@@ -280,6 +281,9 @@ async def upload_document(
             biz_meta = extract_business_metadata(frontmatter)
         except Exception as e:
             logger.debug(f"frontmatter 解析失败（忽略，按普通文档处理）: {e}")
+        # 诊断共享标记随 chunk metadata 入库（字符串形式，检索过滤器按 "true" 匹配）；
+        # 上传端点仅 admin 可调，默认共享符合"运维知识供诊断系统使用"的预期，敏感文档显式关闭
+        biz_meta["shared_to_diagnosis"] = "true" if shared_to_diagnosis else "false"
 
         # frontmatter 声明的 doc_type 优先于文件扩展名（如 manual/incident/sop 业务分类）
         if biz_meta.get("doc_type"):
@@ -479,8 +483,12 @@ async def retry_document(
             )
 
         from app.tasks.document_tasks import process_document
+        # 从文档记录取回业务 metadata（frontmatter 解析的 doc_type/service 等）：
+        # 重试不回传会导致重建的 chunk 丢失业务元数据，Agent 的精准过滤将命中不到
+        retry_meta = doc.get("extra_metadata") or None
         task = process_document.delay(
             document_id, file_path, doc.get("filename", ""), doc.get("title", ""),
+            extra_metadata=retry_meta,
         )
         await db.update_document(document_id, {
             "status": DocumentStatus.PENDING.value,
@@ -666,6 +674,7 @@ async def batch_upload_documents(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     skip_duplicate: bool = Form(True),
+    shared_to_diagnosis: bool = Form(True),  # 共享给自动诊断（旁路组织隔离，敏感文档可关闭）
     current_user: UserResponse = Depends(require_admin),
     db: Database = Depends(get_db),
 ):
@@ -738,6 +747,8 @@ async def batch_upload_documents(
                 biz_meta = extract_business_metadata(frontmatter)
             except Exception as e:
                 logger.debug(f"frontmatter 解析失败（忽略，按普通文档处理）: {e}")
+            # 诊断共享标记随 chunk metadata 入库（与单文件上传一致）
+            biz_meta["shared_to_diagnosis"] = "true" if shared_to_diagnosis else "false"
             if biz_meta.get("doc_type"):
                 doc_type = str(biz_meta["doc_type"]).lower()
 

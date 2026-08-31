@@ -178,6 +178,21 @@ def set_current_user_id(user_id: Optional[str]) -> None:
     logger.debug(f"set_current_user_id: {user_id}")
 
 
+_current_org_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "current_org_id", default=None
+)
+
+
+def set_current_org_id(org_id: Optional[str]) -> None:
+    """设置当前组织 ID（与 user_id 一起构成检索可见性过滤）
+
+    来源：task_context["org_id"]（登录用户的 JWT org / 自动诊断的
+    DIAGNOSIS_ORG_ID 服务身份）。为空时不启用组织过滤（仅用户级隔离）。
+    """
+    _current_org_id.set(org_id or None)
+    logger.debug(f"set_current_org_id: {org_id}")
+
+
 def set_conversation_context(messages) -> None:
     """设置对话上下文（供 search_knowledge 做指代消解）
 
@@ -446,11 +461,13 @@ def search_knowledge(
         # 从 state 读取用户身份（权限隔离）
         task_ctx = state.get("task_context") or {}
         user_id = task_ctx.get("user_id")
+        org_id = task_ctx.get("org_id")
         # 从 state.messages 提取对话上下文（指代消解）
         conv_ctx = _extract_conv_context_from_messages(state.get("messages", []))
     else:
         # 兼容降级：直接调用工具时从 contextvars 读取
         user_id = _current_user_id.get()
+        org_id = _current_org_id.get()
         conv_ctx = _conversation_context.get() or []
 
     # 多轮对话指代消解：根据对话上下文重写查询
@@ -468,8 +485,9 @@ def search_knowledge(
         if doc_type:
             metadata_filter["doc_type"] = doc_type
 
-    # 检查缓存（缓存键含 user_id + service + doc_type，避免跨用户/跨过滤条件泄漏）
-    cached = _tool_cache.get("search_knowledge", search_query, limit, user_id or "", service or "", doc_type or "")
+    # 检查缓存（缓存键含 user_id/org_id + service + doc_type，避免跨用户/跨组织/跨过滤条件泄漏）
+    cached = _tool_cache.get("search_knowledge", search_query, limit, user_id or "", org_id or "",
+                             service or "", doc_type or "")
     if cached is not None:
         # 缓存命中时，结构化数据也要写入 buffer（供 Agent 生成 citations）
         if isinstance(cached, (tuple, list)):  # list: Redis JSON 反序列化后
@@ -485,7 +503,7 @@ def search_knowledge(
             # 传入 user_id 做文档权限过滤（公共文档 + 本人私有文档）
             results = _knowledge_store.hybrid_search_parent_child(
                 search_query, top_k=limit, rewrite_query=True,
-                user_id=user_id,
+                user_id=user_id, org_id=org_id,
                 metadata_filter=metadata_filter,
             )
 
@@ -497,7 +515,7 @@ def search_knowledge(
                     logger.info(f"检索质量低，替代查询重试: '{search_query}' -> '{alt_query}'")
                     alt_results = _knowledge_store.hybrid_search_parent_child(
                         alt_query, top_k=limit, rewrite_query=False,  # 替代 query 已是 LLM 重写的
-                        user_id=user_id,
+                        user_id=user_id, org_id=org_id,
                         metadata_filter=metadata_filter,
                     )
                     if alt_results:
@@ -517,9 +535,11 @@ def search_knowledge(
                     meta = r.get("metadata", {})
                     heading_path = meta.get("heading_path_str", "") or " > ".join(meta.get("heading_path", []))
 
-                    # 给 LLM 的文本：带 [N] 编号，引导内联引用
+                    # 给 LLM 的文本：带 [N] 编号，引导内联引用；过期文档标注提醒
+                    expired = bool(meta.get("_expired"))
+                    expired_note = " ⚠️【文档已过 valid_until 有效期，结论仅供参考】" if expired else ""
                     formatted.append(
-                        f"[{i}] **{title}** (相关度: {score:.2f})\n"
+                        f"[{i}] **{title}** (相关度: {score:.2f}){expired_note}\n"
                         f"章节: {heading_path}\n"
                         f"{content}"
                     )
@@ -538,6 +558,8 @@ def search_knowledge(
                         "doc_type": meta.get("doc_type", ""),
                         "service": meta.get("service", ""),
                         "incident_id": meta.get("incident_id", ""),
+                        # 知识时效标记（检索层对过期文档打的 _expired）
+                        "metadata": {"_expired": expired},
                     })
 
                 text = "\n\n".join(formatted) + "\n\n---\n请在回答中使用 [1]、[2] 等编号引用上述来源。"
@@ -837,38 +859,53 @@ def search_memory(user_id: str, query: str) -> str:
 
 
 @tool
-def query_metrics(service: str, metric: str = "all") -> str:
-    """查询服务的实时监控指标（AIOps 故障诊断首选工具）。
+def query_metrics(service: str, metric: str = "all", time_range: str = "1h") -> str:
+    """查询服务的监控指标（AIOps 故障诊断首选工具），支持指定时间窗。
 
     返回服务的关键监控指标，用于故障诊断的"现场取证"。
     拿到指标后应根据异常方向再调 query_logs 定向查日志。
+    诊断回顾性故障时务必指定故障发生的时间窗（如告警描述"30 分钟前开始"→ time_range="30m"）。
 
     Args:
         service: 服务名，如 "payment-service"、"order-service"、"mysql"
         metric: 指标名，默认 "all" 一次拿全。可选：error_rate / connection_pool_usage / pending_connections / qps
+        time_range: 查询时间窗，默认 "1h"，可选 "5m"/"30m"/"2h"/"6h"/"24h"。
+            短窗口（≤2h）返回故障时刻的瞬时值；长窗口（6h/24h）返回窗口均值——
+            若长窗口指标正常但短窗口异常，说明故障是近期突发的
 
     Returns:
         JSON 格式的监控指标数据
     """
     import json
-    import random
 
-    # Mock 数据：模拟 payment-service 连接池耗尽场景
-    mock_data = {
-        "service": service,
-        "timestamp": "2026-08-02T15:00:00Z",
-        "metrics": {
-            "error_rate": {"value": 0.38, "baseline": 0.01, "unit": "%", "status": "critical"},
-            "connection_pool_usage": {"value": 1.0, "baseline": 0.3, "unit": "%", "status": "critical"},
-            "pending_connections": {"value": 87, "baseline": 2, "unit": "count", "status": "critical"},
-            "qps": {"value": 4200, "baseline": 1500, "unit": "req/s", "status": "warning"},
-            "p99_latency": {"value": 3200, "baseline": 80, "unit": "ms", "status": "critical"},
-        },
+    # 故障时刻的瞬时值（模拟 payment-service 连接池耗尽场景）
+    incident_metrics = {
+        "error_rate": {"value": 0.38, "baseline": 0.01, "unit": "%", "status": "critical"},
+        "connection_pool_usage": {"value": 1.0, "baseline": 0.3, "unit": "%", "status": "critical"},
+        "pending_connections": {"value": 87, "baseline": 2, "unit": "count", "status": "critical"},
+        "qps": {"value": 4200, "baseline": 1500, "unit": "req/s", "status": "warning"},
+        "p99_latency": {"value": 3200, "baseline": 80, "unit": "ms", "status": "critical"},
+    }
+    # 长窗口均值：故障时段被正常时段稀释，指标回落但仍有残留异常
+    averaged_metrics = {
+        "error_rate": {"value": 0.06, "baseline": 0.01, "unit": "%", "status": "warning"},
+        "connection_pool_usage": {"value": 0.52, "baseline": 0.3, "unit": "%", "status": "warning"},
+        "pending_connections": {"value": 9, "baseline": 2, "unit": "count", "status": "warning"},
+        "qps": {"value": 1800, "baseline": 1500, "unit": "req/s", "status": "normal"},
+        "p99_latency": {"value": 310, "baseline": 80, "unit": "ms", "status": "warning"},
     }
 
-    if metric != "all" and metric in mock_data["metrics"]:
-        return json.dumps({"service": service, "metric": metric, **mock_data["metrics"][metric]})
-    return json.dumps(mock_data, ensure_ascii=False)
+    short_windows = {"5m", "30m", "1h", "2h"}
+    metrics = incident_metrics if time_range in short_windows else averaged_metrics
+
+    if metric != "all" and metric in metrics:
+        return json.dumps({
+            "service": service, "metric": metric, "time_range": time_range,
+            **metrics[metric],
+        }, ensure_ascii=False)
+    return json.dumps({
+        "service": service, "time_range": time_range, "metrics": metrics,
+    }, ensure_ascii=False)
 
 
 @tool
@@ -956,6 +993,163 @@ def analyze_chart(service: str, chart_type: str = "overview") -> str:
     return json.dumps(mock_analysis, ensure_ascii=False)
 
 
+@tool
+def get_recent_changes(service: str, hours: int = 24) -> str:
+    """查询服务最近 N 小时内的变更事件（发布/配置修改/扩缩容/基础设施操作）。
+
+    变更是生产故障的第一大根因。诊断时必查：若故障时间点附近存在变更，
+    应优先沿"变更 → 影响"的因果链定位，而不是只按症状匹配历史经验。
+
+    Args:
+        service: 服务名，如 "payment-service"、"order-service"
+        hours: 回溯小时数，默认 24。建议与故障时间窗匹配（故障发生在 1 小时内则 hours=1~2）
+
+    Returns:
+        JSON 格式的变更事件列表（type: deploy/config_change/scale/infra，change_id，时间，描述）
+    """
+    import json
+
+    # Mock 变更事件：与种子事故对齐——payment-service 事发前 40 分钟有一次发版
+    events_by_service = {
+        "payment-service": [
+            {
+                "change_id": "CHG-2026-0812",
+                "type": "deploy",
+                "service": "payment-service",
+                "time": "2026-08-02T14:20:00Z",
+                "description": "v2.3.1 发版：新增大额支付风控查询（新增 2 个 DB 查询/笔）",
+                "operator": "ci-cd",
+            },
+            {
+                "change_id": "CHG-2026-0805",
+                "type": "scale",
+                "service": "payment-service",
+                "time": "2026-07-30T10:00:00Z",
+                "description": "连接池 max-size 保持 10 未调整（上季度容量评估遗留项）",
+                "operator": "ops",
+            },
+        ],
+        "order-service": [
+            {
+                "change_id": "CHG-2026-0809",
+                "type": "config_change",
+                "service": "order-service",
+                "time": "2026-08-01T16:00:00Z",
+                "description": "Redis maxmemory 从 4gb 调整为 2gb（成本优化变更）",
+                "operator": "ops",
+            },
+        ],
+    }
+    events = events_by_service.get(service, [])
+    return json.dumps({
+        "service": service,
+        "hours": hours,
+        "count": len(events),
+        "changes": events,
+    }, ensure_ascii=False)
+
+
+@tool
+def create_incident_ticket(service: str, title: str, root_cause: str,
+                           severity: str = "P2", priority: str = "high") -> str:
+    """创建故障处理工单，用于诊断结论的落地跟进（诊断 → 行动闭环）。
+
+    使用纪律：
+    - 仅在 P1/P2 级故障诊断完成、或用户明确要求创建工单时调用
+    - 工单内容应基于已确认的诊断结论，不要在诊断中途调用
+
+    Args:
+        service: 受影响的服务名
+        title: 工单标题，如 "payment-service 连接池耗尽 - 扩容与慢查询治理"
+        root_cause: 诊断出的根因摘要
+        severity: 故障级别，P1/P2/P3
+        priority: 工单优先级，默认 high
+
+    Returns:
+        JSON 格式的创建结果（ticket_id + 状态）
+    """
+    import json
+    import uuid
+    from datetime import datetime
+
+    ticket_id = f"TK-{uuid.uuid4().hex[:6].upper()}"
+    now_str = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    return json.dumps({
+        "ticket_id": ticket_id,
+        "status": "created",
+        "service": service,
+        "title": title,
+        "severity": severity,
+        "priority": priority,
+        "root_cause": root_cause[:200],
+        "created_at": now_str,
+        "note": "工单已记录（当前为演示环境，未接入真实工单系统）；请人工跟进处理进度",
+    }, ensure_ascii=False)
+
+
+@tool
+def get_service_dependencies(service: str, direction: str = "all") -> str:
+    """查询服务的依赖拓扑：下游依赖（本服务调用了谁）与上游调用方（谁调用了本服务）。
+
+    跨服务诊断的关键工具：本服务指标无法解释现象、或怀疑问题出在依赖时，
+    用本工具锁定可疑依赖服务，再对该服务补充取证（query_metrics/query_logs 换成该服务名）。
+
+    Args:
+        service: 服务名，如 "payment-service"、"mysql"
+        direction: 方向，默认 "all"。可选："downstream"只看下游依赖 / "upstream"只看上游调用方 / "all"
+
+    Returns:
+        JSON 格式的依赖拓扑（depends_on / called_by 列表）
+    """
+    import json
+    import os
+
+    # 拓扑数据文件化：真实落地时替换 data/service_topology.json
+    # （APM 服务地图 / K8s 服务发现自动生成），工具与 prompt 不用改
+    topo_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "data", "service_topology.json",
+    )
+    topology = {}
+    try:
+        with open(topo_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        topology = {k: v for k, v in raw.items() if not k.startswith("_")}
+    except Exception:
+        # 文件缺失/损坏时的兜底拓扑（与种子事故对齐）
+        topology = {
+            "payment-service": {
+                "depends_on": ["mysql", "redis", "order-service"],
+                "called_by": ["api-gateway"],
+            },
+            "order-service": {
+                "depends_on": ["mysql", "inventory-service", "redis"],
+                "called_by": ["payment-service", "api-gateway"],
+            },
+            "mysql": {"depends_on": [], "called_by": ["payment-service", "order-service"]},
+            "redis": {"depends_on": [], "called_by": ["payment-service", "order-service"]},
+        }
+
+    entry = topology.get(service)
+    if not entry:
+        return json.dumps({
+            "service": service, "direction": direction,
+            "depends_on": [], "called_by": [],
+            "note": f"拓扑中无 {service} 的记录（可能是基础设施组件或未登记服务），无法跨服务排查",
+        }, ensure_ascii=False)
+
+    depends_on = entry.get("depends_on", [])
+    called_by = entry.get("called_by", [])
+    result = {"service": service, "direction": direction}
+    if direction in ("all", "downstream"):
+        result["depends_on"] = depends_on
+        result["downstream_note"] = "下游依赖故障可能传导到本服务（对可疑依赖补充取证）"
+    if direction in ("all", "upstream"):
+        result["called_by"] = called_by
+        result["upstream_note"] = "本服务故障会向上游调用方传导（影响面评估）"
+    return json.dumps(result, ensure_ascii=False)
+
+
 def create_tools() -> list:
     """创建工具列表"""
     return [
@@ -963,6 +1157,9 @@ def create_tools() -> list:
         query_metrics,
         query_logs,
         analyze_chart,
+        get_recent_changes,
+        get_service_dependencies,
+        create_incident_ticket,
         web_search,
         crawl_webpage,
         generate_content,

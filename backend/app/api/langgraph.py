@@ -677,6 +677,10 @@ class FeedbackRequest(BaseModel):
     message_content: str = Field(..., description="被反馈的答案内容")
     rating: str = Field(..., description="positive / negative")
     comment: Optional[str] = Field(default=None, description="反馈备注（点踩时填写）")
+    document_ids: Optional[List[str]] = Field(
+        default=None,
+        description="答案引用的文档 ID 列表（点踩时传入，触发知识库待复核标记）",
+    )
 
 
 class FeedbackResponse(BaseModel):
@@ -708,12 +712,27 @@ async def submit_feedback(
             "message_content": request.message_content[:500],  # 截断防止过大
             "rating": request.rating,
             "comment": request.comment or "",
+            "document_ids": request.document_ids or [],
             "created_at": datetime.now().isoformat(),
         }
 
-        await db._mongo["feedback"].insert_one(feedback_doc)
+        # 走 Database 方法（兼容内存降级），替代裸写 collection
+        await db.save_feedback(feedback_doc)
 
-        logger.info(f"反馈提交: {feedback_id} - {request.rating} (user={current_user.user_id})")
+        # 负反馈 → 知识库质量闭环：将答案引用的文档标记为待复核
+        # （SOP 过期/内容错误通常通过点踩暴露，标记后由管理员在文档列表复核）
+        reviewed_count = 0
+        if request.rating == "negative" and request.document_ids:
+            reviewed_count = await db.mark_documents_for_review(
+                request.document_ids,
+                reason="negative_feedback",
+                feedback_id=feedback_id,
+            )
+
+        logger.info(
+            f"反馈提交: {feedback_id} - {request.rating} (user={current_user.user_id}, "
+            f"待复核文档: {reviewed_count})"
+        )
         return FeedbackResponse(feedback_id=feedback_id, message="反馈已提交")
 
     except HTTPException:

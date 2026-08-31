@@ -21,6 +21,7 @@ except ImportError:
     logger.warning("langgraph-checkpoint-sqlite 未安装，无法使用 SQLite 持久化")
 
 from .state import AgentState
+from ..core.config import settings
 from .tools import (
     create_tools,
     set_retriever,
@@ -28,6 +29,7 @@ from .tools import (
     pop_retrieval_buffer,
     set_conversation_context,
     set_current_user_id,
+    set_current_org_id,
     set_query_rewriter_llm,
 )
 
@@ -353,13 +355,40 @@ class LangGraphAgent:
         return {server_type: _server_config(server_type, os.path.basename(server_path))}
 
     async def _ensure_saver(self):
-        """延迟初始化 AsyncSqliteSaver（需在异步上下文中调用）
+        """延迟初始化 checkpointer（需在异步上下文中调用）
 
-        langgraph 0.4.x 中 AsyncSqliteSaver 需要 aiosqlite.Connection，
-        只能在异步上下文中创建。首次 run() 时从 MemorySaver 切换为 SQLite 持久化。
+        双后端（settings.CHECKPOINT_BACKEND）：
+        - sqlite（默认，单机开发）：AsyncSqliteSaver，单文件，多实例会锁冲突
+        - mongodb（生产/多副本）：MongoDBSaver（langgraph-checkpoint-mongodb），
+          checkpoint 落 Mongo 与事故/任务数据同库，全集群共享会话现场，
+          任一实例可恢复同一 incident 的会话——横向扩容的前提
         """
         if self._saver_initialized or not self.checkpoint_path:
             return
+
+        backend = getattr(settings, "CHECKPOINT_BACKEND", "sqlite") or "sqlite"
+
+        if backend == "mongodb":
+            try:
+                from pymongo import MongoClient
+                from langgraph.checkpoint.mongodb import MongoDBSaver
+                client = MongoClient(
+                    settings.MONGODB_URL, serverSelectionTimeoutMS=5000,
+                )
+                self.memory = MongoDBSaver(
+                    client,
+                    db_name=settings.MONGODB_DB_NAME or "education_agent",
+                    checkpoint_collection_name="checkpoints",
+                )
+                self.graph = self._build_graph()
+                self._saver_initialized = True
+                logger.info(f"Checkpoint 切换为 MongoDB 持久化: db={settings.MONGODB_DB_NAME}")
+                return
+            except Exception as e:
+                logger.warning(f"MongoDB checkpointer 初始化失败，降级为 MemorySaver: {e}")
+                self._saver_initialized = True
+                return
+
         if not HAS_ASYNC_SQLITE:
             logger.warning("AsyncSqliteSaver 不可用，继续使用 MemorySaver")
             self._saver_initialized = True
@@ -552,6 +581,9 @@ class LangGraphAgent:
         # 兼容降级：仍设置 contextvars，供非 LangGraph 上下文直接调用工具时使用
         set_conversation_context(messages)
         set_current_user_id(user_id)
+        # 组织上下文：登录用户来自 task_context.org_id（JWT），
+        # 自动诊断服务身份来自 DIAGNOSIS_ORG_ID（alerts 构造 context 时注入）
+        set_current_org_id((task_context or {}).get("org_id"))
 
         # 添加系统提示（注入记忆上下文）
         system_prompt = self._build_system_prompt(state, user_id=user_id)
@@ -667,6 +699,7 @@ class LangGraphAgent:
             #          query_alerts / query_alertmanager / query_silences
             _MONITORING_TOOL_NAMES = {
                 'query_metrics', 'query_logs', 'analyze_chart',
+                'get_recent_changes',
                 'query_prometheus', 'query_prometheus_range', 'query_system_overview',
                 'query_loki', 'list_containers',
                 'query_alerts', 'query_alertmanager', 'query_silences',
@@ -708,6 +741,8 @@ class LangGraphAgent:
                 ev = LangGraphAgent._parse_logs_evidence(data)
             elif tool_name in ('query_alerts', 'query_alertmanager'):
                 ev = LangGraphAgent._parse_alerts_evidence(data)
+            elif tool_name == 'get_recent_changes':
+                ev = LangGraphAgent._parse_changes_evidence(data)
             else:
                 ev = None  # list_containers / query_silences 等辅助工具，不提取为证据
             if ev:
@@ -1019,6 +1054,38 @@ class LangGraphAgent:
         }
 
     @staticmethod
+    def _parse_changes_evidence(data: Dict) -> Optional[Dict]:
+        """解析 get_recent_changes 返回的 JSON 为变更事件证据
+
+        返回格式: {"service":"...", "hours":N, "count":N, "changes":[{change_id,type,time,description}]}
+        变更是生产故障的第一大根因，单独作为一类证据（type="changes"）进入证据看板。
+        """
+        changes = data.get("changes", [])
+        if not changes:
+            return {
+                "type": "changes",
+                "service": data.get("service", "unknown"),
+                "summary": f"最近 {data.get('hours', 24)}h 无变更事件",
+                "details": {"count": 0},
+            }
+
+        type_mark = {
+            "deploy": "发版", "config_change": "配置变更",
+            "scale": "扩缩容", "infra": "基础设施",
+        }
+        parts = []
+        for c in changes[:3]:
+            t = type_mark.get(c.get("type", ""), c.get("type", "变更"))
+            parts.append(f"[{t}] {c.get('time', '?')} {c.get('description', '')[:60]}")
+
+        return {
+            "type": "changes",
+            "service": data.get("service", "unknown"),
+            "summary": f"最近 {data.get('hours', 24)}h {len(changes)} 条变更: " + "；".join(parts),
+            "details": {"count": len(changes), "changes": changes[:5]},
+        }
+
+    @staticmethod
     def _build_citations(retrieved_docs: List[Dict]) -> List[Dict]:
         """从检索结果构建引用列表（去重 + 按分数排序 + 重新编号）
 
@@ -1051,6 +1118,8 @@ class LangGraphAgent:
                 "image_path": doc.get("image_path"),
                 "doc_type": doc.get("doc_type", ""),
                 "service": doc.get("service", ""),
+                # 知识时效：检索层对过期文档打了 _expired 标记（valid_until 已过）
+                "expired": bool((doc.get("metadata") or {}).get("_expired")),
             })
         return citations
 
@@ -1498,7 +1567,8 @@ class LangGraphAgent:
 #### 阶段 2A：实时监控取证（优先，调用 query_metrics / query_logs）
 线上故障诊断**必须先看实时监控**，拿到现场证据再对照知识库。这是区别于"凭经验猜"的关键。
 1. 先查 **关键指标**确认故障范围与方向（调用 query_metrics，metric=all 一次拿全）：
-   - `query_metrics(service="<svc>", metric="all")`
+   - `query_metrics(service="<svc>", metric="all", time_range="<按故障时间窗选择>")`
+   - **时间窗要与故障对齐**：用户/告警描述"30 分钟前开始报错"→ time_range="30m"；不确定时先用默认 1h，再用 6h/24h 对照（长窗口均值正常 + 短窗口异常 = 近期突发故障）
    - 重点关注：error_rate（故障范围）、connection_pool_usage + pending_connections（连接池是否打满）、qps（是否有流量突增）
 2. 根据指标方向**定向查日志**找具体异常（调用 query_logs）：
    - 若 connection_pool_usage 高 → `query_logs(service="<svc>", keyword="HikariPool")` 看连接获取失败/池打满
@@ -1514,13 +1584,30 @@ class LangGraphAgent:
    - `search_knowledge(query="<错误现象关键词>", service="<svc>", doc_type="incident")`
 3. 必要时查 **sop**（处置预案）和 **postmortem**（事故复盘）：找标准处置流程和复盘结论
 同一批独立的检索（如 manual + incident）应**并行调用**以提高效率。
+4. **历史结论冲突处理**：多条历史文档/事故对同一现象给出不同结论时，优先采用复盘日期
+   （effective_date）更新的结论，并在报告"证据"部分注明存在冲突——不要静默选边。
 
-### 阶段 3：根因定位（监控证据 + 知识库经验交叉印证）
-综合"实时监控"与"历史经验"两类证据推理根因：
+#### 阶段 2C：变更检查（调用 get_recent_changes，变更先于深挖）
+**变更是生产故障的第一大根因**。指标取证后必须检查故障时间窗内是否有变更事件：
+- `get_recent_changes(service="<svc>", hours="<与故障时间窗匹配，默认 24>")`
+- 若故障开始前存在**发版/配置变更/扩缩容**，优先沿"变更 → 影响"因果链定位根因（如"事发前 40 分钟发版新增 DB 查询" + "连接池打满" → 新查询放大连接需求）
+- **因果论证义务（防归因偏差）**：把变更定为根因/触发因素必须同时满足两个条件——变更时间**早于**故障起点、变更内容**能解释**指标异常的具体模式；仅有时间先后关系不构成因果
+- **显式区分无关变更**：时间上重叠但无法建立解释链的变更，在报告中标注为"同时发生的无关变更"，不要默认归因于最近的发布
+- 变更证据与监控证据矛盾时（有变更但指标模式不符合），以监控证据为准并在报告中说明
+- 查询变更与知识库检索相互独立，可并行调用
+
+### 阶段 3：根因定位（监控证据 + 变更事件 + 依赖拓扑 + 知识库经验交叉印证）
+综合"实时监控 + 变更事件"与"历史经验"推理根因：
 - **监控印证**：当前指标（如连接池 100% + pending 87）是否指向某个具体瓶颈？
+- **变更对照**：故障时间点附近是否有变更？变更内容能否解释指标异常的**时间起点**？
 - **历史对照**：知识库历史事故中是否出现过相同现象？当时的根因是什么？
 - **架构解释**：服务手册中描述的依赖、瓶颈点是否能解释当前监控数据？
-- 给出**最可能的根因**（而非罗列所有可能），并说明因果链：监控现象 → 瓶颈点 → 根因
+- **跨服务排查（调用 get_service_dependencies）**：本服务指标无法解释现象、或怀疑问题出在依赖时，
+  `get_service_dependencies(service="<svc>")` 获取依赖拓扑，锁定可疑依赖服务后**对其补充取证**
+  （query_metrics/query_logs 换成该服务名）；根因跨服务时说明完整因果链（"A 依赖 B，B 的 X 异常导致 A 的 Y"）
+- **变更归因纪律**：将根因归于变更时必须给出解释链（变更 → 机制 → 指标异常模式）；
+  无法建立解释链的时间重叠变更标注为"同时发生的无关变更"
+- 给出**最可能的根因**（而非罗列所有可能），并说明因果链：变更/触发因素 → 瓶颈点 → 根因
 
 ### 阶段 4：方案生成
 参考历史事故的处置方案 + SOP：
@@ -1532,12 +1619,14 @@ class LangGraphAgent:
 
 ## 工具使用规则
 
-### 监控工具（query_metrics / query_logs / analyze_chart，故障诊断首选）
-- 线上故障诊断**必须先调用 query_metrics 看实时指标**，拿到现场证据再查知识库
-- query_metrics(service, metric="all") 一次拿全指标，避免多次调用
+### 监控与变更工具（query_metrics / query_logs / analyze_chart / get_recent_changes / get_service_dependencies，故障诊断首选）
+- 线上故障诊断**必须先调用 query_metrics 看指标**，拿到现场证据再查知识库
+- query_metrics(service, metric="all", time_range) 一次拿全指标，时间窗与故障对齐，避免多次调用
 - query_logs 根据指标结果定向查（HikariPool/slow_query/error），关键词由指标方向决定
+- get_recent_changes(service, hours) 查故障时间窗内的变更事件，**诊断必查**——变更是第一大根因
+- get_service_dependencies(service) 查服务依赖拓扑——本服务指标解释不了现象时查依赖、对依赖补充取证
 - 需要理解图表形态（曲线突刺/触顶/跨指标关联）时 → analyze_chart(service)，VLM 看图输出异常模式与洞察
-- 监控数据是"现场证据"，知识库是"历史经验"，两者交叉印证才能定位根因
+- 监控数据是"现场证据"，变更事件是"触发因素"，依赖拓扑是"影响面地图"，知识库是"历史经验"，交叉印证才能定位根因
 
 ### 必须调用 search_knowledge 的场景
 任何运维诊断问题，**在查完监控后必须检索知识库**再回答。诊断流程中至少调用 2 次 search_knowledge（manual + incident）。
@@ -1550,6 +1639,7 @@ class LangGraphAgent:
 
 ### 其他工具
 - 最新版本/外部信息 → web_search（互联网更及时）
+- **创建工单** → create_incident_ticket：仅当 P1/P2 级故障诊断完成、或用户明确要求时调用（诊断结论落地跟进），诊断中途不要调用
 - 用户画像/记忆 → get_user_profile / search_memory（诊断场景少用）
 - 保存诊断结论 → save_memory
 
@@ -1643,6 +1733,125 @@ class LangGraphAgent:
 - 不要在报告中假装有监控数据
 """
 
+    @staticmethod
+    def _compute_evidence_sufficiency(
+        monitoring_evidence: List[Dict],
+        citations: List[Dict],
+        tools_used: List[str],
+        diagnosis_report: Optional[Dict],
+        mcp_degraded: bool = False,
+    ) -> Dict[str, Any]:
+        """规则计算的"证据充分度"（校准 LLM 自报置信度的过度自信）
+
+        与 LLM 置信度的关系：置信度是模型对"我的结论对不对"的主观自评，
+        充分度是"这次诊断拿到的客观证据够不够"的规则化度量——两者正交，
+        展示时取较低者作为建议采信级别。
+
+        因子（满分 100）：
+        - 监控取证 30（metrics/logs/alerts/chart 各 15，封顶 30）
+        - 知识库命中 25（≥2 条引用 25，1 条 12）
+        - 变更检查 15（get_recent_changes 已执行且有事件或明确查过）
+        - 跨服务拓扑 10（get_service_dependencies 已执行）
+        - 报告完整性 20（根因+方案 20，仅有其一 10）
+        - 监控源降级 → 总分封顶 50（对应 prompt 层"置信度最高中"的数值化）
+        """
+        factors: Dict[str, Any] = {}
+        score = 0
+
+        # 1. 监控取证（按证据类型计数，封顶 30）
+        mon_types = {e.get("type") for e in (monitoring_evidence or []) if e.get("type")}
+        mon_score = min(30, 15 * len(mon_types))
+        score += mon_score
+        factors["monitoring"] = {"score": mon_score, "types": sorted(mon_types)}
+
+        # 2. 知识库命中
+        cite_count = len(citations or [])
+        kb_score = 25 if cite_count >= 2 else (12 if cite_count == 1 else 0)
+        score += kb_score
+        factors["knowledge"] = {"score": kb_score, "citations": cite_count}
+
+        # 3. 变更检查
+        tools = set(tools_used or [])
+        change_score = 15 if "get_recent_changes" in tools else 0
+        score += change_score
+        factors["change_check"] = {"score": change_score}
+
+        # 4. 跨服务拓扑
+        topo_score = 10 if "get_service_dependencies" in tools else 0
+        score += topo_score
+        factors["topology"] = {"score": topo_score}
+
+        # 5. 报告完整性
+        if diagnosis_report:
+            has_root = bool(diagnosis_report.get("root_cause"))
+            has_solution = bool(diagnosis_report.get("solution"))
+            report_score = 20 if (has_root and has_solution) else (10 if (has_root or has_solution) else 0)
+        else:
+            report_score = 0
+        score += report_score
+        factors["report_complete"] = {"score": report_score}
+
+        # 6. 监控源降级封顶
+        capped = False
+        if mcp_degraded:
+            if score > 50:
+                score = 50
+                capped = True
+        factors["mcp_degraded"] = {"capped": capped, "degraded": bool(mcp_degraded)}
+
+        level = "high" if score >= 70 else ("medium" if score >= 40 else "low")
+        return {"score": score, "level": level, "factors": factors}
+
+    def _get_sufficiency_for_run(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """从 run 的结果组件计算证据充分度（含 MCP 降级判定）"""
+        mcp_status = getattr(self, "_mcp_status", "ok")
+        degraded = mcp_status in ("failed", "timeout")
+        return self._compute_evidence_sufficiency(
+            monitoring_evidence=result.get("monitoring_evidence"),
+            citations=result.get("citations"),
+            tools_used=result.get("tools_used"),
+            diagnosis_report=result.get("diagnosis_report"),
+            mcp_degraded=degraded,
+        )
+
+    async def _write_tool_audit_log(self, messages, user_id, session_id, intent):
+        """将本次 run 的所有工具调用写入审计日志（Mongo tool_audit_logs）
+
+        审计动机：Agent 会把监控数据/知识库内容发给外部 LLM API，且可能执行
+        有副作用的操作（创建工单）。企业安全评审要求这些动作可追溯——
+        谁在什么会话里、以什么意图、调用了什么工具、传了什么参数。
+
+        从消息历史提取（AIMessage.tool_calls 与 ToolMessage 一一对应），
+        参数截断到 200 字符防止日志膨胀。
+        """
+        import uuid as _uuid
+        from datetime import datetime as _dt
+
+        audit_entries = []
+        for msg in messages:
+            if not isinstance(msg, AIMessage):
+                continue
+            for tc in (getattr(msg, 'tool_calls', None) or []):
+                args = tc.get('args') or {}
+                args_str = str(args)
+                audit_entries.append({
+                    "audit_id": f"audit_{_uuid.uuid4().hex[:12]}",
+                    "tool_name": tc.get('name', 'unknown'),
+                    "tool_args": args_str[:200],
+                    "user_id": user_id or "",
+                    "session_id": session_id or "",
+                    "intent": intent,
+                })
+        if not audit_entries:
+            return
+
+        now_str = _dt.now().isoformat()
+        from ..core.database import db
+        for entry in audit_entries:
+            entry["created_at"] = now_str
+            await db.save_tool_audit_log(entry)
+        logger.debug(f"工具审计日志已写入: {len(audit_entries)} 条")
+
     async def run(self, user_input: str, session_id: str = None, context: Dict = None, use_web_search: bool = False) -> Dict:
         """
         运行 Agent
@@ -1698,7 +1907,7 @@ class LangGraphAgent:
             # 解析结构化诊断报告（仅诊断链路有，QA 链路返回 None）
             diagnosis_report = self._parse_diagnosis_report(final_content) if intent == "diagnosis" else None
 
-            return {
+            result = {
                 "content": final_content,
                 "tools_used": final_state.get("tools_used", []),
                 "citations": self._build_citations(final_state.get("retrieved_docs", [])),
@@ -1706,6 +1915,24 @@ class LangGraphAgent:
                 "diagnosis_report": diagnosis_report,
                 "step_count": final_state.get("step_count", 0),
             }
+
+            # 证据充分度（规则计算，校准 LLM 自报置信度）——仅诊断链路有意义
+            if intent == "diagnosis":
+                result["evidence_sufficiency"] = self._get_sufficiency_for_run(result)
+
+            # 工具调用审计：记录本次 run 的所有工具调用（名称+参数+调用者），
+            # 满足"哪些数据发给了外部 LLM"的可追溯要求。审计失败不影响诊断主链路。
+            try:
+                await self._write_tool_audit_log(
+                    messages=messages,
+                    user_id=(context or {}).get("user_id"),
+                    session_id=session_id,
+                    intent=intent,
+                )
+            except Exception as audit_err:
+                logger.warning(f"工具审计日志写入失败（不影响诊断）: {audit_err}")
+
+            return result
 
         except Exception as e:
             logger.error(f"Agent 执行失败: {e}", exc_info=True)

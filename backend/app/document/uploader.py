@@ -255,6 +255,16 @@ class DocumentUploader:
         # 这些字段会随 metadata_base 合并到每个 chunk，支撑 hybrid_search_parent_child 的 metadata_filter
         if extra_metadata:
             metadata_base.update(extra_metadata)
+        # 无 frontmatter 时自动分类兜底（单点覆盖全部上传路径：API/批量/Celery/降级/种子脚本）：
+        # 从文件名/标题/内容开头推断 doc_type/service——缺字段会导致 Agent 的
+        # service+doc_type 过滤命中不到该文档。推断值标记 source=auto_inferred 便于复核。
+        if not (extra_metadata or {}).get("doc_type") or not (extra_metadata or {}).get("service"):
+            from .frontmatter import infer_business_metadata
+            content_head = (getattr(chunks[0], "text", "") or "")[:2000] if chunks else ""
+            inferred = infer_business_metadata(filename, title, content_head)
+            for k, v in inferred.items():
+                if not metadata_base.get(k):
+                    metadata_base[k] = v
         if file_info:
             metadata_base["file_path"] = file_info.get("file_path")
             metadata_base["file_size"] = file_info.get("file_size")

@@ -1,0 +1,31 @@
+{
+  "_comment": "服务依赖拓扑（get_service_dependencies 工具数据源）。真实落地时替换此文件或由 APM/K8s 服务发现自动生成——工具与 prompt 不用改。depends_on = 本服务调用的下游（故障可能源于此）；called_by = 调用本服务的上游（故障影响面）。与种子事故对齐：payment-service 依赖 mysql（慢查询→连接池耗尽）。",
+  "payment-service": {
+    "depends_on": ["mysql", "redis", "order-service"],
+    "called_by": ["api-gateway"]
+  },
+  "order-service": {
+    "depends_on": ["mysql", "inventory-service", "redis"],
+    "called_by": ["payment-service", "api-gateway"]
+  },
+  "inventory-service": {
+    "depends_on": ["mysql"],
+    "called_by": ["order-service"]
+  },
+  "user-service": {
+    "depends_on": ["mysql", "redis"],
+    "called_by": ["api-gateway"]
+  },
+  "api-gateway": {
+    "depends_on": ["payment-service", "order-service", "user-service"],
+    "called_by": []
+  },
+  "mysql": {
+    "depends_on": [],
+    "called_by": ["payment-service", "order-service", "inventory-service", "user-service"]
+  },
+  "redis": {
+    "depends_on": [],
+    "called_by": ["payment-service", "order-service", "user-service"]
+  }
+}

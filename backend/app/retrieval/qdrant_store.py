@@ -705,15 +705,31 @@ class QdrantVectorStore:
             for sk, sv in sub.items():
                 target.append(FieldCondition(key=sk, match=MatchValue(value=sv)))
 
-        def _parse(clause: Dict):
+        def _parse(clause: Dict, must: List, should: List, must_not: List):
             for k, v in clause.items():
                 if k == "$and":
                     for sub in v:
-                        _parse(sub)
+                        _parse(sub, must, should, must_not)
                 elif k == "$or":
-                    # $or 子项作为 should 条件（OR 语义）
+                    # $or 子项作为 should 条件（OR 语义）。
+                    # 子项含 $ 操作符（如 $and/$or_empty）时递归解析为嵌套 Filter 组，
+                    # 支撑可见性语义 shared OR (org AND user) 的 OR-of-groups 表达
                     for sub in v:
-                        _add_simple(sub, should)
+                        if any(sk.startswith("$") for sk in sub):
+                            sub_must: List[Any] = []
+                            sub_should: List[Any] = []
+                            sub_must_not: List[Any] = []
+                            _parse(sub, sub_must, sub_should, sub_must_not)
+                            sub_kwargs: Dict[str, Any] = {}
+                            if sub_must:
+                                sub_kwargs["must"] = sub_must
+                            if sub_should:
+                                sub_kwargs["should"] = sub_should
+                            if sub_must_not:
+                                sub_kwargs["must_not"] = sub_must_not
+                            should.append(Filter(**sub_kwargs))
+                        else:
+                            _add_simple(sub, should)
                 elif k == "$or_empty":
                     # 字段一定存在，空串=公共：should [MatchValue(""), MatchValue(v)]
                     key = v["key"]
@@ -729,7 +745,7 @@ class QdrantVectorStore:
                 else:
                     must.append(FieldCondition(key=k, match=MatchValue(value=v)))
 
-        _parse(filters)
+        _parse(filters, must, should, must_not)
 
         if not must and not should and not must_not:
             return None
