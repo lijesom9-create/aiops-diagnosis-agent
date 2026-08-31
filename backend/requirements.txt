@@ -4,7 +4,7 @@ uvicorn[standard]==0.34.0
 python-multipart==0.0.20  # FastAPI 表单/文件上传（UploadFile/Form）所需
 
 # 数据库（MongoDB）
-pymongo==4.17.0  # motor 的底层驱动
+pymongo==4.16.0  # motor 底层驱动；pin 4.16 以兼容 langchain-mongodb（其约束 pymongo<4.17）
 motor==3.7.1  # 异步 MongoDB 驱动
 
 # 认证与安全
@@ -25,6 +25,7 @@ langchain-core==1.5.3
 langchain-text-splitters==1.1.1  # 文档分块
 langgraph==1.1.6
 langgraph-checkpoint-sqlite==3.0.3  # LangGraph SQLite 持久化检查点
+langgraph-checkpoint-mongodb==0.4.0  # LangGraph Mongo 检查点（多副本共享会话，CHECKPOINT_BACKEND=mongodb）
 aiosqlite==0.22.1  # 异步 SQLite（AsyncSqliteSaver 所需）
 
 # MCP (Model Context Protocol) 监控工具集成
@@ -69,5 +70,5 @@ redis==5.3.1  # 可选缓存与限流后端
 celery==5.5.3  # 分布式任务队列，broker 复用 Redis
 
 # 工具库
-pydantic==2.12.5
+pydantic==2.13.5  # >=2.13 为 langchain-mongodb（checkpoint 依赖）的最低要求
 pydantic-settings==2.14.2

@@ -10,6 +10,7 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 import sys
+import asyncio
 import uuid
 from contextvars import ContextVar
 
@@ -84,13 +85,32 @@ async def lifespan(app: FastAPI):
             from app.api.langgraph import get_agent
             agent = get_agent()
             mcp_count = await agent.init_mcp_tools()
-            logger.info(f"MCP 监控工具已加载: {mcp_count} 个")
+            logger.info(f"MCP 工具已加载: {mcp_count} 个")
         except Exception as e:
             logger.warning(f"MCP 工具加载失败（Agent 将仅使用知识库工具）: {e}")
+
+    # 诊断 worker（持久化任务表消费循环）：
+    # 1) 启动时捞回上进程遗留任务（僵尸 running → pending），重启不丢诊断
+    # 2) 原子认领保证多副本部署时不重复诊断
+    worker_task = None
+    if settings.ALERT_AUTO_DIAGNOSIS_ENABLED:
+        try:
+            recovered = await db.recover_stale_diagnosis_tasks(settings.DIAG_TASK_STALE_SECONDS)
+            if recovered:
+                logger.info(f"诊断任务恢复: {recovered} 个遗留任务回到队列")
+            worker_task = asyncio.create_task(alerts.diagnosis_worker_loop())
+            logger.info("诊断 worker 已启动（任务表持久化模式）")
+        except Exception as e:
+            logger.warning(f"诊断 worker 启动失败（自动诊断不可用，不影响主服务）: {e}")
 
     yield
 
     # 关闭时：每个步骤独立 try/except，确保全部执行（防止一个失败导致后续资源泄漏）
+    if worker_task:
+        try:
+            worker_task.cancel()
+        except Exception as e:
+            logger.exception(f"取消诊断 worker 失败: {e}")
     from app.core.ai_service import ai_service
     try:
         if hasattr(ai_service, 'close'):
