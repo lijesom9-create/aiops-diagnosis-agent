@@ -14,8 +14,9 @@ PyMuPDF PDF 解析器
 """
 
 import re
-from typing import List, Dict, Optional, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
+
 from loguru import logger
 
 

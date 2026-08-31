@@ -17,9 +17,9 @@ P1-2 优化：使用 tiktoken 计算 LLM 上下文 token 数，超限时按优�
 - p50k_base: text-davinci-003 / Codex
 """
 
-from typing import List, Optional, Dict, Any, Tuple
-from loguru import logger
+from typing import Any, Dict, List, Optional, Tuple
 
+from loguru import logger
 
 # 模型 → 编码器映射（简化版）
 _MODEL_TO_ENCODING = {

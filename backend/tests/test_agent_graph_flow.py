@@ -25,7 +25,6 @@ Agent 图流转端到端测试（专题：端到端测试）
     cd backend
     python -m pytest tests/test_agent_graph_flow.py -v
 """
-import asyncio
 import json
 import os
 import sys
@@ -46,8 +45,7 @@ try:
 except Exception:
     pass
 
-from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
-
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 # ========== Mock ToolNode ==========
 

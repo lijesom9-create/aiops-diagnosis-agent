@@ -10,6 +10,7 @@ Embedding Models - 嵌入模型接口
 """
 
 import os
+
 # 在 import sentence_transformers/huggingface_hub 之前就启用离线模式，
 # 避免每次加载本地模型都向 huggingface.co 发 HEAD 请求检查更新
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -18,8 +19,9 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 import math
 import re
 from abc import ABC, abstractmethod
-from typing import List, Dict, Optional
 from collections import Counter
+from typing import Dict, List, Optional
+
 from loguru import logger
 
 

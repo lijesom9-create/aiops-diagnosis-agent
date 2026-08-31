@@ -16,14 +16,12 @@ Vision Language Model (VLM) Client - 视觉语言模型客户端
 import base64
 import json
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, List, Tuple
-from pathlib import Path
-from loguru import logger
+from typing import Dict, Optional
 
 import httpx
+from loguru import logger
 
 from ..core.config import settings
-
 
 # 用于图片理解的统一 prompt（中文友好，强调检索可用性）
 # 关键改进：增加 text_in_image 字段，让 VLM 转录图片中的文字/代码（对图片型课件至关重要）
@@ -115,9 +113,9 @@ class OpenAICompatibleVLM(VLMProvider):
         失败时（含熔断/限流触发）返回 fallback 空结果，让上层用 OCR 兜底
         """
         from ..core.circuit_breaker import (
-            ResilienceContext,
             CircuitOpenError,
             RateLimitExceededError,
+            ResilienceContext,
         )
 
         # base64 编码

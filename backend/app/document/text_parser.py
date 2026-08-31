@@ -5,13 +5,15 @@ Text/Markdown Parser - 轻量解析器
 """
 
 import re
-from typing import List, Optional
 from pathlib import Path
-from loguru import logger
+from typing import List, Optional
 
 from .models import (
-    ElementType, ElementMetadata, DocumentElement,
-    DocumentMetadata, StructuredDocument,
+    DocumentElement,
+    DocumentMetadata,
+    ElementMetadata,
+    ElementType,
+    StructuredDocument,
 )
 
 
@@ -199,8 +201,8 @@ class TextParser:
         for para in paragraphs:
             lines = para.split("\n")
             is_list = any(
-                re.match(r'^[\s]*[-*+]\s+', l) or re.match(r'^[\s]*\d+\.\s+', l)
-                for l in lines
+                re.match(r'^[\s]*[-*+]\s+', line) or re.match(r'^[\s]*\d+\.\s+', line)
+                for line in lines
             )
             if is_list:
                 for line in lines:

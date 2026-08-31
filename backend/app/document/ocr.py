@@ -12,10 +12,9 @@ OCR 模块
 - EasyOCR: pip install easyocr
 """
 
-import io
 import tempfile
-from typing import List, Dict, Optional, Tuple
-from pathlib import Path
+from typing import List
+
 from loguru import logger
 
 
@@ -50,7 +49,7 @@ class OCRProcessor:
         """初始化 Tesseract"""
         try:
             import pytesseract
-            from PIL import Image
+            from PIL import Image  # noqa: F401  # 可用性探测导入
 
             # 检查 tesseract 是否可用
             pytesseract.get_tesseract_version()
@@ -144,7 +143,7 @@ class OCRProcessor:
                 import os
                 try:
                     os.unlink(tmp_path)
-                except:
+                except OSError:
                     pass
 
         return "\n\n".join(texts)

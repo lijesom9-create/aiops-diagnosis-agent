@@ -22,13 +22,11 @@
     cd backend
     python -m pytest tests/test_ops_e2e.py -v
 """
-import asyncio
 import json
 import sys
-import os
 import uuid
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -36,7 +34,6 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
 from fastapi.testclient import TestClient
-
 
 # ========== Mock 对象工厂 ==========
 
@@ -118,10 +115,10 @@ def app_client():
     - app.core.cache.get_cache → mock 缓存（get 永远返回 None，避免跨事件循环 Lock 报错）
     - app.api.langgraph._auto_generate_title → 空操作（避免 mock agent.llm 的 ainvoke 问题）
     """
-    from main import app
     from app.core.auth import get_current_user
     from app.core.database import get_db
     from app.core.rate_limiter import rate_limit_dep
+    from main import app
 
     mock_user = _make_mock_user()
     mock_db = _make_mock_db(user_id=mock_user.user_id)

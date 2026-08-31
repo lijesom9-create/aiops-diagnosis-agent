@@ -4,19 +4,19 @@ JWT token管理和用户认证
 支持双模式：httpOnly cookie（主） + Authorization 头（兼容）
 """
 
-from datetime import datetime, timedelta, timezone
-from typing import Optional
-import jwt
-from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status, Request
-from pydantic import BaseModel, Field
-from loguru import logger
-from enum import Enum
 import uuid
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+from typing import Optional
+
+import jwt
+from fastapi import Depends, HTTPException, Request, status
+from loguru import logger
+from passlib.context import CryptContext
+from pydantic import BaseModel, Field
 
 from .config import settings
 from .database import db
-
 
 # 密码加密上下文
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

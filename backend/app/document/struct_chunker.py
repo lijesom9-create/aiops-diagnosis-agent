@@ -10,10 +10,13 @@ Structure-Aware Chunker - 基于文档结构的分块器
 
 import uuid
 from typing import List
+
 from loguru import logger
 
 from .models import (
-    ElementType, StructuredDocument, Chunk,
+    Chunk,
+    ElementType,
+    StructuredDocument,
 )
 
 

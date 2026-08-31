@@ -8,12 +8,16 @@ Docling Parser - 基于 Docling 的结构化 PDF/DOCX 解析器
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional, Set, List
+from typing import List, Optional
+
 from loguru import logger
 
 from .models import (
-    ElementType, ElementMetadata, DocumentElement,
-    DocumentMetadata, StructuredDocument,
+    DocumentElement,
+    DocumentMetadata,
+    ElementMetadata,
+    ElementType,
+    StructuredDocument,
 )
 
 
@@ -39,6 +43,7 @@ class DoclingParser:
     def _ocr_fallback(self, pdf_path: str):
         """扫描版 PDF 的 OCR 降级：逐页渲染为图片 → OCR 提取文本"""
         import tempfile
+
         from .models import ElementMetadata
 
         try:
@@ -104,9 +109,9 @@ class DoclingParser:
             os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
             os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-            from docling.document_converter import DocumentConverter, PdfFormatOption
             from docling.datamodel.base_models import InputFormat
             from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import DocumentConverter, PdfFormatOption
 
             # 配置图片提取（默认 False，必须显式开启）
             pipeline_options = PdfPipelineOptions()
@@ -302,6 +307,7 @@ class DoclingParser:
                 elif hasattr(img_obj, "data") and img_obj.data:
                     # 字节流
                     from io import BytesIO
+
                     from PIL import Image
                     pil_image = Image.open(BytesIO(img_obj.data))
 

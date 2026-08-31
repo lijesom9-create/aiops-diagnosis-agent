@@ -1,9 +1,7 @@
 """Tests for Parent-Child Chunker"""
 
-import pytest
 
 from app.document.models import (
-    Chunk,
     DocumentElement,
     DocumentMetadata,
     ElementMetadata,

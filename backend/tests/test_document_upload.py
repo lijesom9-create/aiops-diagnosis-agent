@@ -2,12 +2,11 @@
 文档上传与教材解析测试
 """
 
-import pytest
-import io
-from unittest.mock import AsyncMock, patch
 
-from app.document.parser import DocumentParser
+import pytest
+
 from app.document.chunker import DocumentChunker
+from app.document.parser import DocumentParser
 from app.document.uploader import DocumentUploader
 
 

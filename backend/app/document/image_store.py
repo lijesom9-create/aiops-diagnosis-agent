@@ -14,9 +14,9 @@ Image Store - 多模态 RAG 图片存储管理
 import os
 import uuid
 from pathlib import Path
-from typing import Optional, List
-from loguru import logger
+from typing import List, Optional
 
+from loguru import logger
 
 # 默认根目录：backend/data/images（相对 backend 启动目录）
 _DEFAULT_ROOT = Path(__file__).resolve().parents[2] / "data" / "images"

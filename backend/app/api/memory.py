@@ -4,14 +4,14 @@
 提供对话历史、用户画像、档案记忆管理功能。
 """
 
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
 from loguru import logger
+from pydantic import BaseModel, Field
 
-from ..core.auth import get_current_user, UserResponse
+from ..core.auth import UserResponse, get_current_user
 from ..shared_services import get_memory_manager
-
 
 router = APIRouter(prefix="/api/memory", tags=["记忆管理"])
 

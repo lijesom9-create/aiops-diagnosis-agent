@@ -26,13 +26,11 @@ RAGAS 风格的 RAG 评估工具（轻量自实现版）
 import argparse
 import asyncio
 import json
-import os
 import re
 import shutil
 import statistics
-import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 

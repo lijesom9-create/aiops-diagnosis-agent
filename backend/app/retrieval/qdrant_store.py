@@ -11,19 +11,18 @@ Qdrant Vector Store - 基于 Qdrant 的向量存储
 - 内容哈希去重、批量处理
 """
 
-import os
-import hashlib
-import uuid
 import functools
-import time
+import hashlib
+import os
 import sqlite3
-from typing import List, Dict, Optional, Tuple, Set, Any
+import time
+import uuid
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from loguru import logger
 
-from .embeddings import EmbeddingModel
 from .chroma_store import ChromaDBVectorStore  # 复用 clean_markdown
-
+from .embeddings import EmbeddingModel
 
 # ========== Qdrant 操作重试装饰器 ==========
 # 只重试连接/锁相关异常（sqlite 锁冲突、网络断连），不重试逻辑错误
@@ -158,7 +157,7 @@ class QdrantVectorStore:
             # 集合不存在，创建
             if self._has_sparse:
                 # 混合检索模式：dense（named vector）+ sparse 共存
-                from qdrant_client.models import SparseVectorParams, SparseIndexParams
+                from qdrant_client.models import SparseIndexParams, SparseVectorParams
                 self._client.create_collection(
                     collection_name=collection_name,
                     vectors_config={
@@ -445,7 +444,6 @@ class QdrantVectorStore:
         """获取已存在的 ID 集合"""
         if not doc_ids:
             return set()
-        from qdrant_client.models import PointIdsList
 
         existing = set()
         batch_size = 1000
@@ -535,7 +533,7 @@ class QdrantVectorStore:
 
     def get_by_document(self, document_id: str) -> List[Dict]:
         """获取文档的所有分块"""
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
 
         try:
             points, _ = self._client.scroll(
@@ -694,7 +692,7 @@ class QdrantVectorStore:
         """
         if not filters:
             return None
-        from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchExcept
+        from qdrant_client.models import FieldCondition, Filter, MatchExcept, MatchValue
 
         must: List[Any] = []
         should: List[Any] = []
@@ -868,7 +866,7 @@ class QdrantVectorStore:
 
     def delete_by_document(self, document_id: str) -> int:
         """删除文档的所有分块"""
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
 
         try:
             self._client.delete(
@@ -893,7 +891,7 @@ class QdrantVectorStore:
 
         支持按 doc_id 删除或按元数据过滤条件删除
         """
-        from qdrant_client.models import PointIdsList, Filter
+        from qdrant_client.models import PointIdsList
 
         try:
             if doc_id:
@@ -920,7 +918,6 @@ class QdrantVectorStore:
 
     def delete_by_filter(self, filters: Dict) -> int:
         """按过滤条件删除"""
-        from qdrant_client.models import Filter
 
         try:
             qdrant_filter = self._convert_filter(filters)

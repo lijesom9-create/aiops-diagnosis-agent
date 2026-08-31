@@ -21,10 +21,9 @@
 import asyncio
 import time
 from enum import Enum
-from typing import Optional, Callable, Awaitable, TypeVar, Dict
-from contextlib import asynccontextmanager
-from loguru import logger
+from typing import Awaitable, Callable, Dict, Optional, TypeVar
 
+from loguru import logger
 
 T = TypeVar("T")
 
@@ -370,8 +369,8 @@ def with_resilience(
     def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         async def wrapper(self, *args, **kwargs):
             b = breaker(self) if callable(breaker) else breaker
-            l = limiter(self) if callable(limiter) else limiter
-            async with ResilienceContext(b, l):
+            rate_limiter = limiter(self) if callable(limiter) else limiter
+            async with ResilienceContext(b, rate_limiter):
                 return await func(self, *args, **kwargs)
         return wrapper
     return decorator
@@ -413,5 +412,5 @@ def get_all_state() -> Dict:
     """获取所有熔断器/限流器状态（用于 /health 接口）"""
     return {
         "breakers": {n: b.get_state_info() for n, b in _breakers.items()},
-        "limiters": {n: l.get_state_info() for n, l in _limiters.items()},
+        "limiters": {n: limiter_state.get_state_info() for n, limiter_state in _limiters.items()},
     }

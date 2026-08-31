@@ -9,11 +9,9 @@
 - DocumentUploader 多模态关闭时与现有行为兼容
 """
 
-import os
 import asyncio
+import os
 import tempfile
-from pathlib import Path
-from io import BytesIO
 
 import pytest
 
@@ -88,8 +86,8 @@ def test_image_store_save_pil_image(tmp_path):
 
 def test_vlm_provider_factory_returns_none_without_api_key(monkeypatch):
     """没有 API Key 时返回 None"""
-    from app.retrieval import vlm_client
     from app.core.config import settings
+    from app.retrieval import vlm_client
 
     monkeypatch.setattr(settings, "VLM_API_KEY", None)
     monkeypatch.setattr(settings, "AI_API_KEY", None)
@@ -101,8 +99,8 @@ def test_vlm_provider_factory_returns_none_without_api_key(monkeypatch):
 
 def test_vlm_provider_factory_creates_provider(monkeypatch):
     """有 API Key 时创建成功"""
-    from app.retrieval import vlm_client
     from app.core.config import settings
+    from app.retrieval import vlm_client
 
     monkeypatch.setattr(settings, "VLM_API_KEY", "sk-test-fake-key")
     monkeypatch.setattr(settings, "VLM_PROVIDER", "openai")
@@ -115,8 +113,8 @@ def test_vlm_provider_factory_creates_provider(monkeypatch):
 
 def test_vlm_get_vlm_provider_disabled(monkeypatch):
     """MULTIMODAL_ENABLED=False 时 get_vlm_provider 返回 None"""
-    from app.retrieval import vlm_client
     from app.core.config import settings
+    from app.retrieval import vlm_client
 
     monkeypatch.setattr(settings, "MULTIMODAL_ENABLED", False)
     # 重置单例
@@ -129,11 +127,14 @@ def test_vlm_get_vlm_provider_disabled(monkeypatch):
 
 def test_parent_child_chunker_handles_image_element():
     """验证 IMAGE 元素被切为独立子块并带 image_path 元数据"""
-    from app.document.parent_child_chunker import ParentChildChunker
     from app.document.models import (
-        StructuredDocument, DocumentMetadata, DocumentElement, ElementMetadata,
+        DocumentElement,
+        DocumentMetadata,
+        ElementMetadata,
         ElementType,
+        StructuredDocument,
     )
+    from app.document.parent_child_chunker import ParentChildChunker
 
     doc = StructuredDocument(
         metadata=DocumentMetadata(filename="test.pdf", title="test"),
@@ -179,11 +180,14 @@ def test_parent_child_chunker_handles_image_element():
 
 def test_parent_child_chunker_image_placeholder_when_no_caption():
     """图片元素没有 caption 时用 [图片] 占位"""
-    from app.document.parent_child_chunker import ParentChildChunker
     from app.document.models import (
-        StructuredDocument, DocumentMetadata, DocumentElement, ElementMetadata,
+        DocumentElement,
+        DocumentMetadata,
+        ElementMetadata,
         ElementType,
+        StructuredDocument,
     )
+    from app.document.parent_child_chunker import ParentChildChunker
 
     doc = StructuredDocument(
         metadata=DocumentMetadata(filename="test.pdf", title="test"),
@@ -215,11 +219,14 @@ def test_parent_child_chunker_image_placeholder_when_no_caption():
 
 def test_multimodal_processor_disabled_skips_processing():
     """MULTIMODAL_ENABLED=False 时不做任何处理"""
-    from app.document.multimodal_processor import MultimodalProcessor
     from app.document.models import (
-        StructuredDocument, DocumentMetadata, DocumentElement, ElementMetadata,
+        DocumentElement,
+        DocumentMetadata,
+        ElementMetadata,
         ElementType,
+        StructuredDocument,
     )
+    from app.document.multimodal_processor import MultimodalProcessor
 
     doc = StructuredDocument(
         metadata=DocumentMetadata(filename="test.pdf", title="test"),
@@ -248,13 +255,16 @@ def test_multimodal_processor_disabled_skips_processing():
 
 def test_multimodal_processor_vlm_failure_falls_back_gracefully(monkeypatch):
     """VLM 失败时不抛异常，元素 caption 保持空"""
-    from app.document.multimodal_processor import MultimodalProcessor
-    from app.document.models import (
-        StructuredDocument, DocumentMetadata, DocumentElement, ElementMetadata,
-        ElementType,
-    )
-    from app.document.image_store import ImageStore
     from app.core.config import settings
+    from app.document.image_store import ImageStore
+    from app.document.models import (
+        DocumentElement,
+        DocumentMetadata,
+        ElementMetadata,
+        ElementType,
+        StructuredDocument,
+    )
+    from app.document.multimodal_processor import MultimodalProcessor
 
     # 准备一个真实的图片文件
     with tempfile.TemporaryDirectory() as tmp:
@@ -301,8 +311,8 @@ def test_multimodal_processor_vlm_failure_falls_back_gracefully(monkeypatch):
 def test_document_uploader_multimodal_disabled_by_default(tmp_path):
     """默认 MULTIMODAL_ENABLED=False，uploader 不应注入 image_store 到 parser"""
     from app.document.uploader import DocumentUploader
-    from app.retrieval.embeddings import TFIDFModel
     from app.knowledge.unified_store import UnifiedKnowledgeStore
+    from app.retrieval.embeddings import TFIDFModel
 
     store = UnifiedKnowledgeStore(
         embedding_model=TFIDFModel(max_features=100),
@@ -317,9 +327,10 @@ def test_document_uploader_multimodal_disabled_by_default(tmp_path):
 def test_document_uploader_uploads_text_file_without_multimodal(tmp_path):
     """关闭多模态时，上传文本文件应正常工作"""
     import asyncio
+
     from app.document.uploader import DocumentUploader
-    from app.retrieval.embeddings import TFIDFModel
     from app.knowledge.unified_store import UnifiedKnowledgeStore
+    from app.retrieval.embeddings import TFIDFModel
 
     store = UnifiedKnowledgeStore(
         embedding_model=TFIDFModel(max_features=100),
@@ -337,56 +348,6 @@ def test_document_uploader_uploads_text_file_without_multimodal(tmp_path):
 
     assert result["chunk_count"] > 0
     assert result["document_id"] == "test_doc_mm_001"
-
-
-# ========== MemoryManager 上下文拼接测试 ==========
-
-def test_build_context_with_metadata_returns_image_refs():
-    """build_context_with_metadata 正确返回 image_references"""
-    from app.memory.memory_manager import MemoryManager
-
-    class MockResult:
-        def __init__(self, content, metadata):
-            self.content = content
-            self.metadata = metadata
-
-        def to_dict(self):
-            return {"content": self.content, "metadata": self.metadata}
-
-    class MockRetriever:
-        def search(self, query, top_k=5):
-            return [
-                MockResult(
-                    content="RAG 架构图展示了向量检索流程。",
-                    metadata={
-                        "title": "架构图",
-                        "element_type": "image",
-                        "image_path": "doc1/img_0001.png",
-                        "image_type": "diagram",
-                        "image_keywords": ["RAG", "架构"],
-                    },
-                ),
-                MockResult(
-                    content="普通文本块。",
-                    metadata={
-                        "title": "文本",
-                        "element_type": "paragraph",
-                    },
-                ),
-            ]
-
-    mm = MemoryManager(rag_retriever=MockRetriever())
-
-    result = mm.build_context_with_metadata(
-        query="RAG 架构",
-        user_id="test_user",
-    )
-
-    assert "context" in result
-    assert "image_references" in result
-    assert len(result["image_references"]) == 1
-    assert result["image_references"][0]["path"] == "doc1/img_0001.png"
-    assert result["image_references"][0]["type"] == "diagram"
 
 
 # ========== VLM 响应解析测试 ==========

@@ -12,19 +12,20 @@
 """
 
 import uuid
-from typing import List, Optional, Dict
 from pathlib import Path
+from typing import Dict, List, Optional
+
 from loguru import logger
 
-from .parser import DocumentParser, ParserFactory
-from .chunker import DocumentChunker
-from .struct_chunker import StructureAwareChunker
-from .parent_child_chunker import ParentChildChunker
-from .models import Chunk, DocumentElement
-from .image_store import ImageStore, get_image_store
-from .multimodal_processor import MultimodalProcessor, get_multimodal_processor
-from ..knowledge.unified_store import UnifiedKnowledgeStore, KnowledgeItem
+from ..knowledge.unified_store import KnowledgeItem, UnifiedKnowledgeStore
 from ..storage.file_storage import FileStorage, get_file_storage
+from .chunker import DocumentChunker
+from .image_store import ImageStore, get_image_store
+from .models import Chunk
+from .multimodal_processor import MultimodalProcessor, get_multimodal_processor
+from .parent_child_chunker import ParentChildChunker
+from .parser import DocumentParser, ParserFactory
+from .struct_chunker import StructureAwareChunker
 
 
 class DocumentUploader:

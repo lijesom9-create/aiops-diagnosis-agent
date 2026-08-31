@@ -9,8 +9,9 @@
 
 import io
 import tempfile
-from typing import Optional, Dict, Any
 from pathlib import Path
+from typing import Any, Dict, Optional
+
 from loguru import logger
 
 
@@ -111,7 +112,7 @@ class DocumentParser:
             import os
             try:
                 os.unlink(tmp_path)
-            except:
+            except OSError:
                 pass
 
     def _parse_pdf(self, content: bytes, filename: str) -> str:

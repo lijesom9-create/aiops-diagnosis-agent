@@ -10,7 +10,8 @@ Reranker - 结果重排序
 
 import math
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
 from loguru import logger
 
 from .base import RetrievalResult
@@ -151,7 +152,7 @@ class CrossEncoderReranker(Reranker):
     name = "cross_encoder_reranker"
 
     # 模块级单例：同一模型名只加载一次，避免重复加载 1.1GB 模型
-    _model_cache: Dict[str, "CrossEncoder"] = {}
+    _model_cache: Dict[str, Any] = {}
 
     def __init__(
         self,
@@ -233,6 +234,7 @@ class CrossEncoderReranker(Reranker):
         """加载 ONNX 格式模型（首次自动转换并缓存到磁盘）"""
         import os
         from pathlib import Path
+
         from transformers import AutoTokenizer
 
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -295,15 +297,16 @@ class CrossEncoderReranker(Reranker):
     def _load_pytorch_model(self, cache_key: str) -> bool:
         """PyTorch 降级加载路径"""
         try:
-            from sentence_transformers import CrossEncoder
             import os
+
+            from sentence_transformers import CrossEncoder
             os.environ.setdefault("HF_HUB_OFFLINE", "1")
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
             self._model = CrossEncoder(self.model_name)
             try:
-                import torch
+                import torch  # noqa: F401  # 可用性探测导入（降级路径判定）
                 self._model.model.eval()
-                logger.info(f"CrossEncoder 已设为 eval 模式 (torch.no_grad)")
+                logger.info("CrossEncoder 已设为 eval 模式 (torch.no_grad)")
             except Exception:
                 pass
             CrossEncoderReranker._model_cache[cache_key] = {

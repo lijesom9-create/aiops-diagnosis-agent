@@ -4,8 +4,8 @@ Agent 状态定义
 定义 LangGraph Agent 的状态结构。
 """
 
-from typing import List, Dict, Any, Optional, Annotated
-from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
 from langgraph.graph import MessagesState
 
 

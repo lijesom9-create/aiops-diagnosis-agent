@@ -12,7 +12,8 @@
 """
 
 import pytest
-from app.knowledge.unified_store import UnifiedKnowledgeStore, KnowledgeItem
+
+from app.knowledge.unified_store import KnowledgeItem, UnifiedKnowledgeStore
 from app.retrieval.embeddings import TFIDFModel
 
 

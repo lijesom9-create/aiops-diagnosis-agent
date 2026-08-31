@@ -6,7 +6,7 @@ Document Data Models - 结构化文档中间表示
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 
 class ElementType(str, Enum):

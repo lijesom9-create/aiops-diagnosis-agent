@@ -3,8 +3,8 @@
 提供教育Agent的核心功能
 """
 
-from .config import settings
 from .ai_service import ai_service
+from .config import settings
 from .database import db
 
 __all__ = [

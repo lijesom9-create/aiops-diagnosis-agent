@@ -4,10 +4,10 @@ Document - 用户上传的学习资料
 跟踪资料的处理状态和元数据，支持异步解析和向量化。
 """
 
-from typing import Optional, List
+import uuid
 from datetime import datetime
 from enum import Enum
-import uuid
+from typing import List, Optional
 
 
 class BaseModel:

@@ -3,11 +3,12 @@ AI模型服务模块
 支持多个AI提供商，统一接口
 """
 
-from abc import ABC, abstractmethod
-from typing import List, Dict, Optional, AsyncIterator, Tuple
-from loguru import logger
-import httpx
 import json
+from abc import ABC, abstractmethod
+from typing import AsyncIterator, Dict, List, Optional, Tuple
+
+import httpx
+from loguru import logger
 
 from .config import settings
 

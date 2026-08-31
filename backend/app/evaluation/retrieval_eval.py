@@ -29,7 +29,6 @@ from app.knowledge.unified_store import KnowledgeItem, UnifiedKnowledgeStore
 from app.retrieval.embeddings import TFIDFModel, create_embedding_model
 from app.retrieval.reranker import CrossEncoderReranker
 
-
 EvalCase = Dict[str, Any]
 SearchFn = Callable[..., List[str]]
 

@@ -7,13 +7,13 @@ Knowledge Base Management API - 知识库管理
 - 集合管理（清空、重建索引）
 """
 
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
 from loguru import logger
+from pydantic import BaseModel
 
-from ..core.auth import require_admin, UserResponse
-
+from ..core.auth import UserResponse, require_admin
 
 router = APIRouter(prefix="/api/knowledge", tags=["知识库管理"])
 

@@ -1,9 +1,14 @@
 """Tests for document data models"""
 
 import pytest
+
 from app.document.models import (
-    ElementType, ElementMetadata, DocumentElement,
-    StructuredDocument, DocumentMetadata, Chunk
+    Chunk,
+    DocumentElement,
+    DocumentMetadata,
+    ElementMetadata,
+    ElementType,
+    StructuredDocument,
 )
 
 
@@ -131,8 +136,8 @@ class TestParserFactory:
     """Tests for ParserFactory (Task 4)"""
 
     def test_factory_returns_docling_for_pdf(self):
-        from app.document.parser import ParserFactory
         from app.document.docling_parser import DoclingParser
+        from app.document.parser import ParserFactory
         parser = ParserFactory.get_parser("test.pdf")
         assert isinstance(parser, DoclingParser)
 
@@ -150,14 +155,13 @@ class TestParserFactory:
 
     def test_factory_unknown_extension(self):
         from app.document.parser import ParserFactory
-        import pytest
         with pytest.raises(ValueError, match="不支持的文件格式"):
             ParserFactory.get_parser("test.xyz")
 
     def test_factory_parse_returns_structured_document(self):
         """端到端：工厂获取解析器 -> 解析 -> 返回结构化文档"""
-        from app.document.parser import ParserFactory
         from app.document.models import StructuredDocument
+        from app.document.parser import ParserFactory
         parser = ParserFactory.get_parser("test.txt")
         doc = parser.parse(b"Hello world", "test.txt")
         assert isinstance(doc, StructuredDocument)

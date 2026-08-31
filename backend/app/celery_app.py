@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from celery import Celery
+
 from app.core.config import settings
 
 # broker / backend 优先用 CELERY_* 配置，留空则复用 REDIS_URL

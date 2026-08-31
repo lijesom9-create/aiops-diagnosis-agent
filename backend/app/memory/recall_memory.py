@@ -12,9 +12,10 @@
 - 可以生成摘要
 """
 
-from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
 
 

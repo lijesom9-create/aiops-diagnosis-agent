@@ -3,11 +3,12 @@
 支持多环境配置和AI模型切换
 """
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import field_validator
-from typing import Optional, List
-from functools import lru_cache
 import secrets
+from functools import lru_cache
+from typing import List, Optional
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):

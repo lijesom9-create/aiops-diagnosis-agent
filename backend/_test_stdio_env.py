@@ -1,7 +1,7 @@
 """验证 stdio 子进程能否读到 PROMETHEUS_URL（模拟 Agent 的 MCP 加载流程）"""
 import asyncio
 import os
-import sys
+
 
 async def main():
     from langchain_mcp_adapters.client import MultiServerMCPClient

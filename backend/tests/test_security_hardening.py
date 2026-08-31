@@ -10,20 +10,20 @@
 不依赖 knowledge_store / feishu 初始化，测试轻量可靠。
 """
 
-import uuid
-import sys
 import os
+import sys
+import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 from fastapi.testclient import TestClient
+from test_admin_api import _register, auth_header
 
-from main import app
 from app.api.alerts import reset_feishu_client
 from app.core.config import settings
 from app.core.rate_limiter import reset_auth_rate_limiter
-from test_admin_api import _register, auth_header
+from main import app
 
 
 @pytest.fixture(scope="function")

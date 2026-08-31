@@ -13,8 +13,8 @@ Incident 生命周期测试（初诊 → 重诊 → 恢复摘要）
 全部确定性运行：mock Agent + 飞书客户端 + 内存模式 Database。
 """
 
-import sys
 import os
+import sys
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -23,7 +23,6 @@ import pytest
 
 from app.core.config import settings
 from app.core.database import Database
-
 
 # ============================================================
 # 测试基础设施
@@ -89,8 +88,8 @@ class FakeFeishu:
 @pytest.fixture
 def incident_env(monkeypatch):
     """隔离的事故测试环境：内存 db + mock agent/feishu + 放大间隔避免重诊"""
-    from app.api import alerts as alerts_mod
     import app.api.langgraph as lg
+    from app.api import alerts as alerts_mod
 
     mem_db = _memory_db()
     agent = FakeAgent()
@@ -426,7 +425,6 @@ class TestResolvedFlow:
 class TestPrompts:
 
     def test_summary_prompt_contains_timeline_and_history(self, incident_env):
-        import asyncio
         from app.api.alerts import _build_summary_prompt
 
         incident = {

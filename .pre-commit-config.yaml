@@ -1,0 +1,23 @@
+# 提交前检查：ruff lint（backend）+ 前端 eslint（可选）
+# 安装：pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff
+        name: ruff (backend)
+        args: [--fix]
+        files: ^backend/
+        exclude: ^backend/(venv|data|uploads)/
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude: ^(backend/data/|.*\.json$)
+      - id: trailing-whitespace
+        exclude: ^(backend/data/)
+      - id: check-yaml
+        exclude: ^(backend/data/)
+      - id: check-added-large-files
+        args: [--maxkb=1024]

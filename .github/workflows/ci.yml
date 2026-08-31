@@ -12,6 +12,27 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────
+  # Lint: ruff（阻塞门禁——测试之外的静态质量线）
+  # ──────────────────────────────────────────────
+  lint:
+    name: Ruff Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install ruff
+        run: pip install ruff==0.15.12
+
+      - name: Run ruff
+        run: |
+          cd backend
+          ruff check .
+
+  # ──────────────────────────────────────────────
   # Frontend: install → lint (optional) → build
   # ──────────────────────────────────────────────
   frontend:
@@ -62,6 +83,27 @@ jobs:
         run: |
           cd admin-frontend
           npm run build
+
+  # ──────────────────────────────────────────────
+  # Backend Lint: ruff（阻塞门禁——代码质量进入发布依赖链）
+  # ──────────────────────────────────────────────
+  backend-lint:
+    name: Backend Lint (ruff)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install ruff
+        run: pip install ruff==0.15.12
+
+      - name: Run ruff check
+        run: |
+          cd backend
+          ruff check .
 
   # ──────────────────────────────────────────────
   # Backend: install core deps, run critical tests.
@@ -129,7 +171,7 @@ jobs:
   docker:
     name: Docker Build & Push
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-    needs: [frontend, admin-frontend, backend]
+    needs: [frontend, admin-frontend, backend, backend-lint]
     runs-on: ubuntu-latest
     permissions:
       contents: read

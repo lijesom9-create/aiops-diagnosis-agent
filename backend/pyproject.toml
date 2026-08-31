@@ -1,0 +1,34 @@
+# 工程卫生配置：ruff lint（CI 阻塞门禁，见 .github/workflows/ci.yml 的 lint job）
+# 运行方式：python -m ruff check .        （CI）
+#           python -m ruff check . --fix （本地自动修复）
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+exclude = ["venv", "data", "uploads", "__pycache__"]
+
+[tool.ruff.lint]
+# E4/E7/E9: pycodestyle 错误子集（缩进/语句/运行时错误）
+# F: pyflakes（未用导入/未定义名）
+# I: import 排序
+# B: bugbear 常见陷阱（可变默认参数等）
+# ASYNC: async 常见错误
+select = ["E4", "E7", "E9", "F", "I", "B", "ASYNC"]
+ignore = [
+    "E501",  # 行长不强制（prompt 长字符串多），由格式化工具阶段治理
+    "B008",  # FastAPI 依赖注入惯用法（Depends(...) 作默认参数）
+    "E402",  # 模块级延迟导入是有意模式（重依赖懒加载，避免导入即加载模型）
+    "B904",  # raise ... from 已知债务（44 处，跟踪于错误处理专项）
+    "B905",  # zip() strict 参数为 3.10+ 风格迁移项
+    "ASYNC230", "ASYNC210", "ASYNC240",  # async 内同步 IO：既有模式（httpx 同步调用等），改造 tracked
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 评测/脚本类允许宽松风格（一次性调优脚本，不进 CI 关键路径）
+"evaluation/**" = ["T201", "E701", "E702", "E722", "F841", "B007"]
+"scripts/**" = ["E402", "E722", "F841", "B007"]
+"mcp_servers/**" = ["E402"]
+"tests/**" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "preserve"

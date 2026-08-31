@@ -4,10 +4,11 @@ ChromaDB Vector Store - 基于 ChromaDB 的向量存储
 替代自研内存 VectorStore，提供企业级向量检索能力。
 """
 
+import hashlib
 import os
 import re
-import hashlib
-from typing import List, Dict, Optional, Tuple, Set
+from typing import Dict, List, Optional, Set, Tuple
+
 from loguru import logger
 
 from .embeddings import EmbeddingModel

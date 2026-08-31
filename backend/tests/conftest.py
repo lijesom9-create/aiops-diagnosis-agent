@@ -13,8 +13,8 @@
     python -m pytest -k "test_phone"         # 按名称过滤
 """
 
-import sys
 import os
+import sys
 
 # 将 backend 目录加入 Python 路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -39,10 +39,10 @@ os.environ.setdefault("AUTH_RATE_LIMIT_PER_MIN", "100000")
 os.environ.setdefault("REDIS_URL", "")
 
 import asyncio
+
 import pytest
 
 from app.core.cache import reset_cache
-
 
 # ========== 事件循环 fixture ==========
 

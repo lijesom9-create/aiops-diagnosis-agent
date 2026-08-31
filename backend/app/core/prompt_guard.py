@@ -22,9 +22,9 @@ Prompt Injection 检测模块
 """
 
 import re
-from typing import Tuple, List, Optional
-from loguru import logger
+from typing import List, Tuple
 
+from loguru import logger
 
 # ========== 检测规则 ==========
 #

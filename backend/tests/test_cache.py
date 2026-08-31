@@ -11,8 +11,8 @@
 """
 
 import time
-import pytest
-from app.core.cache import CacheBackend, MemoryCache, get_cache, reset_cache, _cache_instance
+
+from app.core.cache import MemoryCache, get_cache, reset_cache
 
 
 class TestMemoryCacheBasic:

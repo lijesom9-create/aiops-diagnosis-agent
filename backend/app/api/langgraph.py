@@ -4,17 +4,16 @@ LangGraph API
 提供 LangGraph Agent 的 API 接口。
 """
 
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field, field_validator
 from loguru import logger
+from pydantic import BaseModel, Field, field_validator
 from starlette.responses import StreamingResponse
 
-from ..core.auth import get_current_user, UserResponse
-from ..core.database import get_db, Database
-from ..core.config import settings
+from ..core.auth import UserResponse, get_current_user
+from ..core.database import Database, get_db
 from ..core.rate_limiter import rate_limit_dep
-
 
 router = APIRouter(prefix="/api/langgraph", tags=["LangGraph Agent"])
 
@@ -108,17 +107,25 @@ class MessageListResponse(BaseModel):
 
 # ========== 全局 Agent 实例 ==========
 
+import threading as _threading
+
 _agent = None
+_agent_lock = _threading.Lock()
 
 
 def get_agent():
-    """获取 Agent 实例"""
+    """获取 Agent 实例（双重检查加锁：并发首调不会构建两个 Agent）"""
     global _agent
-    if _agent is None:
+    if _agent is not None:
+        return _agent
+    with _agent_lock:
+        if _agent is not None:
+            return _agent
+        import os
+
+        from ..core.config import settings
         from ..langgraph_agent import LangGraphAgent
         from ..shared_services import get_knowledge_store
-        from ..core.config import settings
-        import os
 
         # Checkpoint 持久化路径
         checkpoint_path = os.path.join(
@@ -263,6 +270,7 @@ async def chat(
 
         # LLM 响应缓存：相同问题跳过 LLM 生成（10 分钟 TTL，文档更新时失效）
         import hashlib as _hashlib
+
         from ..core.cache import get_cache as _get_llm_cache
         _llm_cache = _get_llm_cache(600)
         _llm_cache_key = _hashlib.md5(f"{current_user.user_id}:{request.message}".encode()).hexdigest()
@@ -366,7 +374,6 @@ async def chat_stream(
     - {"type": "error", "content": "..."}                  错误
     """
     import json
-    import asyncio
 
     # Prompt Injection 检测：与 /chat 保持一致，高风险拦截
     # 流式端点同样需要在 agent 调用前拦截，避免恶意指令在流式过程中劫持
@@ -421,7 +428,7 @@ async def chat_stream(
 
                         # 答案脱敏：检测完整答案是否含敏感信息
                         # 流式 token 已发出，这里发送脱敏后的完整内容供前端替换
-                        from ..core.sanitizer import sanitize_text, has_sensitive_info
+                        from ..core.sanitizer import has_sensitive_info, sanitize_text
                         full_so_far = "".join(full_answer_parts)
                         if has_sensitive_info(full_so_far):
                             event["sanitized_content"] = sanitize_text(full_so_far)

@@ -13,9 +13,10 @@
 """
 
 import re
-from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+
 from loguru import logger
 
 

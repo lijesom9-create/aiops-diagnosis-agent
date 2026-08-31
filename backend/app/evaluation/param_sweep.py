@@ -7,14 +7,14 @@ RAG 参数综合扫描实验
 用法：
     python -u -m app.evaluation.param_sweep --docs-dir evaluation/data/documents --queries evaluation/data/queries.json
 """
-import os
-import sys
-import time
-import json
-import tempfile
 import argparse
+import json
+import os
 import shutil
-from typing import Dict, Any, List, Set
+import sys
+import tempfile
+import time
+from typing import Dict, Set
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
@@ -50,6 +50,7 @@ def _index_documents(store, docs_dir):
     """索引文档（同步包装 async upload）"""
     import asyncio
     import glob
+
     from app.document.uploader import DocumentUploader
 
     uploader = DocumentUploader(

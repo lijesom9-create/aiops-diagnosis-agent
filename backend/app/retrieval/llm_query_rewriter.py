@@ -11,12 +11,10 @@ LLM MultiQuery Rewriter - 基于 LLM 的多查询重写器
 - 内置 LRU 缓存（同一 query 不重复调用 LLM）
 - 可选叠加在规则重写之上（enhanced + LLM 合并去重）
 """
-import json
 import re
-from typing import List, Optional, Callable, Dict
-from functools import lru_cache
-from loguru import logger
+from typing import Dict, List, Optional
 
+from loguru import logger
 
 # 默认提示词模板
 DEFAULT_PROMPT_TEMPLATE = """你是一个查询重写器，目标是为 RAG 文档检索生成多个等价的查询变体，以提升召回率。
@@ -146,8 +144,9 @@ class LLMQueryRewriter:
     def _call_llm_sync(self, query: str) -> List[str]:
         """同步 httpx 调用 LLM（统一走这条路径，避免 asyncio event loop 问题）"""
         import httpx
+
+        from ..core.ai_service import PROVIDER_CONFIGS, parse_model_name
         from ..core.config import settings
-        from ..core.ai_service import parse_model_name, PROVIDER_CONFIGS
 
         if not settings.AI_API_KEY:
             return []

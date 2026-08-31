@@ -4,16 +4,12 @@
 支持 httpOnly cookie 认证（防 XSS 窃取 token）
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, EmailStr
-from typing import Optional
+from fastapi import APIRouter, Depends, Response
+from pydantic import BaseModel
 
-from ..core.auth import (
-    UserCreate, UserLogin, Token, UserResponse,
-    register_user, login_user, get_current_user
-)
-from ..core.rate_limiter import auth_rate_limit_dep
+from ..core.auth import Token, UserCreate, UserLogin, UserResponse, get_current_user, login_user, register_user
 from ..core.config import settings
+from ..core.rate_limiter import auth_rate_limit_dep
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 

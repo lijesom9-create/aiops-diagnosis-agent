@@ -20,17 +20,19 @@ Multimodal Processor - 多模态 RAG 文档处理器
 """
 
 import asyncio
-from typing import List, Optional, Dict, Tuple
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 from loguru import logger
 
-from .models import (
-    ElementType, DocumentElement, StructuredDocument,
-)
-from .image_store import ImageStore, get_image_store
-from ..retrieval.vlm_client import VLMProvider, get_vlm_provider
 from ..core.config import settings
-
+from ..retrieval.vlm_client import VLMProvider, get_vlm_provider
+from .image_store import ImageStore, get_image_store
+from .models import (
+    DocumentElement,
+    ElementType,
+    StructuredDocument,
+)
 
 # 表格摘要 prompt
 _TABLE_SUMMARY_PROMPT = """请用 100-150 字概括下面表格的核心内容，包括：
@@ -189,6 +191,7 @@ class MultimodalProcessor:
         """
         import hashlib
         from io import BytesIO
+
         from PIL import Image
 
         MIN_SIZE = 80       # 最小尺寸（px）：小于此值视为 logo/图标
@@ -299,6 +302,7 @@ class MultimodalProcessor:
     def _ocr_sync(image_bytes: bytes) -> Optional[str]:
         """同步 OCR 实现：优先 PaddleOCR，失败降级 tesseract"""
         from io import BytesIO
+
         from PIL import Image
 
         img = Image.open(BytesIO(image_bytes))

@@ -16,14 +16,14 @@
 
 认证：复用全局 JWT 依赖（需登录），不要求 admin（只读查询）
 """
-from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from loguru import logger
-import requests
+from typing import Dict, Optional
 
-from ..core.config import settings
+import requests
+from fastapi import APIRouter, Depends, HTTPException, Query
+
 from ..core.auth import get_current_user
+from ..core.config import settings
 
 router = APIRouter(prefix="/api/monitoring", tags=["监控数据"])
 

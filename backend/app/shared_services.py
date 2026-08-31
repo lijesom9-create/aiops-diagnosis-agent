@@ -5,7 +5,8 @@
 避免各模块独立创建导致的配置不一致问题。
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
 
 
@@ -89,8 +90,8 @@ def get_embedding_model():
     """获取统一的 embedding model 实例"""
     global _embedding_model
     if _embedding_model is None:
-        from app.retrieval.embeddings import create_embedding_model
         from app.core.config import settings
+        from app.retrieval.embeddings import create_embedding_model
 
         _embedding_model = create_embedding_model(
             api_key=settings.EMBEDDING_API_KEY or None,
@@ -126,9 +127,9 @@ def init_knowledge_store():
     if _knowledge_store is not None:
         return _knowledge_store
 
+    from app.core.config import settings
     from app.knowledge.unified_store import UnifiedKnowledgeStore
     from app.retrieval.reranker import CrossEncoderReranker
-    from app.core.config import settings
 
     embedding_model = get_embedding_model()
 

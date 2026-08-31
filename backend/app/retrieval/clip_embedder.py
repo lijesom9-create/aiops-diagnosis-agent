@@ -20,9 +20,9 @@ CLIP Embedder - 图文对齐向量嵌入
 - 模型未下载/加载失败：记录日志，返回 None，上层跳过 CLIP 检索
 """
 import os
-from typing import Optional, List, Tuple
-from loguru import logger
+from typing import List, Optional
 
+from loguru import logger
 
 # 在 import transformers 之前就启用离线模式（与 embeddings.py 一致）
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -147,8 +147,8 @@ class CLIPEmbedder:
         try:
             if is_chinese:
                 # 中文 CLIP：用 transformers 的 ChineseCLIP
-                from transformers import ChineseCLIPProcessor, ChineseCLIPModel
                 import torch
+                from transformers import ChineseCLIPModel, ChineseCLIPProcessor
                 logger.info(f"加载 ChineseCLIP 模型: {model_name} (device={self._device})")
                 self._model = ChineseCLIPModel.from_pretrained(
                     model_name, local_files_only=True
@@ -160,8 +160,8 @@ class CLIPEmbedder:
                 self._model.eval()
             else:
                 # 英文 CLIP：用 transformers 的 CLIP
-                from transformers import CLIPProcessor, CLIPModel
                 import torch
+                from transformers import CLIPModel, CLIPProcessor
                 logger.info(f"加载 CLIP 模型: {model_name} (device={self._device})")
                 self._model = CLIPModel.from_pretrained(
                     model_name, local_files_only=True
@@ -225,9 +225,10 @@ class CLIPEmbedder:
             return None
 
         try:
-            from PIL import Image
             import io
+
             import torch
+            from PIL import Image
 
             image = Image.open(io.BytesIO(image_bytes))
             if image.mode != "RGB":
@@ -287,9 +288,10 @@ class CLIPEmbedder:
             return [None] * len(images)
 
         try:
-            from PIL import Image
             import io
+
             import torch
+            from PIL import Image
 
             # 加载所有图片
             pil_images = []

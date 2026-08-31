@@ -14,15 +14,15 @@ API 限流模块
         ...
 """
 
-import time
 import threading
-from collections import deque, defaultdict
+import time
+from collections import defaultdict, deque
 from typing import Optional
-from fastapi import Depends, HTTPException, status, Request
+
+from fastapi import HTTPException, Request, status
 from loguru import logger
 
 from .config import settings
-
 
 # ========== 限流配置 ==========
 

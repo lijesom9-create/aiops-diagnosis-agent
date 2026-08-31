@@ -9,20 +9,23 @@
 - OCRProcessor: OCR 处理器（支持 Tesseract、PaddleOCR、EasyOCR）
 """
 
-from .parser import DocumentParser
 from .chunker import DocumentChunker
-from .uploader import DocumentUploader
-from .pymupdf_parser import PyMuPDFParser
-from .ocr import OCRProcessor, PDFWithOCR
-from .models import (
-    ElementType, ElementMetadata, DocumentElement,
-    DocumentMetadata, StructuredDocument, Chunk,
-)
-from .text_parser import TextParser
 from .docling_parser import DoclingParser
-from .parser import ParserFactory
-from .struct_chunker import StructureAwareChunker
+from .models import (
+    Chunk,
+    DocumentElement,
+    DocumentMetadata,
+    ElementMetadata,
+    ElementType,
+    StructuredDocument,
+)
+from .ocr import OCRProcessor, PDFWithOCR
 from .parent_child_chunker import ParentChildChunker
+from .parser import DocumentParser, ParserFactory
+from .pymupdf_parser import PyMuPDFParser
+from .struct_chunker import StructureAwareChunker
+from .text_parser import TextParser
+from .uploader import DocumentUploader
 
 # 自动注册解析器到工厂
 ParserFactory.register(DoclingParser)

@@ -22,7 +22,6 @@ from app.evaluation.ragas_eval import (
     _parse_json_object,
 )
 
-
 DOCS_DIR = Path(__file__).parent.parent / "evaluation" / "data" / "documents"
 QUERIES_PATH = Path(__file__).parent.parent / "evaluation" / "data" / "queries.json"
 

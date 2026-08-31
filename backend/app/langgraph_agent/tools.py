@@ -4,13 +4,13 @@
 定义 LangGraph Agent 使用的工具。
 """
 
-from typing import Dict, Any, Optional, List, Annotated
-from langchain_core.tools import tool
-from loguru import logger
 import contextvars
-import time
 import hashlib
 import threading
+from typing import Annotated, Any, Dict, List, Optional
+
+from langchain_core.tools import tool
+from loguru import logger
 
 try:
     from langgraph.prebuilt import InjectedState
@@ -606,6 +606,7 @@ def web_search(query: str, num_results: int = 5) -> str:
     try:
         # 使用同步方式调用
         import asyncio
+
         from ..services.web_search import WebSearchService
 
         service = WebSearchService()
@@ -674,6 +675,7 @@ def crawl_webpage(url: str, use_js: bool = False, extract_mode: str = "markdown"
     """
     try:
         import asyncio
+
         from ..tools.web_crawler import WebCrawlerTool
 
         crawler = WebCrawlerTool()
@@ -729,6 +731,7 @@ def generate_content(prompt: str, style: str = "technical") -> str:
     """
     try:
         import asyncio
+
         from ..core.ai_service import ai_service
 
         system_prompt = {

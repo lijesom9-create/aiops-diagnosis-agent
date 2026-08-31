@@ -6,8 +6,11 @@ import pytest
 @pytest.fixture
 def sample_doc():
     from app.document.models import (
-        StructuredDocument, DocumentMetadata,
-        DocumentElement, ElementType, ElementMetadata,
+        DocumentElement,
+        DocumentMetadata,
+        ElementMetadata,
+        ElementType,
+        StructuredDocument,
     )
     return StructuredDocument(
         metadata=DocumentMetadata(filename="test.md", title="Test"),
@@ -49,8 +52,11 @@ class TestStructureAwareChunker:
     def test_chunk_size_limit(self):
         """分块不超过 max_chars"""
         from app.document.models import (
-            StructuredDocument, DocumentMetadata,
-            DocumentElement, ElementType, ElementMetadata,
+            DocumentElement,
+            DocumentMetadata,
+            ElementMetadata,
+            ElementType,
+            StructuredDocument,
         )
         from app.document.struct_chunker import StructureAwareChunker
 
@@ -67,7 +73,8 @@ class TestStructureAwareChunker:
 
     def test_empty_doc_returns_empty(self):
         from app.document.models import (
-            StructuredDocument, DocumentMetadata,
+            DocumentMetadata,
+            StructuredDocument,
         )
         from app.document.struct_chunker import StructureAwareChunker
         doc = StructuredDocument(metadata=DocumentMetadata(filename="empty.txt"), elements=[])

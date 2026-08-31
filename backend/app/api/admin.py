@@ -8,12 +8,13 @@
 """
 
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from pydantic import BaseModel
-from loguru import logger
 
-from ..core.auth import require_admin, UserResponse
-from ..core.database import get_db, Database
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from loguru import logger
+from pydantic import BaseModel
+
+from ..core.auth import UserResponse, require_admin
+from ..core.database import Database, get_db
 from ..shared_services import get_knowledge_store
 
 router = APIRouter(prefix="/api/admin", tags=["管理后台"])

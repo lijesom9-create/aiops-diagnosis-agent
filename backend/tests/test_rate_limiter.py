@@ -9,9 +9,9 @@ API 限流器单元测试
 - Redis 降级到内存模式
 """
 
-import time
 import threading
-import pytest
+import time
+
 from app.core.rate_limiter import RateLimiter
 
 

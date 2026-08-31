@@ -11,15 +11,13 @@
 """
 
 import json
-import sys
 import os
-from datetime import datetime, timedelta
+import sys
+from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import pytest
 
-from app.core.config import settings
 
 
 # ============================================================

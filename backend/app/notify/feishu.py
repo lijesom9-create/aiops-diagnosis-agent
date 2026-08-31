@@ -9,9 +9,9 @@ API 文档：
 - 获取 token: https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal
 - 发消息:    https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id
 """
-import time
 import threading
-from typing import Optional, Dict, Any, List
+import time
+from typing import Any, Dict, List, Optional
 
 import requests
 from loguru import logger
@@ -121,7 +121,7 @@ class FeishuClient:
         overall_status = alerts[0].get("overall_status", "firing") if alerts else "firing"
         # 任一 firing 则整体标红
         has_firing = any(a.get("status") == "firing" for a in alerts)
-        is_resolved = overall_status == "resolved" and not has_firing
+        _ = overall_status  # 预留：resolved 独立场景的颜色策略
 
         template = "red" if has_firing else "green"
         title_emoji = "🔥" if has_firing else "✅"

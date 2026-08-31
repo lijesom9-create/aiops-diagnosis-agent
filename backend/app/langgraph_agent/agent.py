@@ -4,14 +4,14 @@ LangGraph Agent
 基于 LangGraph 实现的 Agent 系统。
 """
 
-from typing import List, Dict, Any, Optional, Callable
-from loguru import logger
+from typing import Any, Dict, List, Optional
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, trim_messages
-from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, StateGraph
+from langgraph.prebuilt import ToolNode
+from loguru import logger
 
 try:
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -20,16 +20,15 @@ except ImportError:
     HAS_ASYNC_SQLITE = False
     logger.warning("langgraph-checkpoint-sqlite 未安装，无法使用 SQLite 持久化")
 
-from .state import AgentState
 from ..core.config import settings
+from .state import AgentState
 from .tools import (
     create_tools,
-    set_retriever,
-    set_knowledge_store,
     pop_retrieval_buffer,
     set_conversation_context,
-    set_current_user_id,
     set_current_org_id,
+    set_current_user_id,
+    set_knowledge_store,
     set_query_rewriter_llm,
 )
 
@@ -175,8 +174,9 @@ class LangGraphAgent:
         logger.info(f"开始加载 MCP 工具，服务器: {server_names}（超时 {mcp_timeout}s）")
 
         try:
-            from langchain_mcp_adapters.client import MultiServerMCPClient
             import asyncio
+
+            from langchain_mcp_adapters.client import MultiServerMCPClient
 
             client = MultiServerMCPClient(mcp_config)
             # 超时保护：get_tools() 内部建立 stdio 连接并枚举工具，
@@ -277,6 +277,7 @@ class LangGraphAgent:
         各 server 脚本不存在时优雅降级。
         """
         import os
+
         from ..core.config import settings
 
         backend_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -370,8 +371,8 @@ class LangGraphAgent:
 
         if backend == "mongodb":
             try:
-                from pymongo import MongoClient
                 from langgraph.checkpoint.mongodb import MongoDBSaver
+                from pymongo import MongoClient
                 client = MongoClient(
                     settings.MONGODB_URL, serverSelectionTimeoutMS=5000,
                 )

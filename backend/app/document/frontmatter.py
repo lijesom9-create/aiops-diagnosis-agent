@@ -15,7 +15,7 @@ API 上传路径与 scripts/seed_ops_kb.py 共用本模块，保证行为一致�
 """
 
 import re
-from typing import Dict, Tuple, List
+from typing import Dict, List, Tuple
 
 # 业务字段（从 frontmatter 提取，注入到 chunk metadata）
 # 与 qdrant_store._ensure_payload_indexes 的索引字段对齐

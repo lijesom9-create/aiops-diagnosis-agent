@@ -11,16 +11,16 @@ MongoDB 只存储元数据和状态，不存储知识内容。
 
 import os
 import re
-from typing import List, Dict, Any, Optional, Set
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, Dict, List, Optional, Set
+
 from loguru import logger
 
-from ..retrieval.chroma_store import ChromaDBVectorStore
-from ..retrieval.qdrant_store import QdrantVectorStore
-from ..retrieval.embeddings import EmbeddingModel
 from ..observability.metrics import get_metrics
-
+from ..retrieval.chroma_store import ChromaDBVectorStore
+from ..retrieval.embeddings import EmbeddingModel
+from ..retrieval.qdrant_store import QdrantVectorStore
 
 # ========== 领域词典 ==========
 
@@ -971,6 +971,7 @@ class UnifiedKnowledgeStore:
         # P0-2: 查询缓存检查
         import hashlib
         import time as _time
+
         from ..observability.metrics import get_metrics as _get_metrics
 
         _metrics = _get_metrics()
@@ -1457,16 +1458,14 @@ class UnifiedKnowledgeStore:
     def delete_by_user(self, user_id: str) -> int:
         """删除用户的所有知识（同时删父子两个 store）"""
         n1 = self.vector_store.delete_by_filter({"user_id": user_id})
-        if self._separate_parent_child:
-            n2 = self._parent_store.delete_by_filter({"user_id": user_id})
-        return n1
+        n2 = self._parent_store.delete_by_filter({"user_id": user_id}) if self._separate_parent_child else 0
+        return n1 + n2
 
     def delete_by_topic(self, topic_id: str) -> int:
         """删除主题的所有知识（同时删父子两个 store）"""
         n1 = self.vector_store.delete_by_filter({"topic_id": topic_id})
-        if self._separate_parent_child:
-            n2 = self._parent_store.delete_by_filter({"topic_id": topic_id})
-        return n1
+        n2 = self._parent_store.delete_by_filter({"topic_id": topic_id}) if self._separate_parent_child else 0
+        return n1 + n2
 
     def delete_by_document(self, document_id: str) -> int:
         """删除文档的所有知识（同时删父子两个 store）"""
@@ -1748,7 +1747,7 @@ class QueryRewriter:
     SUFFIXES = ["怎么学", "怎么用", "是什么", "怎么理解", "如何", "为什么", "怎么办", "什么意思", "怎么实现"]
 
     # 停用词
-    STOP_WORDS = {"的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都", "一", "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好", "自己", "这", "那", "吗", "呢", "吧", "啊", "请", "帮", "我"}
+    STOP_WORDS = {"的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都", "一", "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好", "自己", "这", "那", "吗", "呢", "吧", "啊", "请", "帮"}
 
     # 技术术语中英文对照 / 同义词（key 为小写，中文按字面匹配，英文按单词边界匹配）
     BASE_TECH_SYNONYMS: Dict[str, List[str]] = {

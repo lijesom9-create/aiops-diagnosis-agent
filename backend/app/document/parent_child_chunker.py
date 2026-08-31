@@ -13,12 +13,15 @@ Parent-Child Chunker - 父子文档分块器
 import re
 import uuid
 from typing import List, Tuple
+
 from loguru import logger
 
 from .models import (
-    ElementType, StructuredDocument, DocumentElement, Chunk,
+    Chunk,
+    DocumentElement,
+    ElementType,
+    StructuredDocument,
 )
-
 
 # 装饰图判定关键词：caption 命中以下任一词时视为装饰图（品牌 logo / 水印 / 图标）
 # 来源：VLM 对品牌标识类图片的典型描述用词

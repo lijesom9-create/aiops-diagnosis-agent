@@ -22,12 +22,13 @@
 └─────────────────────────────────────────────────────────┘
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
 
-from .core_memory import CoreMemory, UserProfile, AgentPersona
-from .recall_memory import RecallMemory, ConversationTurn
 from .archival_memory import ArchivalMemory, MemoryEntry
+from .core_memory import CoreMemory, UserProfile
+from .recall_memory import ConversationTurn, RecallMemory
 
 
 class MemoryManager:

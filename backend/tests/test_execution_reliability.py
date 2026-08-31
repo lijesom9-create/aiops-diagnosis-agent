@@ -12,18 +12,16 @@
 全部确定性：内存模式 Database + mock Agent/飞书。
 """
 
-import sys
 import os
+import sys
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
+from test_incident_lifecycle import FakeAgent, FakeFeishu, _firing_alert, _memory_db
 
 from app.core.config import settings
-from app.core.database import Database
-
-from test_incident_lifecycle import _memory_db, _firing_alert, FakeAgent, FakeFeishu
 
 
 def _make_task(task_id: str, **overrides) -> dict:
@@ -104,8 +102,8 @@ class TestDiagnosisTaskTable:
 
 @pytest.fixture
 def worker_env(monkeypatch):
-    from app.api import alerts as alerts_mod
     import app.api.langgraph as lg
+    from app.api import alerts as alerts_mod
 
     mem_db = _memory_db()
     agent = FakeAgent()
@@ -144,8 +142,8 @@ class TestWorkerFlow:
     @pytest.mark.asyncio
     async def test_failure_requeues_then_recovers(self, worker_env):
         """首次失败 → 回 pending；恢复后重试成功 → done"""
-        alerts_mod, agent, feishu, db = (worker_env["alerts"], worker_env["agent"],
-                                         worker_env["feishu"], worker_env["db"])
+        alerts_mod, _agent, _feishu, db = (worker_env["alerts"], worker_env["agent"],
+                                           worker_env["feishu"], worker_env["db"])
 
         class FlakyAgent(FakeAgent):
             def __init__(self):
@@ -159,8 +157,9 @@ class TestWorkerFlow:
 
         flaky = FlakyAgent()
         worker_env["agent"] = flaky
-        import app.api.langgraph as lg
         from unittest.mock import patch
+
+        import app.api.langgraph as lg
         with patch.object(lg, "get_agent", lambda: flaky):
             await alerts_mod.enqueue_diagnosis_tasks([_firing_alert(fp="fp-001")])
             await alerts_mod._drain_pending_tasks()
@@ -192,8 +191,9 @@ class TestWorkerFlow:
                 raise RuntimeError("永久失败")
 
         bad = AlwaysFailAgent()
-        import app.api.langgraph as lg
         from unittest.mock import patch
+
+        import app.api.langgraph as lg
         with patch.object(lg, "get_agent", lambda: bad):
             await alerts_mod.enqueue_diagnosis_tasks([_firing_alert(fp="fp-001")])
             await alerts_mod._drain_pending_tasks()
@@ -299,9 +299,9 @@ class TestCheckpointBackend:
     @pytest.mark.asyncio
     async def test_mongodb_failure_degrades_to_memory(self, monkeypatch):
         """Mongo checkpointer 初始化失败 → 降级 MemorySaver（不阻塞启动）"""
-        from app.langgraph_agent.agent import LangGraphAgent
-
         import langgraph.checkpoint.mongodb as mongo_mod
+
+        from app.langgraph_agent.agent import LangGraphAgent
 
         def _boom(*args, **kwargs):
             raise RuntimeError("mongo 不可用")
@@ -396,7 +396,6 @@ class TestVisibilityFilter:
     def test_search_postfilter_shared_bypass(self):
         """search() Python post-filter：shared 文档跨组织/跨用户保留"""
         # 直接构造 search 的过滤段逻辑验证（不依赖向量库）
-        from app.knowledge.unified_store import UnifiedKnowledgeStore
         # 模拟 search() 中的判定（与实现保持同一表达式）
         def _visible(metadata, org_id, user_id):
             shared = metadata.get("shared_to_diagnosis") == "true"

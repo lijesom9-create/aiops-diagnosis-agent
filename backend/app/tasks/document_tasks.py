@@ -11,12 +11,13 @@ worker 进程独立于 FastAPI，需自行初始化 knowledge_store。
 import asyncio
 from datetime import datetime
 from pathlib import Path
+
 from loguru import logger
 
 from app.celery_app import app
-from app.shared_services import init_knowledge_store, get_knowledge_store
 from app.core.database import db
 from app.document.uploader import DocumentUploader
+from app.shared_services import get_knowledge_store, init_knowledge_store
 
 # 持久事件循环（solo pool 单线程，所有 task 共享，避免 motor 跨循环）
 _loop = None

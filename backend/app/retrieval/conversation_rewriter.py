@@ -12,15 +12,14 @@
 - Dialogue-RAG (ACL 2025)
 """
 import re
-from typing import List, Dict, Optional, Tuple
-from functools import lru_cache
-from loguru import logger
+from typing import Dict, List, Optional
 
+from loguru import logger
 
 # 指代词列表（命中则可能需要改写）
 REFERENCE_WORDS = {
     # 代词
-    "它", "它们", "这个", "那个", "这两个", "这两个", "上面", "下面",
+    "它", "它们", "这个", "那个", "这两个", "上面", "下面",
     "他", "她", "其", "此", "该", "刚才", "之前提到的", "前面提到",
     "上文", "之前的", "上面的",
     # 英语代词
@@ -224,7 +223,7 @@ class ConversationQueryRewriter:
             rewritten = self._call_llm_sync(prompt)
 
             # 清理可能的引号、前缀
-            rewritten = rewritten.strip("\"'""''")
+            rewritten = rewritten.strip("\"'""''")  # noqa: B005  # 有意按字符集剥离引号（非前缀）
             # 去除可能的 "改写后的查询：" 前缀
             for prefix in ["改写后的查询：", "改写后的查询:", "改写：", "改写:"]:
                 if rewritten.startswith(prefix):
@@ -247,8 +246,9 @@ class ConversationQueryRewriter:
     def _call_llm_sync(self, prompt: str) -> str:
         """同步 httpx 调用 LLM（参考 LLMQueryRewriter._call_llm_sync）"""
         import httpx
+
+        from ..core.ai_service import PROVIDER_CONFIGS, parse_model_name
         from ..core.config import settings
-        from ..core.ai_service import parse_model_name, PROVIDER_CONFIGS
 
         if not settings.AI_API_KEY:
             return ""

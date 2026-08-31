@@ -11,18 +11,18 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, BackgroundTasks
-from pydantic import BaseModel
+from typing import List, Optional
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from loguru import logger
+from pydantic import BaseModel
 
-from ..core.auth import get_current_user, require_admin, UserResponse
+from ..core.auth import UserResponse, get_current_user, require_admin
 from ..core.config import settings
-from ..core.database import get_db, Database
+from ..core.database import Database, get_db
 from ..document.uploader import DocumentUploader
-from ..models.document import Document, DocumentStatus, DocumentCategory
+from ..models.document import DocumentCategory, DocumentStatus
 from ..storage.file_storage import get_file_storage
-
 
 router = APIRouter(prefix="/api/documents", tags=["文档管理"])
 
@@ -273,7 +273,7 @@ async def upload_document(
 
         # 解析 Markdown YAML frontmatter → 运维业务 metadata（doc_type/service/severity 等）
         # 与 scripts/seed_ops_kb.py 共用逻辑；无 frontmatter 时为空 dict，不影响原有流程
-        from app.document.frontmatter import parse_frontmatter, extract_business_metadata
+        from app.document.frontmatter import extract_business_metadata, parse_frontmatter
         biz_meta: dict = {}
         try:
             content_text = content.decode("utf-8", errors="ignore")
@@ -740,7 +740,7 @@ async def batch_upload_documents(
                     continue
 
             # 解析 Markdown YAML frontmatter → 运维业务 metadata（与单文件上传一致）
-            from app.document.frontmatter import parse_frontmatter, extract_business_metadata
+            from app.document.frontmatter import extract_business_metadata, parse_frontmatter
             biz_meta: dict = {}
             try:
                 frontmatter, _ = parse_frontmatter(content.decode("utf-8", errors="ignore"))
@@ -866,8 +866,9 @@ async def get_image(
             detail="非法的图片名"
         )
 
-    from ..document.image_store import get_image_store
     from fastapi.responses import Response
+
+    from ..document.image_store import get_image_store
 
     relative_path = f"{document_id}/{image_name}"
 

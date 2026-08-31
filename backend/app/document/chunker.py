@@ -9,7 +9,8 @@
 """
 
 import re
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
+
 from loguru import logger
 
 
@@ -160,7 +161,7 @@ class DocumentChunker:
                 # 如果块太长，进一步分割
                 if len(md_chunk.page_content) > self.chunk_size:
                     sub_chunks = text_splitter.split_text(md_chunk.page_content)
-                    for i, sub_text in enumerate(sub_chunks):
+                    for _i, sub_text in enumerate(sub_chunks):
                         chunks.append({
                             "id": f"{document_id}_chunk_{chunk_index}",
                             "text": sub_text.strip(),

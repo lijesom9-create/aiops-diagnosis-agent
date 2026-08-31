@@ -4,8 +4,7 @@ Retrieval Base - 检索基类
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Any
-from loguru import logger
+from typing import Dict, List
 
 
 class RetrievalResult:

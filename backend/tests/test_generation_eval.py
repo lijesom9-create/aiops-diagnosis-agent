@@ -19,7 +19,6 @@ import pytest
 from app.core.config import settings
 from app.evaluation.generation_eval import run_generation_eval
 
-
 DOCS_DIR = Path(__file__).parent.parent / "evaluation" / "data" / "documents"
 QUERIES_PATH = Path(__file__).parent.parent / "evaluation" / "data" / "queries.json"
 

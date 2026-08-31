@@ -16,11 +16,10 @@
     └── doc_789_machine_learning.md
 """
 
-import os
-import shutil
-from typing import Optional, List, Dict, Any
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
 
 

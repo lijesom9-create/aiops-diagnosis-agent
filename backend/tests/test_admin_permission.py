@@ -12,14 +12,16 @@
 因此不依赖 knowledge_store 初始化，测试轻量可靠。
 """
 
-import pytest
-import uuid
-import sys
 import os
+import sys
+import uuid
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fastapi.testclient import TestClient
+
 from main import app
 
 

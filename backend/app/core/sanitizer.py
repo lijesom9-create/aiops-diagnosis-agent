@@ -14,8 +14,6 @@
 
 import re
 from typing import List, Tuple
-from loguru import logger
-
 
 # ========== 脱敏规则 ==========
 

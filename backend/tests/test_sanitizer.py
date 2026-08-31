@@ -14,8 +14,7 @@
 - 边界情况（空字符串、无敏感信息）
 """
 
-import pytest
-from app.core.sanitizer import sanitize_text, has_sensitive_info
+from app.core.sanitizer import has_sensitive_info, sanitize_text
 
 
 class TestPhoneSanitization:

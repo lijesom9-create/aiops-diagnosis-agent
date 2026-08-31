@@ -17,7 +17,6 @@ import pytest
 
 from app.evaluation.retrieval_eval import run_file_ablation
 
-
 DOCS_DIR = Path(__file__).parent.parent / "evaluation" / "data" / "documents"
 QUERIES_PATH = Path(__file__).parent.parent / "evaluation" / "data" / "queries.json"
 

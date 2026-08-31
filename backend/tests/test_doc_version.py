@@ -11,9 +11,10 @@
 """
 
 import pytest
-from app.knowledge.unified_store import UnifiedKnowledgeStore, KnowledgeItem
-from app.retrieval.embeddings import TFIDFModel
+
+from app.knowledge.unified_store import KnowledgeItem, UnifiedKnowledgeStore
 from app.models.document import Document
+from app.retrieval.embeddings import TFIDFModel
 
 
 @pytest.fixture
@@ -180,7 +181,7 @@ class TestCacheInvalidation:
 
         # 触发一次检索，写入缓存
         knowledge_store.search("Docker", min_score=0.0)
-        cache = get_cache()
+        _cache_unused = get_cache()
 
         # 删除文档，应触发缓存失效
         knowledge_store.delete_by_document(doc_id)

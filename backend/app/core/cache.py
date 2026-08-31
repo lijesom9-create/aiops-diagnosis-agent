@@ -14,9 +14,10 @@
 """
 
 import hashlib
-import time
 import json
-from typing import Any, Optional, Dict
+import time
+from typing import Any, Optional
+
 from loguru import logger
 
 from .config import settings
@@ -55,10 +56,12 @@ class MemoryCache(CacheBackend):
     """
 
     def __init__(self, ttl: int = 300, max_size: int = 1024):
+        import threading
         from collections import OrderedDict
         self._cache: "OrderedDict[str, Any]" = OrderedDict()
         self._ttl = ttl
         self._max_size = max_size
+        self._lock = threading.Lock()  # OrderedDict 的 move_to_end/popitem 非线程安全
 
     def _full_key(self, namespace: str, *args, **kwargs) -> str:
         """带 namespace 前缀的键，支持按命名空间批量删除"""
@@ -66,25 +69,27 @@ class MemoryCache(CacheBackend):
 
     def get(self, namespace: str, *args, **kwargs) -> Optional[Any]:
         key = self._full_key(namespace, *args, **kwargs)
-        if key in self._cache:
-            result, timestamp = self._cache[key]
-            if time.time() - timestamp < self._ttl:
-                # LRU：命中后移到末尾（最近访问）
-                self._cache.move_to_end(key)
-                return result
-            else:
-                del self._cache[key]
+        with self._lock:
+            if key in self._cache:
+                result, timestamp = self._cache[key]
+                if time.time() - timestamp < self._ttl:
+                    # LRU：命中后移到末尾（最近访问）
+                    self._cache.move_to_end(key)
+                    return result
+                else:
+                    del self._cache[key]
         return None
 
     def set(self, namespace: str, value: Any, *args, **kwargs):
         key = self._full_key(namespace, *args, **kwargs)
-        # 已存在则更新（并移到末尾）；新增则可能触发淘汰
-        if key in self._cache:
-            self._cache.move_to_end(key)
-        self._cache[key] = (value, time.time())
-        # LRU 淘汰：超过 max_size 时删除头部（最久未访问）
-        while len(self._cache) > self._max_size:
-            self._cache.popitem(last=False)
+        with self._lock:
+            # 已存在则更新（并移到末尾）；新增则可能触发淘汰
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            self._cache[key] = (value, time.time())
+            # LRU 淘汰：超过 max_size 时删除头部（最久未访问）
+            while len(self._cache) > self._max_size:
+                self._cache.popitem(last=False)
 
     def delete_pattern(self, namespace: str, pattern: str):
         """删除命名空间下的所有键"""
@@ -159,6 +164,7 @@ class RedisCache(CacheBackend):
 # ========== 单例缓存实例 ==========
 
 _cache_instance: Optional[CacheBackend] = None
+_cache_instance_lock = __import__('threading').Lock()
 
 
 def get_cache(ttl: int = 300) -> CacheBackend:
@@ -177,22 +183,26 @@ def get_cache(ttl: int = 300) -> CacheBackend:
     global _cache_instance
     if _cache_instance is not None:
         return _cache_instance
+    with _cache_instance_lock:
+        # 双重检查：并发首调时只有第一个进入者创建实例
+        if _cache_instance is not None:
+            return _cache_instance
 
-    redis_url = getattr(settings, "REDIS_URL", None)
-    if redis_url:
-        try:
-            _cache_instance = RedisCache(redis_url, ttl=ttl)
-            # 测试连接
-            _cache_instance._redis.ping()
-            logger.info("Redis 连接成功，使用 Redis 缓存")
-        except Exception as e:
-            logger.warning(f"Redis 连接失败，降级到内存缓存: {e}")
+        redis_url = getattr(settings, "REDIS_URL", None)
+        if redis_url:
+            try:
+                _cache_instance = RedisCache(redis_url, ttl=ttl)
+                # 测试连接
+                _cache_instance._redis.ping()
+                logger.info("Redis 连接成功，使用 Redis 缓存")
+            except Exception as e:
+                logger.warning(f"Redis 连接失败，降级到内存缓存: {e}")
+                _cache_instance = MemoryCache(ttl=ttl)
+        else:
+            logger.info("未配置 REDIS_URL，使用内存缓存")
             _cache_instance = MemoryCache(ttl=ttl)
-    else:
-        logger.info("未配置 REDIS_URL，使用内存缓存")
-        _cache_instance = MemoryCache(ttl=ttl)
 
-    return _cache_instance
+        return _cache_instance
 
 
 def reset_cache():

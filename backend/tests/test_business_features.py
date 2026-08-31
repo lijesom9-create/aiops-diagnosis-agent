@@ -11,15 +11,12 @@
 """
 
 import json
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-
-from app.core.config import settings
-
 
 # ============================================================
 # 1. 告警自动诊断
@@ -189,6 +186,9 @@ class TestAutoClassification:
 
 class TestAuditAndFeedback:
     """工具审计日志 + 负反馈标记（内存降级模式，不依赖 Mongo）"""
+
+    from app.core.database import Database  # 类型注解引用
+
 
     @staticmethod
     def _memory_db() -> "Database":
