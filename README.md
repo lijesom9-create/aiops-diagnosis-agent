@@ -39,19 +39,30 @@ Prometheus 告警规则触发
     ↓
 Alertmanager 聚合 / 去重 / 抑制
     ↓
-POST /api/alerts/webhook（Bridge 端点）
+POST /api/alerts/webhook（Bridge 端点，共享密钥鉴权）
     ↓
-FeishuClient（飞书自建应用 tenant_access_token）
+FeishuClient → 飞书告警卡片（firing 红 / resolved 绿）
+    ↓ （Incident 生命周期驱动，BackgroundTasks）
+┌─ 初诊：新 fingerprint → 创建事故 → 全量诊断
+├─ 重诊：新告警归入（同 service 时间窗）/ 升级 → 增量诊断（确认/修正/推翻）
+│        持续 firing 心跳 → 低置信 + 间隔满足时重诊
+└─ 恢复摘要：全部 resolved → 安静期确认不复燃 → 时间线 + 根因确认 + 复盘草稿
     ↓
-飞书 IM 卡片消息（按 firing/resolved 着色）
+飞书卡片（诊断报告橙色 / 重诊带更新标记 / 恢复摘要绿色）
 ```
-- **告警卡片**：按状态着色（firing=红 / resolved=绿），含告警名、severity、实例、摘要、描述、起止时间
-- **测试端点**：`GET /api/alerts/test` 手动触发一条测试告警验证链路
-- 未配置飞书应用时返回 503，避免 Alertmanager 重复推送无效请求
+- **事故实体（Incident）**：诊断挂在事故生命周期上而非单条告警——告警数与诊断成本脱钩，风暴时 N 条告警聚合为 1 个事故 1 次初诊
+- **成本护栏**（默认内置）：每事故重诊硬上限（`DIAG_MAX_REDIAG_PER_INCIDENT=3`）、severity 门槛（`ALERT_MIN_SEVERITY=warning`，低于门槛零成本拦截）、抖动复用（resolved 后 `INCIDENT_FLAPPING_WINDOW` 内复燃重新打开原事故）、增量重诊（1-2 次调用替代全量 ReAct）
+- **执行层可靠性**：诊断任务落 Mongo 任务表（原子认领 + 失败退避重试 + 启动捞回），重启不丢诊断、多副本不重复消费；`CHECKPOINT_BACKEND=mongodb` 会话现场全集群共享；重试走"继续完成"（checkpoint 保留现场，不重复取证）
+- **诊断可见性**：自动诊断以 `DIAGNOSIS_ORG_ID` 服务身份检索（公共 + 该组织文档），文档级 `shared_to_diagnosis` 标记（上传默认共享、敏感文档可关闭）旁路组织隔离
+- **事故记录落库**：Mongo `incidents` 集合保存指纹集、诊断历史（时间线）、恢复摘要，支撑事后复盘统计
+- **测试端点**：`GET /api/alerts/test`（仅管理员）手动触发一条测试告警验证链路
+- webhook 需配置 `ALERT_WEBHOOK_SECRET`（未配置时端点拒绝处理），Alertmanager 侧通过 `http_config.authorization` 携带
 
 ### 📚 知识库管理
 - 支持 PDF / DOCX / TXT / Markdown 上传，智能分块（段落/标题/父子）
 - **YAML frontmatter 解析**：文档头部的 `doc_type / service / severity / incident_id` 注入 chunk metadata，支撑 `service + doc_type` 精准过滤
+- **自动分类兜底**：无 frontmatter 的文档从文件名/标题/内容开头推断 doc_type/service（标记 `source=auto_inferred` 便于复核），避免缺字段导致检索命中不到
+- **知识时效治理**：frontmatter 支持 `valid_until`（过期文档检索软降权 ×0.5，引用标注"仅供参考"）与 `effective_date`（历史结论冲突时取更新者），随上传路径自动注入 chunk metadata
 - **21 类多来源知识库**（`backend/data/ops_docs/`）：架构设计 / API 文档 / 配置指南 / 监控告警 / 数据库运维 / 中间件运维 / K8s / 容量规划 / 安全基线 / 变更管理 / 值班手册 / 灾备预案 / 性能调优 / 第三方依赖 / 网络排障 / CI-CD / 数据字典 + 事故 INC-2026-001~100 / 复盘 Postmortem 50 篇 / 手册 / SOP，共 **206 篇**，一键导入脚本
 - **Celery 异步导入**：文档解析/向量化异步化，任务状态 + 重试 API
 
@@ -220,14 +231,19 @@ START → route_intent → agent → should_continue ─┬→ tools → agent �
 
 | 工具 | 说明 |
 |------|------|
-| `query_metrics` | 查询监控指标（MCP，mock Prometheus/Loki） |
-| `query_logs` | 查询应用/慢 SQL 日志（MCP，mock） |
+| `query_metrics` | 查询监控指标，支持 `time_range` 时间窗（MCP 真实源 / 本地 mock） |
+| `query_logs` | 查询应用/慢 SQL 日志（MCP 真实源 / 本地 mock） |
+| `get_recent_changes` | 查询服务最近变更事件（发布/配置/扩缩容）——变更先于深挖 |
+| `get_service_dependencies` | 查询服务依赖拓扑（下游依赖/上游调用方）——跨服务诊断；数据源 `data/service_topology.json`（真实接入 APM 时只换数据） |
+| `create_incident_ticket` | 创建故障工单（诊断 → 行动闭环，仅 P1/P2 或用户要求时） |
 | `analyze_chart` | 分析监控图表（VLM 在线理解） |
 | `search_knowledge` | 知识库 RAG 检索（支持 service + doc_type 精准过滤） |
 | `web_search` | 互联网搜索（Tavily） |
 | `crawl_webpage` | 网页内容爬取 |
 | `generate_content` | 内容生成 |
 | `get_user_profile` / `save_memory` / `search_memory` | 记忆工具 |
+
+> Agent 的所有工具调用写入审计日志（Mongo `tool_audit_logs`：工具名 + 参数 + 调用者 + 会话），满足"哪些数据发给了外部 LLM"的可追溯要求。
 
 > MCP 工具加载成功后，会剔除本地同名的 `query_metrics`/`query_logs` mock，避免工具名冲突导致 LLM 调用失败。
 
@@ -241,7 +257,7 @@ START → route_intent → agent → should_continue ─┬→ tools → agent �
 | 问答 | `/api/langgraph/chat` | Agent 问答（返回结构化诊断报告） |
 | 流式 | `/api/langgraph/chat/stream` | SSE 流式问答 |
 | 会话 | `/api/langgraph/sessions*` | 会话 CRUD / 历史消息 |
-| 反馈 | `/api/langgraph/feedback` | 答案反馈 + 统计 |
+| 反馈 | `/api/langgraph/feedback` | 答案反馈 + 统计；点踩可带 `document_ids` 触发知识库待复核标记（负反馈 → 质量闭环） |
 | 文档 | `/api/documents/upload` `/{id}/status` `/{id}/retry` `/batch-upload` `/{id}` | 上传/状态/重试/批量/删除（写操作需管理员） |
 | 知识 | `/api/knowledge/documents/{id}` `/bm25/rebuild` `/stats` | 知识库管理 |
 | 管理 | `/api/admin/stats` `/users` `/users/{id}/role` `/tasks` | 统计/用户/角色/任务（仅管理员） |
@@ -326,6 +342,9 @@ python evaluation/eval/eval_kb_v3.py [--top-k 8] [--categories normal,long_tail,
 ```bash
 cd backend
 python evaluation/eval/agent_eval.py [--llm-judge]
+# 真实公开事故回放集（Cloudflare 2019 / GitLab 2017 / AWS 2021 / Facebook 2021，
+# 评估"知识库无对应历史经验时"的诊断能力边界，报告单独落盘不覆盖主报告）：
+python evaluation/eval/agent_eval.py --scenarios-file agent_eval_scenarios_real.json
 ```
 
 | 指标 | 定义 |
