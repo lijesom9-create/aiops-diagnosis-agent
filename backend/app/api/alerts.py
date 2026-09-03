@@ -266,10 +266,57 @@ def _build_summary_prompt(incident: Dict[str, Any]) -> str:
             f"{d.get('root_cause') or d.get('content', '')[:120]}"
         )
     parts.append(
-        "请输出：### 事故时间线 / ### 最可能根因（综合历次诊断，标注置信度）/ "
-        "### 后续建议（复盘要点：预防与改进）"
+        "请输出（blameless 复盘结构，对事不对人）：" 
+        "### 事故时间线（检测/响应/恢复的关键时刻）"
+        " / ### 影响（受影响服务/接口/告警级别/持续时长，能量化则量化）"
+        " / ### 最可能根因（综合历次诊断，标注置信度）"
+        " / ### 处置回顾（恢复动作是否与根因吻合）"
+        " / ### 行动项（按【检测】【预防】【缓解】三类列出，每条格式："
+        "- 【类别】行动描述（负责人: X，期限: Y），无明确负责人写 待定；"
+        "质量标准：完成它是否会改变系统）"
+        " / ### 经验教训（What went well / What went wrong / Where we got lucky）"
     )
     return "\n".join(parts)
+
+
+def _parse_action_items(content: str) -> List[Dict[str, Any]]:
+    """从恢复摘要解析结构化行动项（blameless postmortem 的 Action Items）
+
+    业界质量标准：每个行动项有负责人与期限并在工单系统跟踪——
+    "行动项不跟踪，复盘等于白写"。解析宽容：缺负责人/期限记 待定。
+    """
+    import re as _re
+    if not content:
+        return []
+    items: List[Dict[str, Any]] = []
+    section = _re.search(r"#{2,4}\s*行动项(.*?)(?=\n#{2,4}|\Z)", content, _re.DOTALL)
+    if not section:
+        return items
+    for line in section.group(1).splitlines():
+        line = line.strip()
+        if not line.startswith(("-", "•", "*")):
+            continue
+        text = line.lstrip("-•* ").strip()
+        if not text:
+            continue
+        category = "预防"
+        cat_match = _re.match(r"[【\[]([^】\]]+)[】\]]\s*(.*)", text)
+        if cat_match:
+            category = cat_match.group(1).strip()
+            text = cat_match.group(2).strip()
+        owner_m = _re.search(r"负责人[:：]\s*([^，,；;）)]+)", text)
+        deadline_m = _re.search(r"(?:期限|deadline)[:：]\s*([^，,；;）)]+)", text)
+        clean = _re.sub(r"（负责人.*?）|\(owner[^）]*\)", "", text).strip(" ；;")
+        if not clean:
+            continue
+        items.append({
+            "item": clean,
+            "category": category if category in ("检测", "预防", "缓解") else "预防",
+            "owner": owner_m.group(1).strip() if owner_m else "待定",
+            "deadline": deadline_m.group(1).strip() if deadline_m else "待定",
+            "status": "pending",
+        })
+    return items
 
 
 def _fmt_dt(value) -> str:
@@ -370,6 +417,11 @@ async def _route_alert_to_incident(alert: Dict[str, Any]) -> Tuple[Dict[str, Any
                 return incident, "repeat"
         raise
     _route_metric("new")
+    try:
+        from ..observability.metrics import get_metrics
+        get_metrics().increment("ops_incidents_created_total", 1)
+    except Exception:
+        pass
     logger.info(f"新建事故 {incident_id}: service={service or 'unknown'}, 告警={alertname}")
     return incident, "initial"
 
@@ -685,9 +737,11 @@ async def _generate_incident_summary(incident: Dict[str, Any]):
             "confidence_level": report.get("confidence_level", "unknown"),
             "content": content[:800],
         })
+        action_items = _parse_action_items(content)
         await db.update_incident_fields(incident_id, {
             "status": "resolved",
             "summary": content[:2000],
+            "action_items": action_items,
         })
 
         if content:
@@ -782,6 +836,15 @@ async def alertmanager_webhook(payload: AlertmanagerWebhook, request: Request,
 
     alert_names = [a.labels.get("alertname", "?") for a in alerts]
     logger.info(f"告警通知已发送到飞书: {len(alerts)} 条 - {alert_names}")
+
+    # A4 降噪率口径：原始告警接收计数（与 ops_incidents_created_total 组成压缩比）
+    try:
+        from ..observability.metrics import get_metrics
+        for a in alerts_data:
+            get_metrics().increment("ops_alerts_received_total", 1, labels={
+                "status": a.get("status", "firing")})
+    except Exception:
+        pass
 
     # 自动诊断（Incident 生命周期 + 持久化任务表，BackgroundTasks 仅做入队）
     if settings.ALERT_AUTO_DIAGNOSIS_ENABLED:
