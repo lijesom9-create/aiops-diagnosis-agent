@@ -826,6 +826,23 @@ class Database:
 
     # ========== Incident 注册表（告警自动诊断的事故生命周期） ==========
 
+    async def ensure_incident_indexes(self):
+        """active 事故唯一索引：同服务并发创建被 DB 层拒绝（B2——路由层转归入）
+
+        partial unique：仅对 status="active" 的文档生效——每个服务同时最多一个
+        活跃事故；resolved/resolving 不受约束。内存模式无索引语义（单线程测试）。
+        """
+        await self.connect()
+        if not self._use_mongo:
+            return
+        from pymongo import ASCENDING
+        await self._mongo.incidents.create_index(
+            [("service", ASCENDING), ("status", ASCENDING)],
+            unique=True,
+            partialFilterExpression={"status": "active"},
+            name="uniq_active_service",
+        )
+
     async def save_incident(self, incident_data: dict) -> str:
         """创建事故记录"""
         await self.connect()
@@ -835,6 +852,13 @@ class Database:
             data_to_save = incident_data.copy()
             await self._mongo.incidents.insert_one(data_to_save)
         else:
+            # 模拟 uniq_active_service 唯一索引：同服务并发第二个 active 抛错
+            for existing in self._incidents:
+                if (existing.get("status") == "active"
+                        and existing.get("service") == incident_data.get("service")
+                        and existing.get("incident_id") != incident_data.get("incident_id")):
+                    from pymongo.errors import DuplicateKeyError
+                    raise DuplicateKeyError("uniq_active_service (memory emulation)")
             self._incidents.append(incident_data.copy())
         return incident_data["incident_id"]
 
@@ -958,6 +982,30 @@ class Database:
         }
         await self.update_incident_fields(incident_id, fields)
         return await self.get_incident(incident_id)
+
+    async def ack_incident(self, incident_id: str, user_id: str) -> tuple:
+        """人工认领事故（首认领生效，幂等）
+
+        业界事故三态 triggered → acknowledged → resolved 的中间态：
+        acked_at - first_seen_at 即 MTTA（Mean Time To Acknowledge）。
+
+        Returns:
+            (事故文档, 是否本次首次认领)；事故不存在返回 (None, False)
+        """
+        incident = await self.get_incident(incident_id)
+        if not incident:
+            return None, False
+        if incident.get("acked_at"):
+            return incident, False  # 已有认领，首认领不覆盖
+
+        from datetime import datetime as _dt
+        now = _dt.now()
+        await self.update_incident_fields(incident_id, {
+            "acked_by": user_id,
+            "acked_at": now,
+        })
+        updated = await self.get_incident(incident_id)
+        return updated, True
 
     async def add_incident_diagnosis(self, incident_id: str, entry: dict) -> bool:
         """向事故追加一条诊断记录（初诊/重诊/摘要），并更新诊断统计"""

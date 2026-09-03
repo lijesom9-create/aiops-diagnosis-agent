@@ -99,6 +99,15 @@ _SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
 _TRIGGER_PRIORITY = {"initial": 0, "escalation": 1, "repeat": 2}
 
 
+def _route_metric(level: str):
+    """路由级别计数（误路由可测量性）：fingerprint/flap/join/new"""
+    try:
+        from ..observability.metrics import get_metrics
+        get_metrics().increment("ops_alert_route_total", 1, labels={"level": level})
+    except Exception:
+        pass
+
+
 def _cooldown_key(alert: Dict[str, Any]) -> str:
     """告警指纹键：fingerprint 优先（Alertmanager 天然唯一），兜底 alertname:instance"""
     fp = alert.get("fingerprint") or ""
@@ -147,6 +156,42 @@ def _extract_service(alert: Dict[str, Any]) -> str:
         if cand:
             return cand
     return ""
+
+
+def _lookup_runbook(service: str) -> Optional[Dict[str, Any]]:
+    """诊断卡片附 runbook/SOP（PagerDuty runbook-attach-to-service 模式）
+
+    告警服务命中后检索处置预案 top1 直接附卡片——响应者第一步就有 SOP 可查。
+    不经过 LLM（零推理成本）；知识库未初始化/检索失败返回 None（宁缺勿错）。
+    """
+    try:
+        from ..shared_services import get_knowledge_store
+        store = get_knowledge_store()
+        if store is None:
+            return None
+        meta_filter: Optional[Dict[str, Any]] = {"doc_type": "sop"}
+        if service and service != "unknown":
+            meta_filter["service"] = service
+        results = store.hybrid_search_parent_child(
+            f"{service or '服务'} 故障处置预案", top_k=1,
+            rewrite_query=False, metadata_filter=meta_filter,
+        )
+        if not results:
+            results = store.hybrid_search_parent_child(
+                "故障处置预案 SOP", top_k=1,
+                rewrite_query=False, metadata_filter={"doc_type": "sop"},
+            )
+        if results:
+            r = results[0]
+            meta = r.get("metadata") or {}
+            return {
+                "title": r.get("title") or meta.get("title", ""),
+                "doc_id": meta.get("document_id", ""),
+                "score": round(r.get("score", 0), 3),
+            }
+    except Exception as e:
+        logger.debug(f"runbook 检索失败（不影响诊断卡片）: {e}")
+    return None
 
 
 def _build_diagnosis_prompt(alert: Dict[str, Any]) -> str:
@@ -258,6 +303,7 @@ async def _route_alert_to_incident(alert: Dict[str, Any]) -> Tuple[Dict[str, Any
                 "status": "active", "resolved_at": None,
             })
             logger.info(f"事故 {incident['incident_id']} 安静期内复燃，重新激活")
+        _route_metric("fingerprint")
         return incident, "repeat"
 
     # 2. 最近 resolved 的事故包含此 fingerprint（抖动）→ 重新打开
@@ -272,6 +318,7 @@ async def _route_alert_to_incident(alert: Dict[str, Any]) -> Tuple[Dict[str, Any
         })
         incident = await db.get_incident(incident["incident_id"])
         logger.info(f"事故 {incident['incident_id']} 抖动复燃（{settings.INCIDENT_FLAPPING_WINDOW}s 内），重新打开")
+        _route_metric("flap")
         return incident, "repeat"
 
     # 3. 同服务的活跃事故（关联窗口内）→ 归入（升级信号）
@@ -281,6 +328,7 @@ async def _route_alert_to_incident(alert: Dict[str, Any]) -> Tuple[Dict[str, Any
     if incident and fp not in (incident.get("fingerprints") or []):
         incident = await db.add_incident_fingerprint(incident["incident_id"], fp, alertname, severity)
         logger.info(f"告警 {alertname} 归入事故 {incident['incident_id']}（service={service}）")
+        _route_metric("join")
         return incident, "escalation"
 
     # 4. 新建事故
@@ -304,7 +352,24 @@ async def _route_alert_to_incident(alert: Dict[str, Any]) -> Tuple[Dict[str, Any
         "diagnosis_history": [],
         "summary": None,
     }
-    await db.save_incident(incident)
+    try:
+        await db.save_incident(incident)
+    except Exception as e:
+        # 并发创建同服务活跃事故被唯一索引拒绝 → 转为归入（B2 保障）
+        if "DuplicateKeyError" in type(e).__name__ or "E11000" in str(e):
+            incident = await db.find_active_incident_by_service(
+                service, within_seconds=settings.INCIDENT_SERVICE_JOIN_WINDOW)
+            if incident and fp not in (incident.get("fingerprints") or []):
+                incident = await db.add_incident_fingerprint(
+                    incident["incident_id"], fp, alertname, severity)
+                _route_metric("join")
+                logger.warning(f"并发创建撞唯一索引，转为归入事故 {incident['incident_id']}")
+                return incident, "escalation"
+            if incident:
+                _route_metric("fingerprint")
+                return incident, "repeat"
+        raise
+    _route_metric("new")
     logger.info(f"新建事故 {incident_id}: service={service or 'unknown'}, 告警={alertname}")
     return incident, "initial"
 
@@ -499,9 +564,10 @@ async def _process_diagnosis_task(task: Dict[str, Any]):
                 "content": content[:800],
             })
 
+            runbook = _lookup_runbook(incident.get("service", ""))
             card = FeishuClient.build_diagnosis_card(
                 task["alerts"][0], result, trigger=trigger,
-                incident_id=task["incident_id"],
+                incident_id=task["incident_id"], runbook=runbook,
             )
             if client.send_card(open_id, card):
                 logger.info(f"事故 {task['incident_id']} 诊断报告已推送飞书: "

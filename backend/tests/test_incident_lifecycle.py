@@ -13,6 +13,7 @@ Incident 生命周期测试（初诊 → 重诊 → 恢复摘要）
 全部确定性运行：mock Agent + 飞书客户端 + 内存模式 Database。
 """
 
+import json
 import os
 import sys
 from datetime import datetime, timedelta
@@ -452,3 +453,139 @@ class TestPrompts:
         prompt = _build_rediagnosis_prompt(incident, [_firing_alert()])
         assert "上次诊断" in prompt and "X" in prompt
         assert "确认" in prompt and "修正" in prompt and "推翻" in prompt
+
+
+# ============================================================
+# 7. M1 增强：路由指标 / runbook 附链 / 唯一索引
+# ============================================================
+
+class TestRouteMetrics:
+    """B1：路由级别可观测（误路由可测量性）"""
+
+    @pytest.mark.asyncio
+    async def test_route_level_counters(self, incident_env, monkeypatch):
+        from app.api import alerts as alerts_mod
+
+        levels = []
+        monkeypatch.setattr(alerts_mod, "_route_metric",
+                            lambda level: levels.append(level))
+
+        # 新建 → new；已知指纹 → fingerprint
+        await alerts_mod._route_alert_to_incident(_firing_alert(fp="fp-m1-1"))
+        await alerts_mod._route_alert_to_incident(_firing_alert(fp="fp-m1-1"))
+        assert levels == ["new", "fingerprint"]
+
+        # 同服务新指纹 + 窗口内 → join
+        await alerts_mod._route_alert_to_incident(
+            _firing_alert(fp="fp-m1-2", alertname="OOMKilled",
+                          instance="payment-service-2:8080"))
+        assert levels[-1] == "join"
+
+
+class TestRunbookAttach:
+    """A3：诊断卡片自动附 runbook/SOP"""
+
+    def test_lookup_runbook_hits(self, monkeypatch):
+        """知识库命中 SOP → 返回标题与 doc_id"""
+        import app.shared_services as ss
+        from app.api.alerts import _lookup_runbook
+
+        class FakeStore:
+            def hybrid_search_parent_child(self, query, **kw):
+                return [{"title": "payment-sim 连接池 SOP",
+                         "score": 0.82,
+                         "metadata": {"document_id": "doc_sop_1"}}]
+
+        monkeypatch.setattr(ss, "_knowledge_store", FakeStore())
+        rb = _lookup_runbook("payment-sim")
+        assert rb["title"] == "payment-sim 连接池 SOP"
+        assert rb["doc_id"] == "doc_sop_1"
+
+    def test_lookup_runbook_none_when_no_store(self, monkeypatch):
+        import app.shared_services as ss
+        from app.api.alerts import _lookup_runbook
+
+        monkeypatch.setattr(ss, "_knowledge_store", None)
+        assert _lookup_runbook("payment-sim") is None
+
+    def test_card_contains_runbook(self):
+        """卡片含推荐 SOP 元素"""
+        from app.notify.feishu import FeishuClient
+        result = {
+            "content": "### 根因分析\nx",
+            "tools_used": [],
+            "diagnosis_report": {"root_cause": "x", "solution": "y",
+                                 "confidence": "高", "confidence_level": "high"},
+        }
+        card = FeishuClient.build_diagnosis_card(
+            {"labels": {"alertname": "A"}}, result,
+            runbook={"title": "连接池 SOP", "doc_id": "d1"})
+        body = json.dumps(card["elements"], ensure_ascii=False)
+        assert "连接池 SOP" in body and "推荐 SOP" in body
+
+    def test_card_without_runbook_no_element(self):
+        from app.notify.feishu import FeishuClient
+        result = {"content": "### 根因分析\nx", "tools_used": [],
+                  "diagnosis_report": {"root_cause": "x", "solution": "y",
+                                       "confidence": "高", "confidence_level": "high"}}
+        card = FeishuClient.build_diagnosis_card({"labels": {"alertname": "A"}}, result)
+        body = json.dumps(card["elements"], ensure_ascii=False)
+        assert "推荐 SOP" not in body
+
+
+class TestUniqueIndex:
+    """B2：active 事故唯一索引——并发创建同服务事故被拒绝并转归入"""
+
+    @pytest.mark.asyncio
+    async def test_memory_emulation_duplicate_rejected(self, incident_env, monkeypatch):
+        """内存模拟唯一索引：同服务第二个 active insert 抛 DuplicateKeyError"""
+        alerts_mod, db = incident_env["alerts"], incident_env["db"]
+        monkeypatch.setattr(alerts_mod, "_get_feishu_client", lambda: None)
+
+        await alerts_mod._route_alert_to_incident(_firing_alert(fp="fp-u1"))
+        # 绕过路由直接 save（模拟并发窗口内的第二个创建）
+        from pymongo.errors import DuplicateKeyError
+        dup = dict(db._incidents[0])
+        dup["incident_id"] = "INC-AUTO-DUP0001"
+        dup["fingerprints"] = ["fp:fp-u2"]
+        with pytest.raises(DuplicateKeyError):
+            await db.save_incident(dup)
+
+    @pytest.mark.asyncio
+    async def test_route_falls_back_to_join_on_duplicate(self, incident_env, monkeypatch):
+        """创建撞唯一索引 → 转为归入该事故（escalation）
+
+        模拟竞态：第一次 find_active_incident_by_service 返回 None（对方尚未提交），
+        save_incident 抛 DuplicateKeyError（唯一索引拒绝）→ 兜底重新查询 → 归入。
+        """
+        alerts_mod, feishu, db = (incident_env["alerts"], incident_env["feishu"],
+                                  incident_env["db"])
+        monkeypatch.setattr(alerts_mod, "_get_feishu_client", lambda: None)
+
+        # 先建一个事故（fp-u1）
+        incident, trigger = await alerts_mod._route_alert_to_incident(
+            _firing_alert(fp="fp-u1"))
+        assert trigger == "initial"
+
+        # 竞态模拟：join 查询第一次返回 None（并发窗口），save 撞唯一索引
+        from pymongo.errors import DuplicateKeyError
+        calls = {"find": 0}
+
+        async def flaky_find(service, within_seconds=1800):
+            calls["find"] += 1
+            if calls["find"] == 1:
+                return None  # 竞态窗口：查不到（对方事务未提交）
+            return await type(db).find_active_incident_by_service(db, service, within_seconds)
+
+        async def dup_save(doc):
+            raise DuplicateKeyError("E11000 duplicate key: uniq_active_service")
+
+        monkeypatch.setattr(db, "find_active_incident_by_service", flaky_find)
+        monkeypatch.setattr(db, "save_incident", dup_save)
+
+        incident2, trigger2 = await alerts_mod._route_alert_to_incident(
+            _firing_alert(fp="fp-u3", alertname="OOMKilled",
+                          instance="payment-service-2:8080"))
+        assert trigger2 == "escalation"
+        assert incident2["incident_id"] == incident["incident_id"], "兜底应归入原事故"
+        assert len(db._incidents) == 1, "不应产生第二个事故"

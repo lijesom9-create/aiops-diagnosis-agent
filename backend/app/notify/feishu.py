@@ -185,7 +185,8 @@ class FeishuClient:
     @staticmethod
     def build_diagnosis_card(alert: Dict[str, Any], result: Dict[str, Any],
                              trigger: str = "initial",
-                             incident_id: str = "") -> Dict[str, Any]:
+                             incident_id: str = "",
+                             runbook: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """构建自动诊断报告卡片（告警 → Agent 诊断 → 飞书推送）
 
         Args:
@@ -298,6 +299,14 @@ class FeishuClient:
                 "tag": "div",
                 "text": {"tag": "lark_md",
                          "content": _to_lark_md(content, max_len=2000) or "（诊断无输出）"},
+            })
+
+        # 推荐 SOP（runbook-attach-to-service）
+        if runbook and runbook.get("title"):
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md",
+                         "content": f"📎 **推荐 SOP**: {runbook['title']}（处置前请查阅）"},
             })
 
         # 工具调用概览

@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api import admin, alerts, auth, documents, health, knowledge, langgraph, memory, monitoring
+from app.api import admin, alerts, auth, documents, health, incidents, knowledge, langgraph, memory, monitoring
 from app.core.config import settings
 from app.core.database import db
 
@@ -99,6 +99,7 @@ async def lifespan(app: FastAPI):
             recovered = await db.recover_stale_diagnosis_tasks(settings.DIAG_TASK_STALE_SECONDS)
             if recovered:
                 logger.info(f"诊断任务恢复: {recovered} 个遗留任务回到队列")
+            await db.ensure_incident_indexes()  # active 事故唯一索引（B2）
             worker_task = asyncio.create_task(alerts.diagnosis_worker_loop())
             logger.info("诊断 worker 已启动（任务表持久化模式）")
         except Exception as e:
@@ -255,6 +256,7 @@ app.include_router(langgraph.router)  # LangGraph Agent (替代 chat.router)
 app.include_router(admin.router)  # 管理后台（仅管理员）
 app.include_router(alerts.router)  # Alertmanager webhook Bridge（告警 → 飞书通知）
 app.include_router(monitoring.router)  # 监控数据查询 API（前端智能运维看板用）
+app.include_router(incidents.router)  # 事故管理（认领/详情——业界 ack 语义）
 
 
 # 根端点
