@@ -296,6 +296,29 @@ services:
       - education-network
     restart: unless-stopped
 
+  # demo-payment-sim：被诊断的真实示例服务（R 组核心——真实化验证的对象）
+  # 有真实连接池上限（5）、RED 指标、结构化日志；mem_limit 使内存泄漏故障可触发 OOM
+  demo-service:
+    build: ./demo-service
+    container_name: demo-payment-sim
+    ports:
+      - "8001:8000"   # 故障注入控制面（业务面无需对外）
+    environment:
+      - DEMO_DB_PATH=/data/demo.db
+      - SIM_TRAFFIC=1
+    mem_limit: 256m
+    volumes:
+      - demo-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - education-network
+    restart: unless-stopped
+
   # Grafana：可视化看板（应用 HTTP/RAG/诊断指标）——运维 Agent 看得见自己
   grafana:
     image: grafana/grafana:11.1.0
@@ -369,3 +392,4 @@ volumes:
   loki-data:
   alertmanager-data:
   grafana-data:
+  demo-data:

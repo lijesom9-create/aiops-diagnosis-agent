@@ -88,3 +88,69 @@ groups:
         annotations:
           summary: "backend 服务不可达超过 1 分钟"
           description: "Prometheus 无法采集 backend:8000/metrics，服务可能已宕机或 /metrics 暴露异常"
+
+  - name: demo_service_alerts
+    rules:
+      # ========== demo-payment-sim（被诊断的真实示例服务）==========
+      # 告警规则基于真实基线：正常 P95 ~20ms、错误率 ~0；阈值留出噪声余量
+      # labels.service=payment-sim 与告警路由的服务提取约定对齐
+
+      # 错误率 > 30% 持续 1 分钟（error_storm / pool_exhaustion 注入时触发）
+      - alert: DemoServiceHighErrorRate
+        expr: sum(rate(demo_http_requests_total{job="demo-service",status=~"5.."}[2m])) / clamp_min(sum(rate(demo_http_requests_total{job="demo-service"}[2m])), 0.001) > 0.3
+        for: 1m
+        labels:
+          severity: critical
+          category: service
+          service: 'payment-sim'
+        annotations:
+          summary: "payment-sim 5xx 错误率 {{ $value | humanizePercentage }} 持续 1 分钟"
+          description: "支付服务错误率超过 30%，接口大量失败——检查错误风暴/连接池/依赖"
+
+      # P95 延迟 > 1s 持续 2 分钟（slow_query / dependency_timeout 注入时触发；基线 ~20ms）
+      - alert: DemoServiceHighLatency
+        expr: histogram_quantile(0.95, sum(rate(demo_http_request_duration_seconds_bucket{job="demo-service"}[5m])) by (le)) > 1
+        for: 2m
+        labels:
+          severity: warning
+          category: service
+          service: 'payment-sim'
+        annotations:
+          summary: "payment-sim P95 延迟 {{ $value | humanizeDuration }} 超过 1s"
+          description: "支付服务 P95 延迟异常（基线 ~20ms）——检查慢查询/依赖超时"
+
+      # 连接池饱和：借出连接数达到上限 5 持续 1 分钟（pool_exhaustion 的先行信号）
+      - alert: DemoServicePoolSaturation
+        expr: demo_db_pool_checked_out{job="demo-service"} >= 5
+        for: 1m
+        labels:
+          severity: warning
+          category: service
+          service: 'payment-sim'
+        annotations:
+          summary: "payment-sim 数据库连接池打满（{{ $value }}/5）"
+          description: "连接池全部借出且未释放——即将或已经发生池耗尽超时"
+
+      # 实例不可达（实例存活）
+      - alert: DemoServiceDown
+        expr: up{job="demo-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: service
+          service: 'payment-sim'
+        annotations:
+          summary: "payment-sim 实例不可达超过 1 分钟"
+          description: "Prometheus 无法采集 demo-service:8000——服务崩溃或 OOM"
+
+      # 内存增长（memory_leak 注入时触发；容器 mem_limit=256m，触顶即 OOM 重启）
+      - alert: DemoServiceMemoryHigh
+        expr: process_resident_memory_bytes{job="demo-service"} > 200 * 1024 * 1024
+        for: 3m
+        labels:
+          severity: warning
+          category: memory
+          service: 'payment-sim'
+        annotations:
+          summary: "payment-sim 常驻内存 {{ $value | humanize1024 }}B 超过 200MB"
+          description: "进程 RSS 持续高于 200MB（容器上限 256m）——疑似内存泄漏"

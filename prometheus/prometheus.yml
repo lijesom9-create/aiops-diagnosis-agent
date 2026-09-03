@@ -39,3 +39,10 @@ scrape_configs:
     metrics_path: '/metrics'
     static_configs:
       - targets: ['backend:8000']
+
+  # 4. demo-service：被诊断的真实示例服务（RED 指标 + 池饱和度）
+  - job_name: 'demo-service'
+    static_configs:
+      - targets: ['demo-service:8000']
+        labels:
+          service: 'payment-sim'
