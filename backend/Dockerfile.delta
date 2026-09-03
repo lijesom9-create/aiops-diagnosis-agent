@@ -1,0 +1,10 @@
+# delta 镜像：基于现网 backend 镜像，补增量依赖 + 覆盖代码（避免全量重建）
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+USER root
+RUN pip install --no-cache-dir --retries 5 --timeout 30     prometheus-client==0.25.0 langgraph-checkpoint-mongodb==0.4.0     -i https://pypi.tuna.tsinghua.edu.cn/simple     --trusted-host pypi.tuna.tsinghua.edu.cn ||     pip install --no-cache-dir --retries 5 --timeout 30     prometheus-client==0.25.0 langgraph-checkpoint-mongodb==0.4.0
+
+COPY app/ /app/app/
+COPY main.py /app/main.py
+USER appuser

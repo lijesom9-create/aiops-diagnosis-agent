@@ -3,7 +3,10 @@ FROM python:3.12-slim
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# 清华镜像（与 backend/Dockerfile 同策略；容器内无法直连 pypi.org）
+RUN pip install --no-cache-dir --retries 5 --timeout 30 -r requirements.txt \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    --trusted-host pypi.tuna.tsinghua.edu.cn
 
 COPY main.py db.py faults.py ./
 
