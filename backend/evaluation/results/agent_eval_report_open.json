@@ -1,24 +1,24 @@
 {
   "dataset": "agent_eval_scenarios",
   "top_k": 8,
-  "llm_judge": false,
+  "llm_judge": true,
   "summary": {
     "scenario_count": 5,
     "completed": 5,
     "failed": 0,
-    "mcp_tools_loaded": 9,
-    "tool_call_accuracy": 0.433,
-    "tool_coverage": 0.667,
-    "tool_order_ok_rate": 0.2,
-    "evidence_recall": 0.317,
-    "evidence_metrics_channel": 0.567,
-    "evidence_logs_channel": 0.317,
-    "evidence_knowledge_channel": 0.067,
-    "root_cause_accuracy": 0.04,
+    "mcp_tools_loaded": 2,
+    "tool_call_accuracy": 1.0,
+    "tool_coverage": 1.0,
+    "tool_order_ok_rate": 1.0,
+    "evidence_recall": 0.339,
+    "evidence_metrics_channel": 0.533,
+    "evidence_logs_channel": 0.217,
+    "evidence_knowledge_channel": 0.267,
+    "root_cause_accuracy": 0.09,
     "report_rate": 1.0,
     "confidence_ok_rate": 1.0,
     "diagnosis_success_rate": 1.0,
-    "avg_latency_s": 142.9
+    "avg_latency_s": 143.42
   },
   "per_scenario": [
     {
@@ -26,22 +26,18 @@
       "title": "支付变慢但错误率不高：池在高占用未耗尽，背景对账任务抢占连接",
       "ground_truth_incident": "INC-2026-201",
       "tools_used": [
-        "query_alerts",
-        "query_system_overview",
-        "list_containers",
+        "query_metrics",
         "get_recent_changes",
+        "query_logs",
         "search_knowledge",
         "get_service_dependencies",
-        "query_logs",
-        "query_prometheus",
-        "query_loki",
-        "query_prometheus_range"
+        "create_incident_ticket"
       ],
       "step_count": 5,
       "tool_call": {
-        "coverage": 0.667,
-        "order_ok": 0.0,
-        "accuracy": 0.333
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
       },
       "evidence": {
         "per_channel": {
@@ -53,7 +49,8 @@
       },
       "root_cause": {
         "recall": 0.0,
-        "root_cause_extracted": "**最可能根因：定时对账任务的大事务/慢 SQL 与在线支付链路形成 DB 锁竞争（等待型故障），延迟随等待队列单调爬升；v2.3.1 发版与连接池余量小为放大器。**\n\n因果链（能解释全部症状）：\n\n1. **触发**：凌晨定时对账任务启"
+        "root_cause_extracted": "**最可能根因：CHG-2026-0915 新增的每日凌晨定时对账任务（重事务、长持锁）触发\"订单对账慢 SQL\"长期占用 MySQL 连接并持锁，导致延迟缓慢爬升并在晚高峰流量放大下演变为连接池耗尽。** 属 INC-2026-001/0",
+        "llm_judge": 1.0
       },
       "diagnosis": {
         "report_ok": 1.0,
@@ -61,27 +58,25 @@
         "confidence_level": "high",
         "success": 1.0
       },
-      "latency_s": 143.0
+      "latency_s": 147.4
     },
     {
       "scenario_id": "SC-OPEN-002",
       "title": "支付回调延迟但最终送达：消费组重平衡导致补偿滞后，非回调丢失",
       "ground_truth_incident": "INC-2026-202",
       "tools_used": [
-        "query_alerts",
-        "list_containers",
-        "search_knowledge",
+        "query_metrics",
         "get_recent_changes",
         "query_logs",
-        "query_prometheus",
+        "search_knowledge",
         "get_service_dependencies",
         "create_incident_ticket"
       ],
-      "step_count": 7,
+      "step_count": 5,
       "tool_call": {
-        "coverage": 0.667,
-        "order_ok": 0.0,
-        "accuracy": 0.333
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
       },
       "evidence": {
         "per_channel": {
@@ -93,7 +88,8 @@
       },
       "root_cause": {
         "recall": 0.0,
-        "root_cause_extracted": "**机制根因（高置信）——消费组 rebalance 期间消费暂停导致消息滞留、均衡后追平：**\n订单状态更新由 Kafka 消费组消费\"支付成功事件\"驱动。rebalance 发生时（eager 协议下）**组内消费整体暂停**（分区 r"
+        "root_cause_extracted": "**最可能根因：MySQL 连接池耗尽（慢 SQL 触发），Kafka rebalance 是其下游症状而非根因。**\n\n因果链（触发因素 → 瓶颈点 → 症状）：\n\n1. **触发因素**：营销活动流量突增至 3.5 倍（QPS 4200",
+        "llm_judge": 0.0
       },
       "diagnosis": {
         "report_ok": 1.0,
@@ -101,125 +97,123 @@
         "confidence_level": "high",
         "success": 1.0
       },
-      "latency_s": 166.8
+      "latency_s": 91.8
     },
     {
       "scenario_id": "SC-OPEN-003",
       "title": "搜索偶发超时+订单统计变慢同现：读未路由到从库，大事务放大主库压力",
       "ground_truth_incident": "INC-2026-203",
       "tools_used": [
-        "query_alerts",
-        "list_containers",
-        "query_system_overview",
-        "query_prometheus",
+        "query_metrics",
+        "get_service_dependencies",
+        "get_recent_changes",
         "query_logs",
         "search_knowledge",
-        "get_recent_changes"
+        "create_incident_ticket"
       ],
-      "step_count": 6,
+      "step_count": 7,
       "tool_call": {
-        "coverage": 0.667,
+        "coverage": 1.0,
         "order_ok": 1.0,
-        "accuracy": 0.833
+        "accuracy": 1.0
       },
       "evidence": {
         "per_channel": {
           "metrics": 0.5,
           "logs": 0.0,
-          "knowledge": 0.333
+          "knowledge": 0.667
         },
-        "recall": 0.278
+        "recall": 0.389
       },
       "root_cause": {
-        "recall": 0.0,
-        "root_cause_extracted": "**最可能根因：读写分离\"只配通了主从复制链路，未真正接通只读路由\"——读流量实际仍全部落在主库，从库因无流量而闲置。**\n\n因果链如下：\n\n1. **近期启用读写分离**：仅完成了主从复制 + 配置中心下发路由规则，**应用层读 SQL "
+        "recall": 0.25,
+        "root_cause_extracted": "**最可能根因：MySQL 主库成为读流量单点瓶颈 —— 历史报表大事务持续占主库连接，叠加营销流量高峰打满应用连接池；而同期新增的读写分离路由（CHG-2026-0905）未真正分流，从库闲置未能兜底。**\n\n因果链（变更/触发 → 瓶颈",
+        "llm_judge": 1.0
       },
       "diagnosis": {
         "report_ok": 1.0,
         "confidence_ok": 1.0,
-        "confidence_level": "medium",
+        "confidence_level": "high",
         "success": 1.0
       },
-      "latency_s": 118.5
+      "latency_s": 137.8
     },
     {
       "scenario_id": "SC-OPEN-004",
       "title": "Redis 大 key 热点未命中：回源打爆数据库连接，非缓存雪崩全盘",
       "ground_truth_incident": "INC-2026-204",
       "tools_used": [
-        "query_alerts",
-        "list_containers",
-        "query_system_overview",
-        "search_knowledge",
+        "query_metrics",
+        "get_recent_changes",
         "query_logs",
-        "query_prometheus",
-        "get_recent_changes"
+        "search_knowledge",
+        "create_incident_ticket"
       ],
-      "step_count": 5,
+      "step_count": 6,
       "tool_call": {
-        "coverage": 0.667,
-        "order_ok": 0.0,
-        "accuracy": 0.333
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
       },
       "evidence": {
         "per_channel": {
-          "metrics": 0.5,
-          "logs": 0.5,
-          "knowledge": 0.0
+          "metrics": 0.0,
+          "logs": 0.0,
+          "knowledge": 0.333
         },
-        "recall": 0.333
+        "recall": 0.111
       },
       "root_cause": {
         "recall": 0.0,
-        "root_cause_extracted": "**结论：单热点 key 缓存击穿（重建无互斥保护）→ 回源请求并发穿透 + 慢 SQL 放大连接占用 → DB 连接池打满 → 等待线程堆积造成偶发大幅变慢，并随热 key 过期周期复发。** 因果链如下：\n\n1. **触发（单点空窗）*"
+        "root_cause_extracted": "**最可能根因：单热点 key 缓存击穿（无互斥重建）周期性触发回源突发，撞在\"慢 SQL 长占连接 + 连接池容量不足 + 大促流量\"三条短板叠加的脆弱 DB 侧，放大为连接池耗尽型故障。**\n\n因果链（触发 → 瓶颈 → 根因）：\n1.",
+        "llm_judge": 1.0
       },
       "diagnosis": {
         "report_ok": 1.0,
         "confidence_ok": 1.0,
-        "confidence_level": "medium",
+        "confidence_level": "high",
         "success": 1.0
       },
-      "latency_s": 133.1
+      "latency_s": 170.6
     },
     {
       "scenario_id": "SC-OPEN-005",
       "title": "灰度发布期间偶发 401：新旧实例签名密钥不一致，非密钥被泄露",
       "ground_truth_incident": "INC-2026-205",
       "tools_used": [
-        "query_alerts",
-        "list_containers",
-        "query_system_overview",
+        "query_metrics",
         "get_recent_changes",
-        "get_service_dependencies",
         "search_knowledge",
         "query_logs",
-        "query_loki"
+        "get_service_dependencies",
+        "create_incident_ticket"
       ],
       "step_count": 6,
       "tool_call": {
-        "coverage": 0.667,
-        "order_ok": 0.0,
-        "accuracy": 0.333
+        "coverage": 1.0,
+        "order_ok": 1.0,
+        "accuracy": 1.0
       },
       "evidence": {
         "per_channel": {
-          "metrics": 0.667,
+          "metrics": 1.0,
           "logs": 0.5,
-          "knowledge": 0.0
+          "knowledge": 0.333
         },
-        "recall": 0.389
+        "recall": 0.611
       },
       "root_cause": {
         "recall": 0.2,
-        "root_cause_extracted": "**最可能根因：新版本与旧版本在 JWT 签发/校验链路上存在不兼容差异（最典型为：新版实例使用了不同验签密钥，或新增/收紧校验规则——如校验 kid/issuer/audience/算法/版本号 claim），且新旧实例随机承接请求，构成"
+        "root_cause_extracted": "**最可能根因：v2.4.0 的\"签名密钥升级\"未配置新旧密钥双并行验证（无 kid 过渡期），灰度实例与存量 token 密钥域不一致，导致验签结果按实例分裂。**\n\n因果链：\n1. **变更**：v2.4.0 灰度发布升级签名/验签密钥",
+        "llm_judge": 1.0
       },
       "diagnosis": {
         "report_ok": 1.0,
         "confidence_ok": 1.0,
-        "confidence_level": "medium",
+        "confidence_level": "high",
         "success": 1.0
       },
-      "latency_s": 153.1
+      "latency_s": 169.5
     }
   ]
 }
