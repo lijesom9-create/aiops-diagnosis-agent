@@ -31,14 +31,27 @@ from loguru import logger
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
-# 环境修复：REQUESTS_CA_BUNDLE 可能指向不存在的路径，导致本地 BGE 模型 TLS 校验失败
+# 环境修复：REQUESTS_CA_BUNDLE / SSL_CERT_FILE 可能被系统级变量指到失效的
+# certifi 路径（如历史 venv 残留 D:\pythonProject\...），导致 onnx/CrossEncoder
+# 模型加载做 TLS 校验失败 → reranker 静默降级 off。这里无条件改写为当前进程内
+# certifi.where() 的有效 CA（仅当 certifi 可用），不再用 os.path.exists 条件判断
+# （失效路径若恰好存在会令该条件跳过覆盖）。
 try:
     import certifi
-    if not os.path.exists(os.environ.get("REQUESTS_CA_BUNDLE", "")):
-        os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
-        os.environ["SSL_CERT_FILE"] = certifi.where()
+    _ca_bundle = certifi.where()
+    for _var in ("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
+        os.environ[_var] = _ca_bundle
 except Exception:
     pass
+
+# A0 修复（知识库证据弱根因）：评测复用 Docker Qdrant Server，而非宿主机损坏的
+# local qdrant_db。宿主机 ./data/qdrant_db 的子块存在 parent_id 缺失/孤儿引用，
+# 导致 hybrid_search_parent_child 父块组装返回 0 → search_knowledge 恒空 → knowledge
+# 证据为 0。而 Docker 真实链路用的是 qdrant:6333（child 9878/parent 2871），数据健康
+# （检索正常、reranker=on）。这里在 settings 首次加载前把评测知识库指向 Docker Server，
+# 使评测与真实链路使用同一份健康数据。用 setdefault 尊重显式配置。
+os.environ.setdefault("QDRANT_HOST", "localhost")
+os.environ.setdefault("QDRANT_PORT", "6333")
 
 DATA_DIR = BACKEND_DIR / "evaluation" / "data"
 RESULTS_DIR = BACKEND_DIR / "evaluation" / "results"
@@ -166,12 +179,18 @@ async def run_scenario(agent, scenario: Dict) -> Dict[str, Any]:
     query = scenario["user_input"]
     session_id = f"agent_eval_{scenario['scenario_id']}_{int(time.time())}"
     start = time.perf_counter()
-    result = await agent.run(
-        user_input=query,
-        session_id=session_id,
-        context={"user_id": ""},
-        use_web_search=False,
-    )
+    # 注入评测场景 ID：驱动监控 mock 返回该场景差异化信号（tools.py _EVAL_SCENARIO_MOCKS）
+    from app.langgraph_agent.tools import set_eval_scenario
+    set_eval_scenario(scenario["scenario_id"])
+    try:
+        result = await agent.run(
+            user_input=query,
+            session_id=session_id,
+            context={"user_id": ""},
+            use_web_search=False,
+        )
+    finally:
+        set_eval_scenario(None)
     latency = time.perf_counter() - start
     return {
         "scenario_id": scenario["scenario_id"],
@@ -298,8 +317,13 @@ async def main():
         "per_scenario": per_scenario,
     }
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    # 真实事故回放集的报告单独落盘，避免覆盖 mock 集主报告
-    report_name = "agent_eval_report_real.json" if args.scenarios_file else "agent_eval_report.json"
+    # 按场景集文件名派生报告名，避免 open/real 相互覆盖
+    if args.scenarios_file:
+        stem = Path(args.scenarios_file).stem  # 如 agent_eval_scenarios_open
+        short = stem.replace("agent_eval_scenarios", "").strip("_")  # open / real / 空
+        report_name = f"agent_eval_report_{short}.json" if short else "agent_eval_report.json"
+    else:
+        report_name = "agent_eval_report.json"
     out = RESULTS_DIR / report_name
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(f"评估报告已保存: {out}")

@@ -70,6 +70,35 @@ DEFAULT_FAULTS = ["slow_query", "error_storm", "pool_exhaustion"]
 ALL_FAULTS = list(FAULT_CONFIG.keys())
 REAL_METRIC_PREFIX = "demo_"
 
+# ============ 复合（多故障叠加）场景 ============
+# 开放场景的本质：多个独立故障在真实链路上同时发生，Agent 须组合多路真实信号
+# 各自归因并合并根因（不能只蒙对其中一个）。faults.py 是 dict 状态，天然支持多故障同注。
+# 判定：诊断根因须对每个构成故障的关键词组**至少命中一个**，才算真正识别了全部成因。
+COMPOSITE_CONFIG = {
+    "C1_double_latency": {
+        "title": "双重延迟叠加：下游依赖超时 + 数据库慢查询",
+        "faults": [
+            {"fault": "dependency_timeout", "params": {"delay": 5.0},
+             "keywords": ["超时", "timeout", "依赖", "depend", "下游", "delay"]},
+            {"fault": "slow_query", "params": {"delay": 3.0},
+             "keywords": ["慢", "slow", "数据库", "database", "查询", "连接池"]},
+        ],
+        "expected_alerts": ["DemoServiceHighLatency"],
+        "alert_wait": 420,
+    },
+    "C2_latency_and_errors": {
+        "title": "慢+错并发：延迟爬升且错误率同时抬升",
+        "faults": [
+            {"fault": "slow_query", "params": {"delay": 3.0},
+             "keywords": ["慢", "slow", "数据库", "database", "延迟", "latency"]},
+            {"fault": "error_storm", "params": {},
+             "keywords": ["错误率", "500", "5xx", "error", "错误风暴", "失败"]},
+        ],
+        "expected_alerts": ["DemoServiceHighErrorRate", "DemoServiceHighLatency"],
+        "alert_wait": 420,
+    },
+}
+
 
 class APIClient:
     """HTTP API 客户端：封装 backend / demo-service / prometheus 交互"""
@@ -432,6 +461,170 @@ def verify_single_fault(client, fault_name, config, diag_wait=300):
     return result
 
 
+def verify_composite(client, scenario_id, scenario_cfg, diag_wait):
+    """验证复合场景完整链路：同时注入多个故障 -> 合并告警 -> 诊断 -> 多因根因判定。
+
+    与单故障链路的差异：注入 N 个故障、合并期望告警、要求诊断根因对每个
+    构成故障的关键词组都命中至少一个（证明 Agent 识别了全部并存成因）。
+    """
+    result = {
+        "scenario": scenario_id,
+        "title": scenario_cfg.get("title", scenario_id),
+        "faults": [f["fault"] for f in scenario_cfg["faults"]],
+        "timestamp_start": datetime.now(timezone.utc).isoformat(),
+        "steps": {},
+    }
+
+    # 0. 清理 + 开流量
+    print(f"\n{'='*60}")
+    print(f"[{scenario_id}] {scenario_cfg.get('title','')}")
+    print(f"[{scenario_id}] 清理已有故障...")
+    client.clear_all_faults()
+    traffic = TrafficGenerator(client.demo, interval=1.0)
+    traffic.start()
+    time.sleep(5)
+
+    # 1. 注入全部故障（叠加）
+    print(f"[{scenario_id}] 注入 {len(scenario_cfg['faults'])} 个故障...")
+    inject_ok = []
+    for f in scenario_cfg["faults"]:
+        try:
+            client.inject_fault(f["fault"], f["params"])
+            inject_ok.append(f["fault"])
+        except Exception as e:
+            print(f"  [warn] 注入 {f['fault']} 失败: {e}")
+    if not inject_ok or any(
+        f["fault"] not in client.get_active_faults() for f in scenario_cfg["faults"]
+    ):
+        result["steps"]["inject"] = {"status": "failed", "faults": scenario_cfg["faults"]}
+        result["overall"] = "failed"
+        client.clear_all_faults()
+        traffic.stop()
+        return result
+    active = client.get_active_faults()
+    result["steps"]["inject"] = {"status": "ok", "injected": active}
+    print(f"[{scenario_id}] 当前激活故障: {active}")
+
+    # 2. 等待合并告警触发
+    expected = set(scenario_cfg["expected_alerts"])
+    print(f"[{scenario_id}] 等待告警: {expected}（最多 {scenario_cfg['alert_wait']}s）")
+
+    def check_alert():
+        firing = client.get_firing_alert_names()
+        if expected & firing:
+            return firing
+        return None
+
+    firing_alerts = wait_for_condition(
+        "告警触发", check_alert, timeout=scenario_cfg["alert_wait"], interval=15,
+    )
+    result["steps"]["alert_fired"] = {
+        "status": "ok" if firing_alerts else "timeout",
+        "firing_alerts": list(firing_alerts) if firing_alerts else [],
+    }
+    if not firing_alerts:
+        result["overall"] = "failed"
+        client.clear_all_faults()
+        traffic.stop()
+        return result
+
+    # 3. 等待事故创建
+    print(f"[{scenario_id}] 等待事故创建...")
+    existing_ids = {
+        i["incident_id"] for i in client.list_incidents(service="payment-sim")
+    }
+
+    def check_incident():
+        incidents = client.list_incidents(service="payment-sim", status="active")
+        new_incidents = [
+            i for i in incidents if i["incident_id"] not in existing_ids
+        ]
+        return new_incidents[0] if new_incidents else None
+
+    incident = wait_for_condition("事故创建", check_incident, timeout=180, interval=10)
+    if not incident:
+        incidents = client.list_incidents(service="payment-sim", status="active")
+        incident = incidents[0] if incidents else None
+        if not incident:
+            result["steps"]["incident_created"] = {"status": "timeout"}
+            result["overall"] = "failed"
+            client.clear_all_faults()
+            traffic.stop()
+            return result
+    result["steps"]["incident_created"] = {
+        "status": "ok",
+        "incident_id": incident["incident_id"],
+    }
+
+    # 4. 等待诊断完成
+    print(f"[{scenario_id}] 等待诊断完成（最多 {diag_wait}s）...")
+
+    def check_diagnosis():
+        detail = client.get_incident_detail(incident["incident_id"])
+        if detail and detail.get("diag_count", 0) > 0:
+            return detail
+        return None
+
+    detail = wait_for_condition("诊断完成", check_diagnosis, timeout=diag_wait, interval=15)
+    if not detail:
+        result["steps"]["diagnosis"] = {"status": "timeout"}
+        result["overall"] = "failed"
+        client.clear_all_faults()
+        traffic.stop()
+        return result
+
+    diag_history = detail.get("diagnosis_history") or []
+    last_diag = diag_history[-1] if diag_history else {}
+    root_cause = last_diag.get("root_cause", "")
+    confidence = last_diag.get("confidence_level", "unknown")
+    evidence = last_diag.get("content", "") or last_diag.get("evidence", "")
+
+    result["steps"]["diagnosis"] = {
+        "status": "ok",
+        "incident_id": incident["incident_id"],
+        "diag_count": detail.get("diag_count", 0),
+        "root_cause": root_cause,
+        "confidence_level": confidence,
+    }
+
+    # 5. 多因根因判定：每个构成故障的关键词组都须命中至少一个
+    rcl = root_cause.lower()
+    per_fault_hits = []
+    for f in scenario_cfg["faults"]:
+        hits = [kw for kw in f["keywords"] if kw.lower() in rcl]
+        per_fault_hits.append({"fault": f["fault"], "hits": hits, "hit": len(hits) > 0})
+    all_faults_hit = all(p["hit"] for p in per_fault_hits)
+    result["steps"]["root_cause_judgment"] = {
+        "per_fault": per_fault_hits,
+        "all_faults_identified": all_faults_hit,
+    }
+
+    # 6. 证据引用真实指标
+    evl = evidence.lower() if evidence else ""
+    has_real_metrics = REAL_METRIC_PREFIX in evl
+    result["steps"]["evidence_check"] = {
+        "has_real_metrics": has_real_metrics,
+        "evidence_preview": evidence[:500] if evidence else "",
+    }
+
+    # 7. 总体判定
+    if all_faults_hit and has_real_metrics:
+        result["overall"] = "passed"
+    elif not all_faults_hit:
+        result["overall"] = "root_cause_missed"
+    else:
+        result["overall"] = "partial"
+
+    # 8. 清理 + 闭案
+    print(f"[{scenario_id}] 清除故障 + 强制闭案...")
+    client.clear_all_faults()
+    traffic.stop()
+    time.sleep(10)
+    client.force_resolve_incident(incident["incident_id"])
+    result["timestamp_end"] = datetime.now(timezone.utc).isoformat()
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description="R5 故障注入验证矩阵")
     parser.add_argument("--backend-url", default="http://localhost:8000")
@@ -439,8 +632,8 @@ def main():
     parser.add_argument("--prometheus-url", default="http://localhost:9090")
     parser.add_argument(
         "--faults",
-        default=",".join(DEFAULT_FAULTS),
-        help=f"逗号分隔的故障类型（可选: {','.join(ALL_FAULTS)}）",
+        default=None,
+        help=f"逗号分隔的故障类型（可选: {','.join(ALL_FAULTS)}）；不指定且未跑复合时不跑单体",
     )
     parser.add_argument(
         "--all", action="store_true", help="跑全部五类故障（含 memory_leak）"
@@ -449,13 +642,27 @@ def main():
         "--diag-wait", type=int, default=300, help="等待诊断完成的最大秒数"
     )
     parser.add_argument("--output", default=None, help="输出文件路径")
+    parser.add_argument(
+        "--composites",
+        default="",
+        help="跑复合（多故障叠加）场景，逗号分隔（可选: " + ",".join(COMPOSITE_CONFIG) + "）",
+    )
     args = parser.parse_args()
 
-    fault_names = ALL_FAULTS if args.all else args.faults.split(",")
+    composite_names = [c.strip() for c in args.composites.split(",") if c.strip()]
+
+    fault_names = ALL_FAULTS if args.all else (args.faults.split(",") if args.faults else [])
     for name in fault_names:
         if name not in FAULT_CONFIG:
             print(f"未知故障类型: {name}；可选: {','.join(ALL_FAULTS)}")
             sys.exit(1)
+    for name in composite_names:
+        if name not in COMPOSITE_CONFIG:
+            print(f"未知复合场景: {name}；可选: {','.join(COMPOSITE_CONFIG)}")
+            sys.exit(1)
+
+    if not fault_names and not composite_names:
+        fault_names = DEFAULT_FAULTS
 
     output_path = args.output
     if not output_path:
@@ -513,7 +720,7 @@ def main():
             120, 15,
         )
 
-    # 执行验证矩阵
+    # 执行验证矩阵（单故障 + 复合场景）
     results = []
     for fault_name in fault_names:
         config = FAULT_CONFIG[fault_name]
@@ -522,6 +729,12 @@ def main():
         )
         results.append(result)
         print(f"\n[{fault_name}] 结果: {result.get('overall', 'unknown')}")
+
+    for scene in composite_names:
+        cfg = COMPOSITE_CONFIG[scene]
+        result = verify_composite(client, scene, cfg, args.diag_wait)
+        results.append(result)
+        print(f"\n[{scene}] 结果: {result.get('overall', 'unknown')}")
 
     # 汇总
     passed = sum(1 for r in results if r.get("overall") == "passed")
@@ -537,8 +750,8 @@ def main():
         "passed": passed,
         "partial": partial,
         "failed": failed,
-        "acceptance_criteria": ">=3 类故障全链路通过",
-        "acceptance_met": passed >= 3,
+        "acceptance_criteria": ">=3 类通过（或仅跑复合/少量项时需全部通过）",
+        "acceptance_met": (passed >= 3 and len(results) >= 3) or (passed == len(results) and len(results) < 3),
         "results": results,
     }
 
@@ -548,21 +761,21 @@ def main():
 
     print(f"\n验证矩阵完成")
     print(f"总计: {len(results)}  通过: {passed}  部分: {partial}  失败: {failed}")
-    acceptance = "达标" if passed >= 3 else "未达标"
-    print(f"验收标准 (>=3 通过): {acceptance}")
+    acceptance = "达标" if summary["acceptance_met"] else "未达标"
+    print(f"达标判定: {acceptance}")
     print(f"报告: {output_path}\n")
 
     for r in results:
-        fault = r["fault"]
+        label = r.get("scenario") or r.get("fault", "?")
         overall = r.get("overall", "unknown")
         root_cause = (
             r.get("steps", {})
             .get("diagnosis", {})
             .get("root_cause", "N/A")
         )
-        print(f"  {fault:25s} -> {overall:15s} | 根因: {root_cause[:60]}")
+        print(f"  {label:25s} -> {overall:15s} | 根因: {root_cause[:60]}")
 
-    return 0 if passed >= 3 else 1
+    return 0 if summary["acceptance_met"] else 1
 
 
 if __name__ == "__main__":
