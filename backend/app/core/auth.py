@@ -148,6 +148,7 @@ async def get_current_user(request: Request) -> UserResponse:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         user_id: str = payload.get("sub")
         org_id: str = payload.get("org_id", "")
+        token_ver = payload.get("ver", 0)  # C1 JWT 吊销：token 签发时的版本号
 
         if user_id is None:
             raise credentials_exception
@@ -156,6 +157,11 @@ async def get_current_user(request: Request) -> UserResponse:
         user = await db.get_user(user_id)
 
         if user is None:
+            raise credentials_exception
+
+        # C1 JWT 服务端吊销：token 携带的版本号与库中不一致 → 已被吊销（logout/改密/降权）
+        if (user.get("token_version") or 0) != token_ver:
+            logger.warning(f"用户 {user_id} 的 token 版本号不匹配（已吊销），拒绝访问")
             raise credentials_exception
 
         # 获取组织名称
@@ -249,10 +255,10 @@ async def register_user(user_data: UserCreate) -> Token:
     # 保存到数据库
     await db.create_user(user_dict)
 
-    # 创建访问令牌（携带 org_id）
+    # 创建访问令牌（携带 org_id + token_version 用于服务端吊销校验）
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user_id, "org_id": org_id},
+        data={"sub": user_id, "org_id": org_id, "ver": 0},
         expires_delta=access_token_expires
     )
 
@@ -280,11 +286,12 @@ async def login_user(user_data: UserLogin) -> Token:
             detail="用户名或密码错误"
         )
 
-    # 创建访问令牌（携带 org_id）
+    # 创建访问令牌（携带 org_id + token_version 用于服务端吊销校验）
     org_id = user.get("org_id", "")
+    token_version = user.get("token_version", 0)
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user["user_id"], "org_id": org_id},
+        data={"sub": user["user_id"], "org_id": org_id, "ver": token_version},
         expires_delta=access_token_expires
     )
 

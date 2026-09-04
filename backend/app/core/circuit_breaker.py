@@ -236,39 +236,47 @@ class TokenBucketLimiter:
 
         Raises:
             RateLimitExceededError: 桶空且不等待（或等待超过 max_wait）时
+
+        C3 修复：原实现在持有 self._lock 期间 await asyncio.sleep(wait)，
+        导致所有等待者串行化——一个协程 sleep 时，其他协程（含本可立即拿令牌的）
+        全部阻塞在锁外。现改为：锁内只做"补充令牌 / 检查可用 / 计算需等待时长"，
+        锁外 sleep 后重新竞争锁。sleep 期间其他协程可正常 acquire，新令牌可被
+        最先醒来的等待者立即取走，吞吐量随并发提升。
         """
-        async with self._lock:
-            self.stats["total_requests"] += 1
-            self._refill()
+        first_attempt = True
+        waited = 0.0  # 本次 acquire 累计已等待时长（用于 max_wait 总预算判断）
 
-            if self._tokens >= 1.0:
-                self._tokens -= 1.0
-                self.stats["allowed"] += 1
-                return
+        while True:
+            async with self._lock:
+                if first_attempt:
+                    self.stats["total_requests"] += 1
+                self._refill()
 
-            # 桶空
-            if self.max_wait <= 0:
-                self.stats["rejected"] += 1
-                wait = (1.0 - self._tokens) / self.rate if self.rate > 0 else float("inf")
-                raise RateLimitExceededError(self.name, wait)
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    self.stats["allowed"] += 1
+                    if waited > 0:
+                        self.stats["waited"] += 1
+                    return
 
-            # 等待令牌补充
-            wait = (1.0 - self._tokens) / self.rate if self.rate > 0 else self.max_wait
-            if wait > self.max_wait:
-                self.stats["rejected"] += 1
-                raise RateLimitExceededError(self.name, wait)
+                # 桶空且不等待
+                if self.max_wait <= 0:
+                    self.stats["rejected"] += 1
+                    wait = (1.0 - self._tokens) / self.rate if self.rate > 0 else float("inf")
+                    raise RateLimitExceededError(self.name, wait)
 
-            self.stats["waited"] += 1
-            # 释放锁等待（避免阻塞其他协程的统计），但这里简化处理：持有锁等待
-            # 注意：这会让限流器在等待期间串行化，对低 RPS 场景可接受
+                # 计算本次需等待时长
+                wait = (1.0 - self._tokens) / self.rate if self.rate > 0 else self.max_wait
+                # 累计等待超过 max_wait 预算 → 拒绝
+                if waited + wait > self.max_wait:
+                    self.stats["rejected"] += 1
+                    raise RateLimitExceededError(self.name, wait)
+
+                first_attempt = False
+
+            # 锁外 sleep：不持锁，其他协程可在此期间 acquire / 补充令牌
             await asyncio.sleep(wait)
-            self._refill()
-            if self._tokens >= 1.0:
-                self._tokens -= 1.0
-            else:
-                # 极端情况下仍未获得令牌
-                self.stats["rejected"] += 1
-                raise RateLimitExceededError(self.name, 0.0)
+            waited += wait
 
     def _refill(self) -> None:
         """惰性补充令牌（调用方需持有 lock）"""

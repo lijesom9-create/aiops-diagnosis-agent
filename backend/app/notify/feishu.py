@@ -186,7 +186,9 @@ class FeishuClient:
     def build_diagnosis_card(alert: Dict[str, Any], result: Dict[str, Any],
                              trigger: str = "initial",
                              incident_id: str = "",
-                             runbook: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                             runbook: Optional[Dict[str, Any]] = None,
+                             impact_priority: Optional[str] = None,
+                             culprit_alertname: Optional[str] = None) -> Dict[str, Any]:
         """构建自动诊断报告卡片（告警 → Agent 诊断 → 飞书推送）
 
         Args:
@@ -194,6 +196,8 @@ class FeishuClient:
             result: agent.run() 返回 dict（content / diagnosis_report / tools_used 等）
             trigger: 诊断触发类型 initial/escalation/repeat（重诊卡片显示更新标记）
             incident_id: 事故编号（用于卡片标题追踪）
+            impact_priority: B3 影响等级 P1-P4（服务关键度 × 告警级别，ITIL 矩阵）
+            culprit_alertname: B4 主嫌疑告警名（诊断后规则打分最高者，Open Box 可解释）
 
         卡片设计：
         - header 橙色（诊断结论是建议而非告警本身）
@@ -260,15 +264,21 @@ class FeishuClient:
 
         elements: List[Dict[str, Any]] = []
 
-        # 告警摘要
+        # 告警摘要（B3 影响等级 / B4 主嫌疑告警：诊断卡片消费点）
+        summary_lines = [
+            f"**触发告警**: {alertname}  |  severity: `{severity}`  instance: `{instance}`",
+        ]
+        if impact_priority:
+            summary_lines.append(f"**影响等级**: `{impact_priority}`（服务关键度 × 告警级别）")
+        if culprit_alertname:
+            summary_lines.append(f"**🎯 主嫌疑告警**: {culprit_alertname}")
+        if summary:
+            summary_lines.append(summary)
         elements.append({
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": (
-                    f"**触发告警**: {alertname}  |  severity: `{severity}`  instance: `{instance}`\n"
-                    f"{summary}"
-                ),
+                "content": "\n".join(summary_lines),
             },
         })
         elements.append({"tag": "hr"})

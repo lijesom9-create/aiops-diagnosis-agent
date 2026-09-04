@@ -237,7 +237,7 @@ class LangGraphAgent:
         except Exception as e:
             self._mcp_status = "failed"
             self._mcp_last_error = str(e)
-            logger.error(f"MCP 工具加载失败（Agent 将仅使用原有工具）: {e}")
+            logger.error("MCP 工具加载失败（Agent 将仅使用原有工具）: {}", e)
             return 0
 
     async def _safe_close_mcp_client(self, client) -> None:
@@ -258,7 +258,7 @@ class LangGraphAgent:
                 if hasattr(close_result, "__await__"):
                     await close_result
         except Exception as e:
-            logger.debug(f"关闭 MCP client 失败（忽略）: {e}")
+            logger.debug("关闭 MCP client 失败（忽略）: {}", e)
 
     @staticmethod
     def _build_default_mcp_config() -> Dict:
@@ -386,7 +386,7 @@ class LangGraphAgent:
                 logger.info(f"Checkpoint 切换为 MongoDB 持久化: db={settings.MONGODB_DB_NAME}")
                 return
             except Exception as e:
-                logger.warning(f"MongoDB checkpointer 初始化失败，降级为 MemorySaver: {e}")
+                logger.warning("MongoDB checkpointer 初始化失败，降级为 MemorySaver: {}", e)
                 self._saver_initialized = True
                 return
 
@@ -552,12 +552,15 @@ class LangGraphAgent:
 
             return "\n\n".join(parts)
         except Exception as e:
-            logger.debug(f"组装记忆上下文失败: {e}")
+            logger.debug("组装记忆上下文失败: {}", e)
             return ""
 
     def _call_agent(self, state: AgentState) -> Dict:
         """调用 Agent（LLM）"""
         messages = state["messages"]
+        # 续跑/重试时历史可能残留"未被工具执行"的 tool_calls（上轮 max_steps 截断所致），
+        # 原样回传 LLM 会触发 OpenAI 400；先中性化（丢弃空壳 / 剥离悬空 tool_calls）
+        messages = self._neutralize_unpaired_tool_calls(messages)
         step_count = state.get("step_count", 0)
         tools_used = state.get("tools_used", [])
         task_context = state.get("task_context", {})
@@ -600,7 +603,9 @@ class LangGraphAgent:
             response = self.llm_with_tools.invoke(full_messages)
             logger.info(f"Agent Step {step_count + 1}: LLM 响应")
         except Exception as e:
-            logger.error(f"LLM 调用失败: {e}", exc_info=True)
+            # 注意：异常文本（如 OpenAI 400 body 的 JSON）含花括号，loguru 会对消息做二次
+            # format 而把 {…} 当占位符 → KeyError。故用占位符传参而非 f-string 内联。
+            logger.error("LLM 调用失败: {}", e, exc_info=True)
             response = AIMessage(content="抱歉，处理过程中出现内部错误，请稍后重试")
 
         # 跟踪工具调用
@@ -1323,6 +1328,66 @@ class LangGraphAgent:
 
         return messages
 
+    @staticmethod
+    def _neutralize_unpaired_tool_calls(messages) -> List:
+        """中性化"未被 ToolMessage 应答"的 tool_calls AIMessage
+
+        场景：上一轮诊断跑到 max_steps 被截断时，历史末尾可能残留一条带 tool_calls
+        的 AIMessage——它的工具从未真正执行（没有对应 ToolMessage）。这样的历史若原样
+        回传给 OpenAI 兼容 API，会收到 400：
+          "An assistant message with 'tool_calls' must be followed by tool messages
+           responding to each 'tool_call_id'"
+        导致重试/续跑（同一 thread_id 恢复 checkpoint）必然失败（R5 error_storm 实测）。
+
+        应答判定必须是"位置上紧随其后的连续 ToolMessage 块"（OpenAI 的配对规则），
+        不能看全列表——同一 tool_call_id 若在前文出现过会被误判为已应答。
+
+        处理（仅对存在未应答 tool_calls 的 AIMessage）：
+        - 正文为空 → 连同其应答块一起丢弃（纯工具请求，无信息量）；
+        - 有正文 → 保留正文，剥离未应答的 tool_calls，后续 ToolMessage 仍与其配对。
+
+        说明：正常执行流中工具调用总会被 ToolNode 以 ToolMessage 应答后才进入下一轮
+        _call_agent，因此本函数不会误伤正常消息；仅在"被截断/续跑"这类残缺历史上生效。
+        """
+        if not messages:
+            return messages
+        msgs = list(messages)
+        out: List = []
+        i = 0
+        n = len(msgs)
+        while i < n:
+            msg = msgs[i]
+            calls = (getattr(msg, "tool_calls", None) or []) \
+                if isinstance(msg, AIMessage) else []
+            if not calls:
+                out.append(msg)
+                i += 1
+                continue
+            # 收集紧随其后的连续 ToolMessage 块（含被忽略的应答归属）
+            j = i + 1
+            while j < n and isinstance(msgs[j], ToolMessage):
+                j += 1
+            followed_ids = {
+                getattr(m, "tool_call_id", None) for m in msgs[i + 1:j]
+                if getattr(m, "tool_call_id", None)
+            }
+            missing = [tc for tc in calls if tc.get("id") not in followed_ids]
+            if not missing:
+                out.append(msg)  # 全部应答，正常保留
+                i += 1
+                continue
+            if (msg.content or "").strip():
+                # 有正文：剥离未应答的 tool_calls，保留正文与已应答配对
+                clone = msg.model_copy(deep=False)
+                clone.tool_calls = [
+                    tc for tc in calls if tc.get("id") in followed_ids]
+                out.append(clone)
+                i += 1
+            else:
+                # 空正文 + 悬空工具请求：连同其后应答块一起丢弃（避免孤儿 ToolMessage）
+                i = j
+        return out
+
     def _should_continue(self, state: AgentState) -> str:
         """决定是否继续执行
 
@@ -1570,10 +1635,10 @@ class LangGraphAgent:
 1. 先查 **关键指标**确认故障范围与方向（调用 query_metrics，metric=all 一次拿全）：
    - `query_metrics(service="<svc>", metric="all", time_range="<按故障时间窗选择>")`
    - **时间窗要与故障对齐**：用户/告警描述"30 分钟前开始报错"→ time_range="30m"；不确定时先用默认 1h，再用 6h/24h 对照（长窗口均值正常 + 短窗口异常 = 近期突发故障）
-   - 重点关注：error_rate（故障范围）、connection_pool_usage + pending_connections（连接池是否打满）、qps（是否有流量突增）
+   - 重点关注：错误率/HTTP 5xx 指标（故障范围）、资源饱和度如连接池/内存/CPU（是否打满）、流量指标（是否有突增）——**具体指标名以 query_metrics 返回为准**，不同服务指标命名不同
 2. 根据指标方向**定向查日志**找具体异常（调用 query_logs）：
-   - 若 connection_pool_usage 高 → `query_logs(service="<svc>", keyword="HikariPool")` 看连接获取失败/池打满
-   - 若疑似慢 SQL → `query_logs(service="mysql", keyword="slow_query")` 看慢查询文本与耗时
+   - 若资源饱和度高（连接池/内存） → `query_logs(service="<svc>", keyword="connection")` 或按异常方向选关键词看资源相关报错
+   - 若疑似慢 SQL/超时 → `query_logs(service="<svc>", keyword="slow")` 看慢查询/超时相关日志
    - 若需确认报错面 → `query_logs(service="<svc>", keyword="error")` 看异常堆栈
    - 指标和日志查询之间有依赖关系（日志关键词由指标结果决定），不要盲目并行
 
@@ -1623,7 +1688,7 @@ class LangGraphAgent:
 ### 监控与变更工具（query_metrics / query_logs / analyze_chart / get_recent_changes / get_service_dependencies，故障诊断首选）
 - 线上故障诊断**必须先调用 query_metrics 看指标**，拿到现场证据再查知识库
 - query_metrics(service, metric="all", time_range) 一次拿全指标，时间窗与故障对齐，避免多次调用
-- query_logs 根据指标结果定向查（HikariPool/slow_query/error），关键词由指标方向决定
+- query_logs 根据指标结果定向查（连接/慢查询/错误等关键词由指标方向决定，不限定特定关键词）
 - get_recent_changes(service, hours) 查故障时间窗内的变更事件，**诊断必查**——变更是第一大根因
 - get_service_dependencies(service) 查服务依赖拓扑——本服务指标解释不了现象时查依赖、对依赖补充取证
 - 需要理解图表形态（曲线突刺/触顶/跨指标关联）时 → analyze_chart(service)，VLM 看图输出异常模式与洞察
@@ -1658,8 +1723,8 @@ class LangGraphAgent:
 
 ### 证据
 <列出收集到的证据，包括监控数据和历史经验，每条带引用 [N]>
-- 监控证据1：query_metrics 返回 error_rate=38% / connection_pool_usage=100%
-- 监控证据2：query_logs 返回 HikariPool "Connection is not available"
+- 监控证据1：query_metrics 返回 错误率=38% / 连接池饱和度=100%
+- 监控证据2：query_logs 返回连接池报错 "Connection is not available"
 - 知识库证据1：该服务依赖 MySQL 连接池 [1]
 - 知识库证据2：INC-2026-001 历史事故同为连接池耗尽 [2]
 
@@ -1936,7 +2001,9 @@ class LangGraphAgent:
             return result
 
         except Exception as e:
-            logger.error(f"Agent 执行失败: {e}", exc_info=True)
+            # 异常文本/堆栈可能含花括号，loguru 二次 format 会把 {…} 当占位符致 KeyError，
+            # 必须用占位符传参，且勿把日志失败带崩诊断返回。
+            logger.error("Agent 执行失败: {}", e, exc_info=True)
             return {
                 "content": "抱歉，处理过程中出现内部错误，请稍后重试",
                 "tools_used": [],
@@ -2109,7 +2176,7 @@ class LangGraphAgent:
                 }
 
         except Exception as e:
-            logger.error(f"流式执行失败: {e}")
+            logger.error("流式执行失败: {}", e, exc_info=True)
             yield {
                 "type": "error",
                 "content": "抱歉，处理过程中出现内部错误，请稍后重试",

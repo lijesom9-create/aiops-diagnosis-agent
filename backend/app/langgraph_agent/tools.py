@@ -522,6 +522,7 @@ def search_knowledge(
                         results = _merge_search_results(results or [], alt_results, limit)
 
             if results:
+                from ..core.prompt_guard import scan_rag_content
                 from ..core.sanitizer import sanitize_text
                 formatted = []
                 artifact = []  # 结构化引用数据，写入 buffer 供 Agent 生成 citations
@@ -534,6 +535,10 @@ def search_knowledge(
                     score = r.get("score", 0)
                     meta = r.get("metadata", {})
                     heading_path = meta.get("heading_path_str", "") or " > ".join(meta.get("heading_path", []))
+
+                    # C4 间接注入扫描：RAG 内容复用 prompt_guard 规则引擎
+                    # 不拦截（拦截会误伤正常运维文档），medium 以上告警 + 在文本/artifact 标注
+                    injection_risk, injection_note = scan_rag_content(content, source=title)
 
                     # 给 LLM 的文本：带 [N] 编号，引导内联引用；过期文档标注提醒
                     expired = bool(meta.get("_expired"))
@@ -560,6 +565,9 @@ def search_knowledge(
                         "incident_id": meta.get("incident_id", ""),
                         # 知识时效标记（检索层对过期文档打的 _expired）
                         "metadata": {"_expired": expired},
+                        # C4: 间接注入扫描结果（risk_level + note），供前端/报告标注可疑来源
+                        "injection_risk": injection_risk,
+                        "injection_note": injection_note,
                     })
 
                 text = "\n\n".join(formatted) + "\n\n---\n请在回答中使用 [1]、[2] 等编号引用上述来源。"
@@ -871,7 +879,7 @@ def query_metrics(service: str, metric: str = "all", time_range: str = "1h") -> 
 
     Args:
         service: 服务名，如 "payment-service"、"order-service"、"mysql"
-        metric: 指标名，默认 "all" 一次拿全。可选：error_rate / connection_pool_usage / pending_connections / qps
+        metric: 指标名，默认 "all" 一次拿全。也可指定具体指标名（以服务实际暴露的指标为准）
         time_range: 查询时间窗，默认 "1h"，可选 "5m"/"30m"/"2h"/"6h"/"24h"。
             短窗口（≤2h）返回故障时刻的瞬时值；长窗口（6h/24h）返回窗口均值——
             若长窗口指标正常但短窗口异常，说明故障是近期突发的
@@ -916,11 +924,11 @@ def query_logs(service: str, keyword: str, time_range: str = "1h") -> str:
     """查询服务日志，按关键词过滤。
 
     根据 query_metrics 的异常方向定向查日志找具体异常。
-    如 connection_pool_usage 高 → keyword="HikariPool" 看连接池报错。
+    如资源饱和度高 → keyword="connection" 看连接相关报错。
 
     Args:
         service: 服务名，如 "payment-service"、"mysql"
-        keyword: 日志关键词，如 "HikariPool"、"error"、"slow_query"、"timeout"
+        keyword: 日志关键词，如 "connection"、"error"、"slow"、"timeout"
         time_range: 时间范围，默认 "1h"，可选 "5m"/"30m"/"2h"/"24h"
 
     Returns:

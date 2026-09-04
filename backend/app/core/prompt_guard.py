@@ -130,6 +130,38 @@ def is_safe_input(text: str) -> bool:
     return not should_block
 
 
+def scan_rag_content(text: str, source: str = "") -> Tuple[str, str]:
+    """扫描 RAG 检索回的文档内容是否触发注入规则（C4 间接注入扫描）
+
+    与 detect_prompt_injection 的区别：本函数专用于 RAG 内容，**永不拦截**——
+    拦截会误伤正常运维文档（如运维手册本身含"忽略上述错误重试"这类指令示例）。
+    仅做检测 + 日志记录，供调用方在 artifact / 报告中标注"来源内容触发注入规则"。
+
+    检测口径：medium 及以上（high/medium）才告警 + 返回标注；low/none 不标注
+    （low 的 Base64/Unicode 在文档中太常见，标注会噪声过大）。
+
+    Args:
+        text: RAG 检索回的单条文档内容
+        source: 来源标识（标题/doc_id，用于日志定位，可选）
+
+    Returns:
+        (risk_level, note)
+        - risk_level: "high" / "medium" / "low" / "none"
+        - note: 标注文本（risk_level 为 high/medium 时非空，其余为空字符串）
+    """
+    if not text:
+        return "none", ""
+    should_block, reason, risk_level = detect_prompt_injection(text)
+    # RAG 内容不拦截（should_block 忽略），仅告警 + 标注
+    if risk_level in ("high", "medium"):
+        logger.warning(
+            f"RAG 内容触发注入规则（{risk_level}，已放行不拦截）: {reason} | "
+            f"来源: {source or '未知'} | 内容前80字: {text[:80]}"
+        )
+        return risk_level, f"⚠️ 来源内容触发注入规则（{risk_level}）：{reason}"
+    return risk_level, ""
+
+
 def sanitize_injection(text: str) -> str:
     """对输入做轻量级清洗（不拦截，仅移除明显注入标记）
 

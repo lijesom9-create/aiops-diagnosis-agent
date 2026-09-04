@@ -158,6 +158,154 @@ def _extract_service(alert: Dict[str, Any]) -> str:
     return ""
 
 
+# ========== B3 服务重要性矩阵（影响度 × 紧急度 → P1-P4） ==========
+#
+# ITIL 共识："优先级 = 影响度 × 紧急度"——业界事故前写死分级矩阵。
+# 影响度 = 服务关键度（critical/normal/low，来自 SERVICE_CRITICALITY 配置）；
+# 紧急度 = 告警级别（critical/warning/info，来自告警 labels.severity）。
+#
+# 矩阵（行=影响度，列=紧急度 severity）：
+#            info  warning  critical
+# critical    P3     P2       P1
+# normal      P4     P3       P2
+# low         P4     P4       P3
+#
+# 消费点：诊断卡片显示 P 级、escalation 判定用 P 级而非原始 severity
+# （P1/P2 触发升级重诊门槛低于 P3/P4——核心服务 warning 等同边缘服务 critical）
+
+_CRITICALITY_RANK = {"low": 0, "normal": 1, "critical": 2}
+# P 级矩阵：[criticality_rank][severity_rank] → P1-P4
+# 列顺序 = _SEVERITY_RANK: [info=0, warning=1, critical=2]
+_PRIORITY_MATRIX = [
+    # low:        info→P4, warning→P4, critical→P3
+    [4, 4, 3],
+    # normal:     info→P4, warning→P3, critical→P2
+    [4, 3, 2],
+    # critical:   info→P3, warning→P2, critical→P1
+    [3, 2, 1],
+]
+
+
+def _service_criticality(service: str) -> str:
+    """从 SERVICE_CRITICALITY 配置查服务关键度（默认 normal）"""
+    import json as _json
+
+    raw = getattr(settings, "SERVICE_CRITICALITY", None)
+    if not raw:
+        return "normal"
+    try:
+        mapping = _json.loads(raw)
+    except Exception:
+        logger.warning("SERVICE_CRITICALITY 不是合法 JSON，按 normal 处理")
+        return "normal"
+    return mapping.get(service or "", "normal")
+
+
+def _impact_priority(service: str, severity: str) -> str:
+    """B3 影响等级 = 服务关键度 × 告警级别 → P1-P4
+
+    Args:
+        service: 服务名（查 SERVICE_CRITICALITY 配置）
+        severity: 告警级别（critical/warning/info）
+
+    Returns:
+        "P1" / "P2" / "P3" / "P4"
+    """
+    crit_rank = _CRITICALITY_RANK.get(
+        _service_criticality(service).lower(), 1,
+    )
+    sev_rank = _severity_rank(severity)
+    # severity_rank 可能超出 0-2（未知 severity 默认 1=warning），clamp 到 0-2
+    sev_rank = max(0, min(2, sev_rank))
+    p_level = _PRIORITY_MATRIX[crit_rank][sev_rank]
+    return f"P{p_level}"
+
+
+# ========== B4 主嫌疑告警标记（culprit） ==========
+#
+# BigPanda 根因打分的规则版（Open Box 可解释）——诊断完成后规则选主嫌疑：
+# 1. 候选 = incident 内所有告警（fingerprint × alertname × severity）
+# 2. 打分 = severity 权重 + root_cause 关键词与 alertname 匹配加分
+# 3. 同分时取 fingerprint 最早加入的（first_seen 最早）
+#
+# 写入 incidents.culprit_fingerprint，卡片标注"🎯 主嫌疑告警"。
+# 价值：多告警风暴时响应者一眼定位最可能的触发源，而非逐一排查。
+
+# root_cause 关键词 → 告警名模式映射（命中加分）
+# 常见运维根因关键词与告警名的关联（可扩展）
+_CULPRIT_KEYWORD_MAP = {
+    "延迟": ["Latency", "Slow", "Duration", "ResponseTime"],
+    "慢查询": ["Latency", "Slow", "Duration"],
+    "超时": ["Timeout", "Latency", "Duration"],
+    "连接池": ["Pool", "Connection", "Exhausted"],
+    "内存": ["Memory", "OOM", "Heap"],
+    "CPU": ["CPU", "Load", "HighCpu"],
+    "磁盘": ["Disk", "Storage", "Space"],
+    "错误率": ["Error", "ErrorRate", "5xx", "Failed"],
+    "5xx": ["Error", "5xx", "ErrorRate"],
+    "不可用": ["Down", "Unavailable", "Instance"],
+    "重启": ["Restart", "Down", "Instance"],
+}
+
+
+def _select_culprit(incident: Dict[str, Any], root_cause: str) -> Optional[str]:
+    """B4 主嫌疑告警选择——规则打分（Open Box 可解释）
+
+    Args:
+        incident: 事故文档（含 alert_details: [{fingerprint, alertname, severity, first_seen_at}]）
+        root_cause: 最近一次诊断的根因文本
+
+    Returns:
+        主嫌疑告警的 fingerprint，或 None（无告警详情/打分全零时）
+    """
+    alert_details = incident.get("alert_details") or []
+    if not alert_details:
+        # 兜底：无 alert_details 时取第一个 fingerprint（旧数据兼容）
+        fps = incident.get("fingerprints") or []
+        return fps[0] if fps else None
+
+    rc_plain = root_cause or ""
+
+    best_fp = None
+    best_score = -1
+    for alert in alert_details:
+        fp = alert.get("fingerprint", "")
+        alertname = alert.get("alertname", "")
+        severity = alert.get("severity", "warning")
+        first_seen = alert.get("first_seen_at")
+
+        # 基础分：severity 权重（critical=10, warning=5, info=1）
+        score = _severity_rank(severity) * 5 + 1
+
+        # 关键词匹配加分：root_cause 含关键词 → alertname 命中关联模式加分
+        for keyword, patterns in _CULPRIT_KEYWORD_MAP.items():
+            if keyword in rc_plain:
+                for pat in patterns:
+                    if pat.lower() in alertname.lower():
+                        score += 5
+                        break
+
+        # 时间最早加分（越小越早，加 0-3 分）
+        try:
+            from datetime import datetime as _dt
+            if first_seen:
+                fs = first_seen if isinstance(first_seen, _dt) else _dt.fromisoformat(str(first_seen))
+                # 距今越早分越高（最早告警 +3，最晚 +0）
+                now = _dt.now()
+                age_seconds = (now - fs).total_seconds()
+                if age_seconds > 0:
+                    # 最早的多加分（用相对值，这里简化：age 越大分越高，上限 3）
+                    score += min(3, age_seconds / 3600)
+        except Exception:
+            pass
+
+        if score > best_score:
+            best_score = score
+            best_fp = fp
+
+    return best_fp
+
+
 def _lookup_runbook(service: str) -> Optional[Dict[str, Any]]:
     """诊断卡片附 runbook/SOP（PagerDuty runbook-attach-to-service 模式）
 
@@ -233,6 +381,12 @@ def _build_rediagnosis_prompt(incident: Dict[str, Any], new_alerts: List[Dict[st
             f"上次诊断（{last.get('trigger', '?')}）结论: {last.get('root_cause', '（无记录）')}",
             f"上次置信度: {last.get('confidence_level', 'unknown')}",
         ]
+    # B5 维护窗口感知：故障窗内存在计划内变更 → 提示区分变更引发 vs 独立故障
+    if incident.get("planned_change") and incident.get("recent_changes"):
+        parts.append(
+            f"⚠️ 存在计划内变更: {incident['recent_changes']}。"
+            "请重点区分本次故障是变更引发（变更 → 影响的因果链）还是独立故障（与变更无关）。"
+        )
     parts.append("新证据:")
     for a in new_alerts:
         labels = a.get("labels", {})
@@ -265,8 +419,12 @@ def _build_summary_prompt(incident: Dict[str, Any]) -> str:
             f"- [{_fmt_dt(d.get('at'))}] ({d.get('trigger', '?')}) "
             f"{d.get('root_cause') or d.get('content', '')[:120]}"
         )
+    # B5 维护窗口感知：复盘时标注是否存在计划内变更（变更引发 vs 独立故障的复盘要点）
+    if incident.get("planned_change") and incident.get("recent_changes"):
+        parts.append(f"⚠️ 事故窗口内存在计划内变更: {incident['recent_changes']}")
+        parts.append("复盘请明确：本次故障是变更引发还是独立故障；若变更引发，评估变更流程改进项。")
     parts.append(
-        "请输出（blameless 复盘结构，对事不对人）：" 
+        "请输出（blameless 复盘结构，对事不对人）："
         "### 事故时间线（检测/响应/恢复的关键时刻）"
         " / ### 影响（受影响服务/接口/告警级别/持续时长，能量化则量化）"
         " / ### 最可能根因（综合历次诊断，标注置信度）"
@@ -275,6 +433,14 @@ def _build_summary_prompt(incident: Dict[str, Any]) -> str:
         "- 【类别】行动描述（负责人: X，期限: Y），无明确负责人写 待定；"
         "质量标准：完成它是否会改变系统）"
         " / ### 经验教训（What went well / What went wrong / Where we got lucky）"
+    )
+    parts.append(
+        "\n【强制要求】最后必须单独输出 ### 行动项 章节，至少 3 条，"
+        "每条一行，格式严格如下（示例）："
+        "\n### 行动项"
+        "\n- 【检测】为支付接口增加 P95 延迟告警（负责人: 张三，期限: 2026-09-10）"
+        "\n- 【预防】给连接池饱和度加入提前扩容阈值（负责人: 待定，期限: 2026-09-15）"
+        "\n- 【缓解】准备连接池耗尽的快速止血 runbook（负责人: 李四，期限: 2026-09-08）"
     )
     return "\n".join(parts)
 
@@ -374,6 +540,17 @@ async def _route_alert_to_incident(alert: Dict[str, Any]) -> Tuple[Dict[str, Any
     )
     if incident and fp not in (incident.get("fingerprints") or []):
         incident = await db.add_incident_fingerprint(incident["incident_id"], fp, alertname, severity)
+        # B4 主嫌疑：归入时追加告警详情（供诊断后 culprit 打分）
+        from datetime import datetime as _dt_join
+        alert_details = list(incident.get("alert_details") or [])
+        alert_details.append({
+            "fingerprint": fp,
+            "alertname": alertname,
+            "severity": severity,
+            "first_seen_at": _dt_join.now(),
+        })
+        await db.update_incident_fields(incident["incident_id"], {"alert_details": alert_details})
+        incident = await db.get_incident(incident["incident_id"])
         logger.info(f"告警 {alertname} 归入事故 {incident['incident_id']}（service={service}）")
         _route_metric("join")
         return incident, "escalation"
@@ -382,6 +559,8 @@ async def _route_alert_to_incident(alert: Dict[str, Any]) -> Tuple[Dict[str, Any
     import uuid as _uuid
     from datetime import datetime as _dt
     incident_id = f"INC-AUTO-{_uuid.uuid4().hex[:8].upper()}"
+    # B5 维护窗口感知：检查故障服务是否有计划内变更（变更 → 故障的因果线索）
+    planned_change, change_summary = _check_planned_change(service or "")
     incident = {
         "incident_id": incident_id,
         "status": "active",
@@ -390,6 +569,15 @@ async def _route_alert_to_incident(alert: Dict[str, Any]) -> Tuple[Dict[str, Any
         "resolved_fps": [],
         "alertnames": [alertname] if alertname else [],
         "max_severity": severity,
+        # B3 影响等级：服务关键度 × 告警级别 → P1-P4（escalation/卡片消费）
+        "impact_priority": _impact_priority(service or "unknown", severity),
+        # B4 主嫌疑：告警详情（供诊断后 culprit 打分）
+        "alert_details": [{
+            "fingerprint": fp,
+            "alertname": alertname,
+            "severity": severity,
+            "first_seen_at": _dt.now(),
+        }],
         "first_seen_at": _dt.now(),
         "last_seen_at": _dt.now(),
         "resolved_at": None,
@@ -398,6 +586,9 @@ async def _route_alert_to_incident(alert: Dict[str, Any]) -> Tuple[Dict[str, Any
         "last_confidence_level": "unknown",
         "diagnosis_history": [],
         "summary": None,
+        # B5: 计划内变更标记（故障窗内有变更 → 诊断时区分变更引发 vs 独立故障）
+        "planned_change": planned_change,
+        "recent_changes": change_summary,
     }
     try:
         await db.save_incident(incident)
@@ -409,6 +600,16 @@ async def _route_alert_to_incident(alert: Dict[str, Any]) -> Tuple[Dict[str, Any
             if incident and fp not in (incident.get("fingerprints") or []):
                 incident = await db.add_incident_fingerprint(
                     incident["incident_id"], fp, alertname, severity)
+                # B4 主嫌疑：并发归入也追加告警详情
+                from datetime import datetime as _dt_dup
+                alert_details = list(incident.get("alert_details") or [])
+                alert_details.append({
+                    "fingerprint": fp, "alertname": alertname,
+                    "severity": severity, "first_seen_at": _dt_dup.now(),
+                })
+                await db.update_incident_fields(
+                    incident["incident_id"], {"alert_details": alert_details})
+                incident = await db.get_incident(incident["incident_id"])
                 _route_metric("join")
                 logger.warning(f"并发创建撞唯一索引，转为归入事故 {incident['incident_id']}")
                 return incident, "escalation"
@@ -426,6 +627,46 @@ async def _route_alert_to_incident(alert: Dict[str, Any]) -> Tuple[Dict[str, Any
     return incident, "initial"
 
 
+def _check_planned_change(service: str) -> Tuple[bool, str]:
+    """B5 维护窗口感知：检查事故服务在故障时间窗内是否有计划内变更
+
+    复用 get_recent_changes 工具的变更事件数据源（同一份变更台账）。
+    若存在近期变更，返回 (True, 变更摘要) 供 incident 标记 planned_change
+    + 诊断 prompt 注入"区分变更引发 vs 独立故障"提示。
+
+    注意：当前变更数据为 mock（与 get_recent_changes 工具一致）。生产化时
+    替换为真实变更源（CMDB/CI-CD webhook/变更管理平台 API）即可，调用方无需改动。
+
+    Args:
+        service: 服务名
+
+    Returns:
+        (has_planned_change, changes_summary)
+        - has_planned_change: True 表示故障窗口内存在计划内变更
+        - changes_summary: 变更摘要文本（无变更时为空字符串）
+    """
+    if not service:
+        return False, ""
+    try:
+        # 复用 get_recent_changes 工具的同一数据源（避免数据分裂）
+        import json as _json
+
+        from ..langgraph_agent.tools import get_recent_changes
+        # 工具返回 JSON 字符串，解析取 changes
+        raw = get_recent_changes.invoke({"service": service, "hours": 24})
+        data = _json.loads(raw) if isinstance(raw, str) else raw
+        changes = data.get("changes") or []
+        if not changes:
+            return False, ""
+        # 取最近一条变更作为摘要（故障窗内最相关的变更）
+        latest = changes[0]
+        summary = f"[{latest.get('type', '?')}] {latest.get('description', '')}（{latest.get('time', '?')}）"
+        return True, summary
+    except Exception as e:
+        logger.debug(f"查询计划内变更失败（不影响路由）: {e}")
+        return False, ""
+
+
 def _should_diagnose(incident: Dict[str, Any], trigger: str) -> Tuple[bool, str]:
     """诊断资格判定（成本护栏），返回 (是否诊断, 原因)"""
     diag_count = incident.get("diag_count") or 0
@@ -441,6 +682,8 @@ def _should_diagnose(incident: Dict[str, Any], trigger: str) -> Tuple[bool, str]
     last_diag_at = incident.get("last_diag_at")
     if last_diag_at:
         from datetime import datetime as _dt
+        if isinstance(last_diag_at, str):
+            last_diag_at = _dt.fromisoformat(last_diag_at)
         elapsed = (_dt.now() - last_diag_at).total_seconds()
         if elapsed < settings.ALERT_DIAG_COOLDOWN_SECONDS:
             return False, f"距上次诊断 {int(elapsed)}s < 冷却 {settings.ALERT_DIAG_COOLDOWN_SECONDS}s"
@@ -505,7 +748,7 @@ async def _enqueue_and_wake(alerts_data: List[Dict[str, Any]]):
         if created:
             _worker_wakeup.set()
     except Exception as e:
-        logger.error(f"诊断任务入队失败: {e}", exc_info=True)
+        logger.error("诊断任务入队失败: {}", e, exc_info=True)
 
 
 async def _drain_pending_tasks():
@@ -528,13 +771,44 @@ async def diagnosis_worker_loop():
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"诊断 worker 循环异常（继续运行）: {e}", exc_info=True)
+            logger.error("诊断 worker 循环异常（继续运行）: {}", e, exc_info=True)
         try:
             await asyncio.wait_for(_worker_wakeup.wait(),
                                    timeout=settings.DIAG_TASK_POLL_SECONDS)
         except asyncio.TimeoutError:
             pass
         _worker_wakeup.clear()
+
+
+async def stale_incident_sweep_loop():
+    """卡死事故自动闭案扫描（B6 事故卡死保护）
+
+    成员告警在源头被删 / Alertmanager 重启丢状态 / 手动 webhook 测试时，事故
+    依赖"全部成员 fingerprint 收到 resolved"才能闭案的链路断裂——事故永远停留
+    active。本循环定期扫描 active 事故，last_seen_at 超过
+    INCIDENT_STALE_AUTO_CLOSE_HOURS 的强制闭案（标记 auto_resolved）。
+    """
+    # 扫描间隔 = 配置超时的一半，但不少于 10 分钟（避免高频扫库）
+    sweep_interval = max(600, settings.INCIDENT_STALE_AUTO_CLOSE_HOURS * 3600 // 2)
+    while True:
+        try:
+            stale_secs = settings.INCIDENT_STALE_AUTO_CLOSE_HOURS * 3600
+            stale = await db.find_stale_active_incidents(stale_secs)
+            for inc in stale:
+                incident_id = inc.get("incident_id", "?")
+                await db.force_resolve_incident(
+                    incident_id, by_user="stale-sweep", auto=True,
+                )
+                logger.warning(
+                    f"事故 {incident_id} 超时 {settings.INCIDENT_STALE_AUTO_CLOSE_HOURS}h "
+                    f"无新告警，自动闭案（auto_resolved）——service={inc.get('service')}, "
+                    f"last_seen_at={inc.get('last_seen_at')}"
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("卡死事故扫描循环异常（继续运行）: {}", e, exc_info=True)
+        await asyncio.sleep(sweep_interval)
 
 
 async def _process_diagnosis_task(task: Dict[str, Any]):
@@ -566,13 +840,6 @@ async def _process_diagnosis_task(task: Dict[str, Any]):
             # 任务可能因重启延迟被重复消费，护栏在执行前再判一次（幂等）
             logger.info(f"任务 {task_id} 跳过诊断（{task['trigger']}）: {reason}")
             await db.update_diagnosis_task(task_id, {"status": "done", "last_error": f"skipped: {reason}"})
-            return
-
-        client = _get_feishu_client()
-        open_id = getattr(settings, "FEISHU_ALERT_OPEN_ID", "") or ""
-        if client is None or not open_id:
-            await db.update_diagnosis_task(task_id, {
-                "status": "dead", "last_error": "飞书通知未配置，诊断报告无推送目标"})
             return
 
         from ..api.langgraph import get_agent
@@ -616,16 +883,40 @@ async def _process_diagnosis_task(task: Dict[str, Any]):
                 "content": content[:800],
             })
 
+            # B4 主嫌疑告警标记：诊断后规则选主嫌疑（severity + root_cause 关键词匹配）
+            root_cause = report.get("root_cause", "")
+            culprit_fp = _select_culprit(incident, root_cause)
+            if culprit_fp:
+                await db.update_incident_fields(
+                    task["incident_id"], {"culprit_fingerprint": culprit_fp})
+                logger.info(f"事故 {task['incident_id']} 主嫌疑告警: {culprit_fp}")
+
+            # B4 卡片标注：主嫌疑 fingerprint → alertname（无则回退 fingerprint）
+            culprit_name = ""
+            if culprit_fp:
+                culprit_name = next(
+                    (a.get("alertname") or culprit_fp
+                     for a in (incident.get("alert_details") or [])
+                     if a.get("fingerprint") == culprit_fp),
+                    culprit_fp,
+                )
             runbook = _lookup_runbook(incident.get("service", ""))
             card = FeishuClient.build_diagnosis_card(
                 task["alerts"][0], result, trigger=trigger,
                 incident_id=task["incident_id"], runbook=runbook,
+                impact_priority=incident.get("impact_priority"),
+                culprit_alertname=culprit_name,
             )
-            if client.send_card(open_id, card):
-                logger.info(f"事故 {task['incident_id']} 诊断报告已推送飞书: "
-                            f"trigger={trigger}, tools={result.get('tools_used') or []}")
+            client = _get_feishu_client()
+            open_id = getattr(settings, "FEISHU_ALERT_OPEN_ID", "") or ""
+            if client is not None and open_id:
+                if client.send_card(open_id, card):
+                    logger.info(f"事故 {task['incident_id']} 诊断报告已推送飞书: "
+                                f"trigger={trigger}, tools={result.get('tools_used') or []}")
+                else:
+                    logger.warning(f"事故 {task['incident_id']} 诊断报告推送失败（不影响诊断结果）")
             else:
-                logger.error(f"事故 {task['incident_id']} 诊断报告推送失败")
+                logger.info(f"事故 {task['incident_id']} 诊断完成（飞书未配置，跳过推送）")
         await db.update_diagnosis_task(task_id, {"status": "done"})
         try:
             from ..observability.metrics import get_metrics
@@ -644,7 +935,9 @@ async def _process_diagnosis_task(task: Dict[str, Any]):
                     "trigger": task.get("trigger", "unknown"), "result": "dead"})
             except Exception:
                 pass
-            logger.error(f"诊断任务 {task_id} 达到重试上限，标记 dead: {e}", exc_info=True)
+            logger.error(
+                "诊断任务 {} 达到重试上限，标记 dead: {}",
+                task_id, e, exc_info=True)
         else:
             from datetime import datetime as _dt
             await db.update_diagnosis_task(task_id, {
@@ -652,9 +945,12 @@ async def _process_diagnosis_task(task: Dict[str, Any]):
                 "not_before": _dt.now() + timedelta(
                     seconds=settings.DIAG_TASK_RETRY_BACKOFF_SECONDS),
                 "last_error": str(e)[:500]})
-            logger.warning(f"诊断任务 {task_id} 失败，回队列重试"
-                           f"（attempts={attempts}/{settings.DIAG_TASK_MAX_ATTEMPTS}，"
-                           f"退避 {settings.DIAG_TASK_RETRY_BACKOFF_SECONDS}s）: {e}")
+            # e 文本可能含花括号（loguru 二次 format 会当占位符）→ 用占位符传参
+            logger.warning(
+                "诊断任务 {} 失败，回队列重试"
+                "（attempts={}/{}，退避 {}s）: {}",
+                task_id, attempts, settings.DIAG_TASK_MAX_ATTEMPTS,
+                settings.DIAG_TASK_RETRY_BACKOFF_SECONDS, e)
 
 
 async def handle_resolved_alerts(alerts_data: List[Dict[str, Any]]):
@@ -704,7 +1000,7 @@ async def handle_resolved_alerts(alerts_data: List[Dict[str, Any]]):
             else:
                 await db.update_incident_fields(incident_id, updates)
     except Exception as e:
-        logger.error(f"resolved 告警处理异常: {e}", exc_info=True)
+        logger.error("resolved 告警处理异常: {}", e, exc_info=True)
 
 
 async def _generate_incident_summary(incident: Dict[str, Any]):
@@ -738,6 +1034,38 @@ async def _generate_incident_summary(incident: Dict[str, Any]):
             "content": content[:800],
         })
         action_items = _parse_action_items(content)
+        # B7：行动项解析落空时定向重试——只要求 LLM 输出行动项列表（按格式）
+        # deepseek-flash 对六段格式遵循不稳定，摘要全文可能未含"行动项"章节
+        if not action_items:
+            logger.warning(f"事故 {incident_id} 摘要未解析到行动项，触发定向重试")
+            try:
+                retry_prompt = (
+                    "上一份事故摘要未包含行动项章节。请只输出行动项，不要其他内容。"
+                    "格式严格如下（至少 3 条，每条一行）：\n"
+                    "### 行动项\n"
+                    "- 【检测】行动描述（负责人: X，期限: Y）\n"
+                    "- 【预防】行动描述（负责人: X，期限: Y）\n"
+                    "- 【缓解】行动描述（负责人: X，期限: Y）\n"
+                    f"事故背景：{incident.get('alertnames') or []}，"
+                    f"根因：{report.get('root_cause', '未知')}"
+                )
+                async with _diag_semaphore:
+                    retry_result = await agent.run(
+                        user_input=retry_prompt,
+                        session_id=f"incident_{incident_id}",
+                        context={"user_id": "alert-webhook"},
+                        use_web_search=False,
+                    )
+                retry_items = _parse_action_items(retry_result.get("content", ""))
+                if retry_items:
+                    action_items = retry_items
+                    logger.info(f"事故 {incident_id} 定向重试解析到 {len(action_items)} 条行动项")
+                else:
+                    logger.warning(
+                        f"事故 {incident_id} 行动项定向重试仍为空——摘要质量待人工复核"
+                    )
+            except Exception as retry_err:
+                logger.warning(f"事故 {incident_id} 行动项重试失败（不影响闭案）: {retry_err}")
         await db.update_incident_fields(incident_id, {
             "status": "resolved",
             "summary": content[:2000],
@@ -749,7 +1077,7 @@ async def _generate_incident_summary(incident: Dict[str, Any]):
             if client.send_card(open_id, card):
                 logger.info(f"事故 {incident_id} 恢复摘要已推送飞书")
     except Exception as e:
-        logger.error(f"事故 {incident_id} 恢复摘要生成异常: {e}", exc_info=True)
+        logger.error("事故 {} 恢复摘要生成异常: {}", incident_id, e, exc_info=True)
         await db.update_incident_fields(incident_id, {"status": "resolved"})
 
 
@@ -798,16 +1126,6 @@ async def alertmanager_webhook(payload: AlertmanagerWebhook, request: Request,
     """
     _verify_webhook_secret(request)
 
-    # 飞书配置检查
-    client = _get_feishu_client()
-    open_id = getattr(settings, "FEISHU_ALERT_OPEN_ID", "") or ""
-    if client is None or not open_id:
-        logger.warning("飞书通知未配置（FEISHU_APP_ID/SECRET/OPEN_ID 缺失），丢弃告警")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="飞书通知未配置",
-        )
-
     alerts = payload.alerts
     if not alerts:
         logger.info("收到空告警列表，跳过")
@@ -818,24 +1136,10 @@ async def alertmanager_webhook(payload: AlertmanagerWebhook, request: Request,
         f"alerts={len(alerts)}, groupKey={payload.groupKey}"
     )
 
-    # 构建卡片（把整体 status 传进去用于标题颜色判断）
     alerts_data = [a.model_dump() for a in alerts]
-    # 标记整体状态（firing/resolved），用于卡片标题
     for a in alerts_data:
         a["overall_status"] = payload.status
-    card = FeishuClient.build_alert_card(alerts_data)
-
-    # 发送
-    ok = client.send_card(open_id, card)
-    if not ok:
-        logger.error(f"飞书告警通知发送失败: alerts={len(alerts)}")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="飞书发消息失败",
-        )
-
     alert_names = [a.labels.get("alertname", "?") for a in alerts]
-    logger.info(f"告警通知已发送到飞书: {len(alerts)} 条 - {alert_names}")
 
     # A4 降噪率口径：原始告警接收计数（与 ops_incidents_created_total 组成压缩比）
     try:
@@ -846,7 +1150,8 @@ async def alertmanager_webhook(payload: AlertmanagerWebhook, request: Request,
     except Exception:
         pass
 
-    # 自动诊断（Incident 生命周期 + 持久化任务表，BackgroundTasks 仅做入队）
+    # 自动诊断（Incident 生命周期 + 持久化任务表）
+    # 必须在飞书通知之前入队——飞书通知失败不应阻止事故创建
     if settings.ALERT_AUTO_DIAGNOSIS_ENABLED:
         if payload.status == "firing":
             firing = [a for a in alerts_data if a.get("status") == "firing"]
@@ -855,10 +1160,29 @@ async def alertmanager_webhook(payload: AlertmanagerWebhook, request: Request,
         elif payload.status == "resolved":
             background_tasks.add_task(handle_resolved_alerts, alerts_data)
 
+    # 飞书通知（非阻断：失败只记日志，不影响事故创建和诊断）
+    client = _get_feishu_client()
+    open_id = getattr(settings, "FEISHU_ALERT_OPEN_ID", "") or ""
+    feishu_sent = False
+    if client is not None and open_id:
+        try:
+            card = FeishuClient.build_alert_card(alerts_data)
+            ok = client.send_card(open_id, card)
+            if ok:
+                feishu_sent = True
+                logger.info(f"告警通知已发送到飞书: {len(alerts)} 条 - {alert_names}")
+            else:
+                logger.warning(f"飞书告警通知发送失败（不影响事故处理）: alerts={len(alerts)}")
+        except Exception as e:
+            logger.warning("飞书告警通知异常（不影响事故处理）: {}", e)
+    else:
+        logger.warning("飞书通知未配置（FEISHU_APP_ID/SECRET/OPEN_ID 缺失），跳过通知")
+
     return {
         "status": "ok",
         "sent": len(alerts),
         "alert_names": alert_names,
+        "feishu_sent": feishu_sent,
     }
 
 

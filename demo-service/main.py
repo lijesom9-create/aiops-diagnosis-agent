@@ -74,12 +74,37 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="demo-payment-sim", lifespan=lifespan)
 
 
+def _route_template(request: Request) -> str:
+    """归一化为路由模板（如 /pay/{order_id}），避免真实 URL 高基数打爆指标
+
+    生产红线：path label 若用真实 URL（/pay/ord_xxx），每个订单就是一条时序，
+    只递增一次 → rate() 趋近 0，错误率/延迟告警全部失效。必须取路由模板。
+    """
+    route = request.scope.get("route")
+    path = getattr(route, "path", None)
+    if path:
+        return path
+    # 未匹配路由（404 等）退化为原路径（数字段归一）
+    import re
+    return re.sub(r"/\d+", "/{id}", request.url.path)
+
+
 @app.middleware("http")
 async def metrics_middleware(request: Request, call_next):
-    """RED 指标采集（跳过 /metrics 与 /healthz 自身，避免自举膨胀）"""
+    """RED 指标采集（跳过 /metrics 与 /healthz 自身，避免自举膨胀）
+
+    每次请求后顺带刷新连接池 Gauge：池耗尽时业务请求全部失败，
+    若只在 db 操作成功后更新 Gauge 会停留在旧值，饱和告警永不触发。
+    """
     start = time.perf_counter()
     response = await call_next(request)
-    path = request.url.path
+    try:
+        # 池饱和度是"借用即变化"的状态量，必须在每次请求后刷新
+        # （含失败请求——耗尽期唯一能反映池被占满的机会）
+        db.track_pool_checked_out()
+    except Exception:
+        pass  # Gauge 刷新失败不影响请求
+    path = _route_template(request)
     if path not in ("/metrics", "/healthz"):
         duration = time.perf_counter() - start
         REQUESTS.labels(request.method, path, str(response.status_code)).inc()
@@ -199,7 +224,13 @@ def _traffic_loop():
             with urllib.request.urlopen(req, timeout=30) as resp:
                 order_id = json.loads(resp.read())["order_id"]
             if random.random() < 0.7:
-                urllib.request.urlopen(f"{base}/pay/{order_id}", data=b"", method="POST", timeout=30)
+                pay_req = urllib.request.Request(
+                    f"{base}/pay/{order_id}",
+                    data=b"",
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                urllib.request.urlopen(pay_req, timeout=30)
         except Exception as e:  # noqa: BLE001  流量生成器自身不允许死亡
             logger.debug("traffic loop error: {err}", err=e)
         time.sleep(0.5)

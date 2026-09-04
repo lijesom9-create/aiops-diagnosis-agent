@@ -4,11 +4,13 @@
 支持 httpOnly cookie 认证（防 XSS 窃取 token）
 """
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
+from loguru import logger
 from pydantic import BaseModel
 
 from ..core.auth import Token, UserCreate, UserLogin, UserResponse, get_current_user, login_user, register_user
 from ..core.config import settings
+from ..core.database import db
 from ..core.rate_limiter import auth_rate_limit_dep
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
@@ -109,8 +111,20 @@ async def login(request: LoginRequest, response: Response, _: None = Depends(aut
 
 
 @router.post("/logout")
-async def logout(response: Response):
-    """用户登出（清除 httpOnly cookie）"""
+async def logout(request: Request, response: Response):
+    """用户登出（清除 httpOnly cookie + 服务端吊销 token）
+
+    C1 JWT 服务端吊销：递增 token_version，使该用户所有旧 token 立即失效
+    （即使 cookie 被盗用，旧 token 也无法通过 get_current_user 校验）。
+    """
+    # 用轻量提取（不抛异常）拿 user_id——token 已过期时登出仍应清 cookie
+    from ..core.auth import get_user_id_from_request
+    user_id = get_user_id_from_request(request)
+    if user_id:
+        try:
+            await db.increment_token_version(user_id)
+        except Exception as e:
+            logger.warning(f"登出时递增 token_version 失败（不影响清 cookie）: {e}")
     _clear_auth_cookie(response)
     return {"message": "已登出"}
 

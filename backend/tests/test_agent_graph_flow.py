@@ -290,6 +290,107 @@ class TestMaxStepsTermination:
         assert final_state["step_count"] >= 2
 
 
+# ========== 悬空 tool_calls 中性化（续跑/重试健壮性）==========
+
+class TestNeutralizeUnpairedToolCalls:
+    """未被 ToolMessage 应答的 tool_calls 中性化测试
+
+    背景（R5 error_storm 实测）：诊断跑到 max_steps 被截断时，历史末尾残留带
+    tool_calls 的 AIMessage 但无对应 ToolMessage → 重试/续跑同一 thread 恢复
+    checkpoint 后原样回传 LLM 触发 OpenAI 400（"assistant message with tool_calls
+    must be followed by tool messages"）。_neutralize_unpaired_tool_calls 负责在
+    _call_agent 入口中性化这类残缺历史。
+    """
+
+    def test_paired_tool_calls_untouched(self):
+        """正常配对的 AIMessage(tool_calls)+ToolMessage 不被改动"""
+        from app.langgraph_agent.agent import LangGraphAgent
+
+        ai = AIMessage(content="", tool_calls=[
+            _make_tool_call("query_metrics", {"service": "mysql"}, "c1")])
+        tm = ToolMessage(content='{"ok": true}', tool_call_id="c1")
+        out = LangGraphAgent._neutralize_unpaired_tool_calls([ai, tm])
+        assert len(out) == 2
+        assert out[0].tool_calls  # c1 已被 ToolMessage 应答，保留
+
+    def test_dangling_empty_dropped(self):
+        """悬空（无应答）+ 空正文的 tool_calls AIMessage 整条丢弃"""
+        from app.langgraph_agent.agent import LangGraphAgent
+
+        ai = AIMessage(content="", tool_calls=[
+            _make_tool_call("query_logs", {"service": "mysql"}, "c2")])
+        out = LangGraphAgent._neutralize_unpaired_tool_calls([ai])
+        assert out == []
+
+    def test_dangling_with_content_strips_tool_calls(self):
+        """悬空但带正文的 AIMessage：保留正文、剥离 tool_calls"""
+        from app.langgraph_agent.agent import LangGraphAgent
+
+        ai = AIMessage(content="我需要更多证据", tool_calls=[
+            _make_tool_call("search_knowledge", {"query": "x"}, "c3")])
+        out = LangGraphAgent._neutralize_unpaired_tool_calls([ai])
+        assert len(out) == 1
+        assert out[0].content == "我需要更多证据"
+        assert not out[0].tool_calls
+
+    def test_mid_list_dangling_removed(self):
+        """悬空消息夹在历史中间（后续是新一轮 HumanMessage）也被移除"""
+        from app.langgraph_agent.agent import LangGraphAgent
+
+        ai_paired = AIMessage(content="", tool_calls=[
+            _make_tool_call("query_metrics", {"service": "mysql"}, "c1")])
+        tm = ToolMessage(content='{"ok": true}', tool_call_id="c1")
+        ai_dangling = AIMessage(content="", tool_calls=[
+            _make_tool_call("query_logs", {"service": "mysql"}, "c2")])
+        human = HumanMessage(content="继续完成诊断")
+        out = LangGraphAgent._neutralize_unpaired_tool_calls(
+            [ai_paired, tm, ai_dangling, human])
+        assert out == [ai_paired, tm, human]
+
+    @pytest.mark.asyncio
+    async def test_resume_after_maxsteps_sends_clean_history(self, mock_agent):
+        """max_steps 截断后同 thread resume：LLM 收到的历史不含悬空 tool_calls"""
+        agent, _ = mock_agent
+        agent.max_steps = 2
+        agent.graph = agent._build_graph()
+
+        # run1：LLM 每次都请求工具 → 第 2 次后达 max_steps 终止，留悬空 tool_calls
+        agent.llm_with_tools.invoke = MagicMock(side_effect=[
+            AIMessage(content="", tool_calls=[
+                _make_tool_call("query_metrics", {"service": "mysql"}, "c1")]),
+            AIMessage(content="", tool_calls=[
+                _make_tool_call("query_logs", {"service": "mysql"}, "c2")]),
+        ])
+        with patch("app.langgraph_agent.agent.pop_retrieval_buffer", return_value=[]), \
+             patch("app.langgraph_agent.agent.set_conversation_context"), \
+             patch("app.langgraph_agent.agent.set_current_user_id"):
+            await agent.graph.ainvoke(
+                _make_initial_state("mysql 连接池为什么耗尽？"),
+                config={"configurable": {"thread_id": "test_resume_dangling"}},
+            )
+
+        # run2：同一 thread resume，LLM 直接给最终报告
+        agent.llm_with_tools.invoke = MagicMock(return_value=AIMessage(content="### 现象\n连接池耗尽\n### 根因分析\n占满"))
+        with patch("app.langgraph_agent.agent.pop_retrieval_buffer", return_value=[]), \
+             patch("app.langgraph_agent.agent.set_conversation_context"), \
+             patch("app.langgraph_agent.agent.set_current_user_id"):
+            final_state = await agent.graph.ainvoke(
+                _make_initial_state("继续完成诊断"),
+                config={"configurable": {"thread_id": "test_resume_dangling"}},
+            )
+
+        # 关键断言：resume 的 LLM 调用所收到的历史中，悬空的 c2 已被中性化移除
+        sent = agent.llm_with_tools.invoke.call_args[0][0]
+        assert not any(
+            isinstance(m, AIMessage)
+            and any(tc.get("id") == "c2" for tc in (m.tool_calls or []))
+            for m in sent
+        )
+        # 且 resume 最终能正常产出报告（不再抛 400/KeyError）
+        text = " ".join(getattr(m, "content", "") or "" for m in final_state["messages"])
+        assert "### 现象" in text
+
+
 # ========== MCP 降级提示集成测试 ==========
 
 class TestMCPDegradationIntegration:

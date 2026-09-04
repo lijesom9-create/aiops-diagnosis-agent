@@ -1,4 +1,4 @@
-# ===========================================
+﻿# ===========================================
 # 基础配置（通用）
 # 启动方式：
 #   开发环境：docker compose -f docker-compose.yml -f docker-compose.dev.yml up
@@ -87,12 +87,10 @@ services:
       - CHECKPOINT_BACKEND=mongodb
       # 自动诊断服务的组织可见性：诊断可读公共 + 该组织的运维文档
       - DIAGNOSIS_ORG_ID=${DIAGNOSIS_ORG_ID:-}
-      # HTTP 代理：容器内访问 DeepSeek/OpenAI 等海外 API 时走宿主机代理
-      # host.docker.internal 是 Docker Desktop 提供的指向宿主机的特殊 DNS
-      # 仅对走公网的请求生效；Docker 内网通信（prometheus/loki/qdrant 等）不受影响
-      - HTTP_PROXY=http://host.docker.internal:7897
-      - HTTPS_PROXY=http://host.docker.internal:7897
-      - NO_PROXY=localhost,127.0.0.1,mongodb,redis,qdrant,prometheus,loki,alertmanager,backend,celery-worker
+      # 代理已移除：DeepSeek/阿里云/飞书均为国内 API，可直连
+      # 如需代理访问海外 API，在此处恢复 HTTP_PROXY/HTTPS_PROXY 配置
+      - NO_PROXY=localhost,127.0.0.1,mongodb,redis,qdrant,prometheus,loki,alertmanager,backend,celery-worker,api.deepseek.com,dashscope.aliyuncs.com,open.feishu.cn
+
     depends_on:
       mongodb:
         condition: service_healthy
@@ -114,6 +112,11 @@ services:
       retries: 3
       start_period: 60s
     volumes:
+      # 挂载本地源代码（开发模式，无需重新构建镜像即可更新代码）
+      - ./backend/requirements.txt:/app/requirements.txt
+      - ./backend/app:/app/app
+      - ./backend/main.py:/app/main.py
+      - ./backend/mcp_servers:/app/mcp_servers
       # 绑定挂载本地数据目录（含 Qdrant 向量库、embedding 缓存、ONNX 缓存等）
       - ./backend/data:/app/data
       - ./backend/uploads:/app/uploads
@@ -383,6 +386,8 @@ services:
 networks:
   education-network:
     driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1400
 
 volumes:
   mongodb-data:

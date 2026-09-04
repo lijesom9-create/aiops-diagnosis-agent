@@ -106,6 +106,36 @@ jobs:
           ruff check .
 
   # ──────────────────────────────────────────────
+  # Backend Type Check: mypy（C5 渐进接入——非阻塞起步）
+  # 仅检查 app/core + app/api 新代码目录；continue-on-error 阶段，
+  # 不阻塞流水线。随新代码类型覆盖度提升再逐步收紧为阻塞门禁。
+  # ──────────────────────────────────────────────
+  backend-mypy:
+    name: Backend Type Check (mypy, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install mypy + core deps
+        run: |
+          pip install mypy
+          cd backend
+          pip install --no-cache-dir \
+            "fastapi==0.115.12" "pydantic==2.12.5" "pydantic-settings==2.14.2" \
+            "loguru==0.7.2" "PyJWT==2.11.0" "passlib[bcrypt]==1.7.4" \
+            "httpx==0.28.1" "motor==3.7.1"
+
+      - name: Run mypy (app/core + app/api only)
+        run: |
+          cd backend
+          python -m mypy app/core app/api
+
+  # ──────────────────────────────────────────────
   # Backend: install core deps, run critical tests.
   # Tests are blocking — failure fails the pipeline
   # and blocks image publish (docker job needs this

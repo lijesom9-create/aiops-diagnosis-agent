@@ -1,0 +1,195 @@
+{
+  "run_at": "2026-09-04T03:06:52.334085+00:00",
+  "total": 3,
+  "passed": 3,
+  "partial": 0,
+  "failed": 0,
+  "acceptance_criteria": ">=3 类故障全链路通过",
+  "acceptance_met": true,
+  "results": [
+    {
+      "fault": "slow_query",
+      "params": {
+        "delay": 4.0
+      },
+      "expected_alerts": [
+        "DemoServiceHighLatency"
+      ],
+      "timestamp_start": "2026-09-04T02:51:32.487392+00:00",
+      "steps": {
+        "inject": {
+          "status": "ok",
+          "response": {
+            "injected": "slow_query",
+            "active": [
+              "slow_query"
+            ]
+          }
+        },
+        "alert_fired": {
+          "status": "ok",
+          "firing_alerts": [
+            "DemoServiceHighLatency"
+          ]
+        },
+        "incident_created": {
+          "status": "ok",
+          "incident_id": "INC-AUTO-7A3743FB"
+        },
+        "diagnosis": {
+          "status": "ok",
+          "incident_id": "INC-AUTO-7A3743FB",
+          "diag_count": 1,
+          "root_cause": "**人为/演练触发的 `slow_query` 故障注入未关闭**，是本次高延迟告警的直接根因。\n\n因果链：\n1. **02:51:37** 有人调用故障注入端点 `POST /_faults/slow_query/on` 开启 `slow_query` 故障 [日志证据]；\n2. 该故障在 `/orders`、`/pay/{order_id}` 等业务处理路径注入 **约 4s 固定人工延迟**（sleep 型，不占用 DB 连接，故 `checked_out=0`；不抛错，故全部 200）；\n3. 延迟注入后 P95 于 **02:52 起（下个采集点）跳升至 ~4.875s** 并持续，",
+          "confidence_level": "high",
+          "sufficiency_level": "high"
+        },
+        "root_cause_judgment": {
+          "expected_keywords": [
+            "慢",
+            "slow",
+            "数据库",
+            "database",
+            "延迟",
+            "latency",
+            "query"
+          ],
+          "hit_keywords": [
+            "slow",
+            "延迟",
+            "query"
+          ],
+          "hit": true
+        },
+        "evidence_check": {
+          "has_real_metrics": true,
+          "evidence_preview": "### 现象\n**payment-sim（demo-payment-sim）** 于 **2026-09-04 02:54:30** 触发 `DemoServiceHighLatency` 告警（warning），P95 延迟达 **4.611s**（基线约 4.8ms）。当前业务请求 `POST /orders`、`POST /pay/{order_id}` **全部返回 200，但单请求耗时固定在 ~4000ms**。**无 500 错误、无连接池报错、无变更事件**（最近 24h 无 deploy/配置变更）。\n\n### 证据\n- **监控证据1（延迟形态）**：`/orders` 与 `/pay/{order_id}` 的 P95 在 **02:43–02:46 曾短暂升至 ~50ms 后回落正常**，随后于 **02:52 起从 4.8ms 跳升至 4.49s→4.875s 并持续**（1000 倍劣化），与告警时间吻合。\n- **监控证据2（错误与资源均正常）**：`demo_db_pool_checked_out` **恒等于 0**（连接池空闲，排除池耗尽型）；`/pa"
+        }
+      },
+      "overall": "passed",
+      "timestamp_end": "2026-09-04T02:56:59.898734+00:00"
+    },
+    {
+      "fault": "error_storm",
+      "params": {},
+      "expected_alerts": [
+        "DemoServiceHighErrorRate"
+      ],
+      "timestamp_start": "2026-09-04T02:56:59.899883+00:00",
+      "steps": {
+        "inject": {
+          "status": "ok",
+          "response": {
+            "injected": "error_storm",
+            "active": [
+              "error_storm"
+            ]
+          }
+        },
+        "alert_fired": {
+          "status": "ok",
+          "firing_alerts": [
+            "DemoServiceHighLatency",
+            "DemoServiceHighErrorRate"
+          ]
+        },
+        "incident_created": {
+          "status": "ok",
+          "incident_id": "INC-AUTO-D5C83B11"
+        },
+        "diagnosis": {
+          "status": "ok",
+          "incident_id": "INC-AUTO-D5C83B11",
+          "diag_count": 1,
+          "root_cause": "**人为/脚本触发了错误风暴故障注入**，因果链如下：\n\n1. **触发**：02:57:04，外部客户端 `172.18.0.1` 调用 `POST /_faults/error_storm/on`，开启该服务内置的 `error_storm` 故障注入开关（此前曾开关 `slow_query`，属同一操作者对故障开关的连续操作，日志证据链完整）；\n2. **机制**：故障注入在支付处理路径注入业务异常 → `/pay` 请求毫秒级抛错并返回 500（**业务异常型**，SOP 判定标准 [2]）；\n3. **指标印证**：`/pay` 500 速率在 02:57:04 后即刻抬升，200 ",
+          "confidence_level": "high",
+          "sufficiency_level": "high"
+        },
+        "root_cause_judgment": {
+          "expected_keywords": [
+            "错误率",
+            "500",
+            "5xx",
+            "error",
+            "错误风暴",
+            "失败"
+          ],
+          "hit_keywords": [
+            "500",
+            "error",
+            "错误风暴"
+          ],
+          "hit": true
+        },
+        "evidence_check": {
+          "has_real_metrics": true,
+          "evidence_preview": "### 现象\n- **服务**：payment-sim（demo-payment-sim 容器，支付示例服务）\n- **告警**：`DemoServiceHighErrorRate`（critical）持续触发中，5xx 错误率 **48.03%**，起始于 **02:58:45 UTC** [1]\n- **接口表现**：`POST /pay/{order_id}` **批量 500**（每条耗时 0.4~0.9ms），`POST /orders` 正常返回 200\n- **影响**：支付功能全量失败，`demo_payments_total{status=\"failed\"}` 累计达 13438\n\n### 证据\n**监控证据（现场实时）**\n- 5xx 走势：`/pay` 500 速率在 02:57:55 起从 0 飙升至 **2.69 → 6.13（02:58:55）→ 6.25（02:59:55）**，同期 `/pay` 200 速率归 **0**（200/500 完全互斥），与告警时间点严格吻合（Prometheus 范围查询）\n- **连接池全程空闲**：`demo_db_p"
+        }
+      },
+      "overall": "passed",
+      "timestamp_end": "2026-09-04T03:02:15.861619+00:00"
+    },
+    {
+      "fault": "pool_exhaustion",
+      "params": {},
+      "expected_alerts": [
+        "DemoServicePoolSaturation",
+        "DemoServiceHighErrorRate"
+      ],
+      "timestamp_start": "2026-09-04T03:02:15.862123+00:00",
+      "steps": {
+        "inject": {
+          "status": "ok",
+          "response": {
+            "injected": "pool_exhaustion",
+            "active": [
+              "pool_exhaustion"
+            ]
+          }
+        },
+        "alert_fired": {
+          "status": "ok",
+          "firing_alerts": [
+            "DemoServiceHighErrorRate"
+          ]
+        },
+        "incident_created": {
+          "status": "ok",
+          "incident_id": "INC-AUTO-40770206"
+        },
+        "diagnosis": {
+          "status": "ok",
+          "incident_id": "INC-AUTO-40770206",
+          "diag_count": 1,
+          "root_cause": "**根因：`pool_exhaustion` 故障注入被开启后未关闭，后台任务持满全部数据库连接，业务请求池等待超时。**\n\n因果链（证据闭环）：\n1. **触发因素（03:02:20）**：`POST /_faults/pool_exhaustion/on` 被执行（日志明确记录 `故障注入: pool_exhaustion`）[证据3]，该操作**早于**故障起点（池饱和首现于 03:02:20~03:03 之间），与指标突变时间精确吻合；\n2. **机制**：注入逻辑 `faults:_hold` 逐个占用连接池，日志打印 `池连接已占用 1/5 → 5/5`，**5 个连接被持有且不归",
+          "confidence_level": "high",
+          "sufficiency_level": "high"
+        },
+        "root_cause_judgment": {
+          "expected_keywords": [
+            "连接池",
+            "pool",
+            "exhaust",
+            "耗尽",
+            "饱和",
+            "连接"
+          ],
+          "hit_keywords": [
+            "连接池",
+            "pool",
+            "exhaust",
+            "饱和",
+            "连接"
+          ],
+          "hit": true
+        },
+        "evidence_check": {
+          "has_real_metrics": true,
+          "evidence_preview": "### 现象\n**payment-sim（demo-service）支付服务发生 P1 级故障**：告警 `DemoServiceHighErrorRate`（5xx>30%）于 **03:03:45** 触发。\n- 影响接口：支付接口 `POST /pay/{id}`（依赖数据库连接池 [2]），伴随下单接口 `POST /orders` 排队超时\n- 症状：批量 HTTP 500，日志持续报 `sqlalchemy.exc.TimeoutError: QueuePool limit of size 5 overflow 0 reached, connection timed out`\n- 时间线：03:02 起池饱和，03:03:45 高错误率告警，持续至诊断时刻（03:05:46 仍有 TimeoutError）\n\n### 证据\n\n**监控证据（现场实时）**\n1. `demo_db_pool_checked_out`：03:02:14 前恒为 **0**，03:03:14 起跳升至 **5.0**（= pool_size 上限）并持续满位——池饱和度先行指标确认耗尽 [manu"
+        }
+      },
+      "overall": "passed",
+      "timestamp_end": "2026-09-04T03:06:52.333473+00:00"
+    }
+  ]
+}

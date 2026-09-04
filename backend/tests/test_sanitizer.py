@@ -14,6 +14,7 @@
 - 边界情况（空字符串、无敏感信息）
 """
 
+from app.core.config import settings
 from app.core.sanitizer import has_sensitive_info, sanitize_text
 
 
@@ -164,3 +165,101 @@ class TestEdgeCases:
         assert "***@" in result
         assert "192.168" in result
         assert "1.1" not in result.split("IP ")[1] if "IP " in result else True
+
+
+class TestCodeBlockBypassFix:
+    """C2: 代码块脱敏旁路修复
+
+    背景：原实现无条件豁免代码块，LLM 把敏感数据放进 ``` 代码块即可绕过脱敏。
+    strict 模式（默认/生产）：代码块内高置信凭据（API key/AWS key/私钥）仍脱敏，
+    普通文本模式（手机号/身份证/内网IP）豁免（代码块中可能是测试数据）。
+    loose 模式：代码块完全豁免（向后兼容，开发调试用）。
+    """
+
+    def setup_method(self):
+        """每个测试前恢复默认 strict 模式，避免互相污染"""
+        self._prev = settings.SANITIZER_SANITIZE_CODE
+        settings.SANITIZER_SANITIZE_CODE = "strict"
+
+    def teardown_method(self):
+        settings.SANITIZER_SANITIZE_CODE = self._prev
+
+    def test_api_key_in_code_block_sanitized_strict(self):
+        """strict：代码块内 API key 仍被脱敏（堵住旁路）"""
+        text = "配置如下:\n```\nAPI_KEY=sk-1234567890abcdefghijklmnopqrst\n```"
+        result = sanitize_text(text)
+        assert "sk-12345" in result   # 前8位保留
+        assert "qrst" in result       # 后4位保留
+        assert "1234567890abcdefghij" not in result  # 中间脱敏
+
+    def test_aws_key_in_code_block_sanitized_strict(self):
+        """strict：代码块内 AWS Access Key 仍被脱敏"""
+        text = "```\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\n```"
+        result = sanitize_text(text)
+        assert "AKIAIOSF" in result   # 前8位保留
+        assert "EXAMPLE" not in result
+
+    def test_private_key_in_code_block_sanitized_strict(self):
+        """strict：代码块内 PEM 私钥块仍被脱敏"""
+        pem = (
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            "MIIEpAIBAAKCAQEA...\n"
+            "-----END RSA PRIVATE KEY-----"
+        )
+        text = f"```\n{pem}\n```"
+        result = sanitize_text(text)
+        assert "REDACTED PRIVATE KEY" in result
+        assert "MIIEpAIBAAKCAQEA" not in result
+
+    def test_inline_code_api_key_sanitized_strict(self):
+        """strict：行内代码中的 API key 也被脱敏（高置信凭据无例外）"""
+        text = "密钥 `sk-1234567890abcdefghijklmnopqrst` 已泄露"
+        result = sanitize_text(text)
+        assert "sk-12345" in result
+        assert "1234567890abcdefghij" not in result
+
+    def test_text_pattern_in_code_block_exempt_strict(self):
+        """strict：代码块内普通文本模式（手机号/内网IP）豁免（可能是测试数据）"""
+        text = "```\nphone = 13812345678\nhost = 192.168.1.100\n```"
+        result = sanitize_text(text)
+        assert "13812345678" in result   # 手机号保留
+        assert "192.168.1.100" in result  # 内网IP保留
+
+    def test_api_key_in_code_block_preserved_loose(self):
+        """loose：代码块完全豁免（向后兼容，开发调试用）"""
+        settings.SANITIZER_SANITIZE_CODE = "loose"
+        text = "```\nAPI_KEY=sk-1234567890abcdefghijklmnopqrst\n```"
+        result = sanitize_text(text)
+        assert "sk-1234567890abcdefghijklmnopqrst" in result  # 原样保留
+
+    def test_text_pattern_in_code_block_preserved_loose(self):
+        """loose：代码块内 IP 也完全保留"""
+        settings.SANITIZER_SANITIZE_CODE = "loose"
+        text = "```\nserver = 192.168.1.100\n```"
+        result = sanitize_text(text)
+        assert "192.168.1.100" in result
+
+    def test_has_sensitive_info_detects_api_key_in_code_block_strict(self):
+        """strict：has_sensitive_info 检测到代码块内 API key"""
+        text = "```\nkey = sk-1234567890abcdefghijklmnopqrst\n```"
+        assert has_sensitive_info(text) is True
+
+    def test_has_sensitive_info_skips_text_pattern_in_code_block_strict(self):
+        """strict：代码块内的手机号不算敏感（与 sanitize 口径一致）"""
+        text = "```\nphone = 13812345678\n```"
+        assert has_sensitive_info(text) is False
+
+    def test_has_sensitive_info_skips_code_block_loose(self):
+        """loose：代码块内任何内容都不算敏感"""
+        settings.SANITIZER_SANITIZE_CODE = "loose"
+        text = "```\nkey = sk-1234567890abcdefghijklmnopqrst\n```"
+        assert has_sensitive_info(text) is False
+
+    def test_non_code_api_key_still_sanitized_both_modes(self):
+        """两种模式下，非代码文本中的 API key 都脱敏"""
+        text = "密钥 sk-1234567890abcdefghijklmnopqrst 已泄露"
+        for mode in ("strict", "loose"):
+            settings.SANITIZER_SANITIZE_CODE = mode
+            result = sanitize_text(text)
+            assert "sk-12345" in result, f"{mode} 模式下非代码 API key 应脱敏"
+            assert "1234567890abcdefghij" not in result

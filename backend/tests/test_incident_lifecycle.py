@@ -64,9 +64,23 @@ class FakeAgent:
 
     async def run(self, user_input="", session_id=None, context=None, use_web_search=False):
         self.calls.append({"user_input": user_input, "session_id": session_id})
+        # 摘要请求含"事故已恢复"→ 返回带行动项段的复盘结构（避免触发 B7 定向重试）
+        if "事故已恢复" in user_input:
+            content = (
+                f"### 事故时间线\n恢复\n### 影响\n轻微\n"
+                f"### 最可能根因\n{self.root_cause}\n### 处置回顾\n止血\n"
+                f"### 行动项\n"
+                f"- 【检测】增加告警覆盖（负责人: 待定，期限: 2026-09-10）\n"
+                f"- 【预防】扩容阈值（负责人: 待定，期限: 2026-09-15）\n"
+                f"### 经验教训\n顺利"
+            )
+        else:
+            content = (
+                f"### 现象\nx\n### 根因分析\n{self.root_cause}\n"
+                f"### 处置方案\ny\n### 置信度\n中"
+            )
         return {
-            "content": f"### 现象\nx\n### 根因分析\n{self.root_cause}\n"
-                       f"### 处置方案\ny\n### 置信度\n中",
+            "content": content,
             "tools_used": ["query_metrics"],
             "diagnosis_report": {
                 "root_cause": self.root_cause,
@@ -558,8 +572,7 @@ class TestUniqueIndex:
         模拟竞态：第一次 find_active_incident_by_service 返回 None（对方尚未提交），
         save_incident 抛 DuplicateKeyError（唯一索引拒绝）→ 兜底重新查询 → 归入。
         """
-        alerts_mod, feishu, db = (incident_env["alerts"], incident_env["feishu"],
-                                  incident_env["db"])
+        alerts_mod, db = incident_env["alerts"], incident_env["db"]
         monkeypatch.setattr(alerts_mod, "_get_feishu_client", lambda: None)
 
         # 先建一个事故（fp-u1）
@@ -589,3 +602,164 @@ class TestUniqueIndex:
         assert trigger2 == "escalation"
         assert incident2["incident_id"] == incident["incident_id"], "兜底应归入原事故"
         assert len(db._incidents) == 1, "不应产生第二个事故"
+
+
+# ============================================================
+# 8. B6 事故卡死保护：超时自动闭案 + 强制闭案
+# ============================================================
+
+class TestStaleIncidentSweep:
+    """B6：卡死事故自动闭案扫描"""
+
+    @pytest.mark.asyncio
+    async def test_find_stale_active_incidents(self, incident_env):
+        """last_seen_at 过旧的 active 事故被查出；新鲜的不会"""
+        db = incident_env["db"]
+        old_inc = {
+            "incident_id": "INC-STALE-01", "status": "active", "service": "payment-sim",
+            "fingerprints": ["fp:stale-1"], "resolved_fps": [],
+            "alertnames": ["HighLatency"], "max_severity": "warning",
+            "first_seen_at": datetime.now() - timedelta(hours=10),
+            "last_seen_at": datetime.now() - timedelta(hours=10),
+            "resolved_at": None, "diag_count": 0, "last_diag_at": None,
+            "last_confidence_level": "unknown", "diagnosis_history": [], "summary": None,
+        }
+        fresh_inc = {
+            "incident_id": "INC-FRESH-01", "status": "active", "service": "other-svc",
+            "fingerprints": ["fp:fresh-1"], "resolved_fps": [],
+            "alertnames": ["HighCpu"], "max_severity": "warning",
+            "first_seen_at": datetime.now() - timedelta(minutes=5),
+            "last_seen_at": datetime.now() - timedelta(minutes=5),
+            "resolved_at": None, "diag_count": 0, "last_diag_at": None,
+            "last_confidence_level": "unknown", "diagnosis_history": [], "summary": None,
+        }
+        await db.save_incident(old_inc)
+        await db.save_incident(fresh_inc)
+
+        stale = await db.find_stale_active_incidents(older_than_seconds=3600)  # 1h
+        stale_ids = [i["incident_id"] for i in stale]
+        assert "INC-STALE-01" in stale_ids
+        assert "INC-FRESH-01" not in stale_ids
+
+    @pytest.mark.asyncio
+    async def test_force_resolve_auto_marks_auto_resolved(self, incident_env):
+        """worker 自动闭案标记 auto_resolved=True"""
+        db = incident_env["db"]
+        inc = {
+            "incident_id": "INC-STALE-02", "status": "active", "service": "payment-sim",
+            "fingerprints": ["fp:stale-2"], "resolved_fps": [],
+            "alertnames": ["HighLatency"], "max_severity": "warning",
+            "first_seen_at": datetime.now() - timedelta(hours=10),
+            "last_seen_at": datetime.now() - timedelta(hours=10),
+            "resolved_at": None, "diag_count": 0, "last_diag_at": None,
+            "last_confidence_level": "unknown", "diagnosis_history": [], "summary": None,
+        }
+        await db.save_incident(inc)
+
+        result = await db.force_resolve_incident(
+            "INC-STALE-02", by_user="stale-sweep", auto=True)
+        assert result["status"] == "resolved"
+        assert result["auto_resolved"] is True
+        assert result["force_resolved_by"] == "stale-sweep"
+        assert result["resolved_at"] is not None
+
+    @pytest.mark.asyncio
+    async def test_force_resolve_nonexistent_returns_none(self, incident_env):
+        db = incident_env["db"]
+        assert await db.force_resolve_incident("INC-NOPE", by_user="x") is None
+
+
+# ============================================================
+# 9. B7 行动项解析鲁棒性：prompt 强化 + 定向重试
+# ============================================================
+
+class TestActionItemsRobustness:
+    """B7：摘要行动项解析鲁棒性"""
+
+    def test_summary_prompt_has_forced_action_items_section(self):
+        """prompt 含独立强制行动项段 + 示例"""
+        from app.api.alerts import _build_summary_prompt
+        incident = {
+            "incident_id": "INC-T", "alertnames": ["A"],
+            "max_severity": "warning",
+            "first_seen_at": datetime.now(), "resolved_at": datetime.now(),
+            "diagnosis_history": [{"trigger": "initial", "root_cause": "x",
+                                   "at": datetime.now()}],
+        }
+        prompt = _build_summary_prompt(incident)
+        assert "强制要求" in prompt, "应有强制要求字样"
+        assert "### 行动项" in prompt
+        assert "【检测】" in prompt and "【预防】" in prompt and "【缓解】" in prompt
+        assert "负责人" in prompt
+
+    def test_parse_action_items_strict_format(self):
+        """严格格式（【类别】描述（负责人: X，期限: Y））正确解析"""
+        from app.api.alerts import _parse_action_items
+        content = (
+            "### 事故时间线\n...\n"
+            "### 影响\n...\n"
+            "### 行动项\n"
+            "- 【检测】为支付接口增加 P95 延迟告警（负责人: 张三，期限: 2026-09-10）\n"
+            "- 【预防】给连接池加入提前扩容阈值（负责人: 待定，期限: 2026-09-15）\n"
+            "- 【缓解】准备连接池耗尽止血 runbook（负责人: 李四，期限: 2026-09-08）\n"
+            "### 经验教训\n..."
+        )
+        items = _parse_action_items(content)
+        assert len(items) == 3
+        assert items[0]["category"] == "检测"
+        assert "P95" in items[0]["item"]
+        assert items[0]["owner"] == "张三"
+        assert items[0]["deadline"] == "2026-09-10"
+        assert items[1]["owner"] == "待定"
+        assert items[2]["category"] == "缓解"
+
+    def test_parse_action_items_empty_when_no_section(self):
+        from app.api.alerts import _parse_action_items
+        assert _parse_action_items("### 时间线\n无行动项章节") == []
+        assert _parse_action_items("") == []
+
+    @pytest.mark.asyncio
+    async def test_summary_retries_when_action_items_empty(self, incident_env, monkeypatch):
+        """摘要未解析到行动项 → 定向重试；重试返回有效行动项 → 落库"""
+        alerts_mod, db = (incident_env["alerts"], incident_env["db"])
+        monkeypatch.setattr(settings, "INCIDENT_RESOLVE_QUIET_PERIOD", 0)
+
+        # 首次摘要不含行动项章节，重试只返回行动项
+        call_count = {"n": 0}
+
+        class RetryAgent:
+            async def run(self, user_input="", session_id=None, context=None,
+                          use_web_search=False):
+                call_count["n"] += 1
+                if call_count["n"] == 1:
+                    return {
+                        "content": "### 时间线\n恢复\n### 影响\n轻微\n### 根因\nx",
+                        "tools_used": [],
+                        "diagnosis_report": {"root_cause": "x",
+                                             "confidence_level": "high"},
+                    }
+                return {
+                    "content": (
+                        "### 行动项\n"
+                        "- 【检测】增加告警（负责人: 张三，期限: 2026-09-10）\n"
+                        "- 【预防】扩容阈值（负责人: 待定，期限: 2026-09-15）\n"
+                    ),
+                    "tools_used": [],
+                    "diagnosis_report": {"root_cause": "x",
+                                         "confidence_level": "high"},
+                }
+
+        import app.api.langgraph as lg
+        monkeypatch.setattr(lg, "get_agent", lambda: RetryAgent())
+
+        await alerts_mod.enqueue_diagnosis_tasks([_firing_alert(fp="fp-b7-1")])
+        await alerts_mod._drain_pending_tasks()
+        await alerts_mod.handle_resolved_alerts(
+            [{**_firing_alert(fp="fp-b7-1"), "status": "resolved"}])
+        await alerts_mod._drain_pending_tasks()  # 摘要任务
+
+        assert call_count["n"] == 2, "应触发一次定向重试"
+        inc = db._incidents[0]
+        assert inc["status"] == "resolved"
+        assert len(inc["action_items"]) == 2, "重试后应解析到行动项"
+        assert inc["action_items"][0]["category"] == "检测"

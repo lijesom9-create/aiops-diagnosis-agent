@@ -1,4 +1,4 @@
-"""
+﻿"""
 个人知识助手 - 主应用入口
 基于 RAG + LangGraph 的智能问答系统
 """
@@ -94,6 +94,7 @@ async def lifespan(app: FastAPI):
     # 1) 启动时捞回上进程遗留任务（僵尸 running → pending），重启不丢诊断
     # 2) 原子认领保证多副本部署时不重复诊断
     worker_task = None
+    sweep_task = None
     if settings.ALERT_AUTO_DIAGNOSIS_ENABLED:
         try:
             recovered = await db.recover_stale_diagnosis_tasks(settings.DIAG_TASK_STALE_SECONDS)
@@ -102,17 +103,21 @@ async def lifespan(app: FastAPI):
             await db.ensure_incident_indexes()  # active 事故唯一索引（B2）
             worker_task = asyncio.create_task(alerts.diagnosis_worker_loop())
             logger.info("诊断 worker 已启动（任务表持久化模式）")
+            # B6 事故卡死保护：超时活跃事故自动闭案扫描
+            sweep_task = asyncio.create_task(alerts.stale_incident_sweep_loop())
+            logger.info(f"卡死事故扫描已启动（超时 {settings.INCIDENT_STALE_AUTO_CLOSE_HOURS}h 自动闭案）")
         except Exception as e:
             logger.warning(f"诊断 worker 启动失败（自动诊断不可用，不影响主服务）: {e}")
 
     yield
 
     # 关闭时：每个步骤独立 try/except，确保全部执行（防止一个失败导致后续资源泄漏）
-    if worker_task:
-        try:
-            worker_task.cancel()
-        except Exception as e:
-            logger.exception(f"取消诊断 worker 失败: {e}")
+    for _t in (sweep_task, worker_task):
+        if _t:
+            try:
+                _t.cancel()
+            except Exception as e:
+                logger.exception(f"取消后台任务失败: {e}")
     from app.core.ai_service import ai_service
     try:
         if hasattr(ai_service, 'close'):
@@ -210,7 +215,11 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 
 # ========== HTTP 指标中间件：请求计数/延迟（AIOps 自观测——Agent 看得见自己） ==========
-from prometheus_client import make_asgi_app
+try:
+    from prometheus_client import make_asgi_app
+    _HAS_PROMETHEUS = True
+except ImportError:
+    _HAS_PROMETHEUS = False
 
 REQUEST_COUNT = "http_requests_total"
 REQUEST_LATENCY = "http_request_duration_seconds"
@@ -243,7 +252,8 @@ async def http_metrics_middleware(request: Request, call_next):
 
 
 # /metrics 端点：Prometheus 标准暴露格式（prometheus.yml 采集 backend:8000/metrics）
-app.mount("/metrics", make_asgi_app())
+if _HAS_PROMETHEUS:
+    app.mount("/metrics", make_asgi_app())
 
 
 # 注册路由

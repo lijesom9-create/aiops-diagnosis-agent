@@ -32,3 +32,38 @@ ignore = [
 
 [tool.ruff.format]
 quote-style = "preserve"
+
+# ========== C5: mypy 渐进接入 ==========
+# 策略：仅对 app/core/ + app/api/ 新代码目录启用检查，存量 44k 行不做全量。
+# CI 起步阶段 continue-on-error（非阻塞），随新代码类型覆盖度提升再逐步收紧。
+# exclude：第三方/评测/测试/脚本/MCP server/数据目录不检查
+#
+# 运行方式：
+#   python -m mypy app/core app/api          （本地，CI 同）
+#   python -m mypy app/core app/api --strict （未来收紧方向）
+[tool.mypy]
+python_version = "3.12"
+exclude = [
+    "evaluation/",
+    "tests/",
+    "scripts/",
+    "mcp_servers/",
+    "data/",
+    "uploads/",
+    "venv/",
+]
+# 第三方库无类型 stub 时不报 missing-imports（避免噪声）
+ignore_missing_imports = true
+# 存量代码未标注类型不报错（渐进接入，只查新增类型错误）
+check_untyped_defs = false
+# 不强制要求所有函数有类型注解（起步阶段宽松）
+disallow_untyped_defs = false
+# 不强制要求完整类型（起步阶段宽松）
+disallow_incomplete_defs = false
+# 允许 Any（FastAPI/langgraph 等动态类型多，起步不强约束）
+disallow_any_explicit = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+# 基础告警：未用 ignore、冗余 cast、返回值不匹配
+warn_return_any = false
+no_implicit_optional = true

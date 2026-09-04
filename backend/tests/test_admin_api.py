@@ -119,9 +119,14 @@ class TestAdminUsers:
             assert "hashed_password" not in u, "用户列表不应包含 hashed_password"
 
     def test_admin_update_user_role(self, client):
-        """admin 修改其他用户角色 student -> teacher"""
+        """admin 修改其他用户角色 student -> teacher
+
+        C1 JWT 服务端吊销：角色变更会递增 token_version，使该用户旧 token 立即失效。
+        因此角色变更后需重新登录拿新 token 才能验证新角色。
+        """
         admin_token = _register(client, role="admin")
-        student_token = _register(client, role="student")
+        student_username = f"u_{uuid.uuid4().hex[:8]}"
+        student_token = _register(client, role="student", username=student_username)
         student_id = _get_user_id(client, student_token)
 
         # register/login 会设置 httpOnly cookie，且 get_current_user 优先读 cookie，
@@ -137,9 +142,22 @@ class TestAdminUsers:
         assert resp.status_code == 200, resp.text
         assert resp.json()["new_role"] == "teacher"
 
-        # 验证角色确实变更（同样清 cookie 用 student token 走 Bearer 头）
+        # C1：旧 student token 应已失效（角色变更触发 token_version 递增）
         client.cookies.clear()
-        me = client.get("/api/auth/me", headers=auth_header(student_token))
+        old_me = client.get("/api/auth/me", headers=auth_header(student_token))
+        assert old_me.status_code == 401, "角色变更后旧 token 应被吊销（C1）"
+
+        # 验证角色确实变更：重新登录拿新 token
+        login_resp = client.post("/api/auth/login", json={
+            "username": student_username,
+            "password": "test123456",
+        })
+        assert login_resp.status_code == 200, login_resp.text
+        new_token = login_resp.json()["access_token"]
+
+        client.cookies.clear()
+        me = client.get("/api/auth/me", headers=auth_header(new_token))
+        assert me.status_code == 200, me.text
         assert me.json()["role"] == "teacher"
 
     def test_admin_cannot_demote_self(self, client):

@@ -217,9 +217,17 @@ class Settings(BaseSettings):
     INCIDENT_RESOLVE_QUIET_PERIOD: int = 600
     # 新告警归入活跃事故的服务关联窗口（秒）
     INCIDENT_SERVICE_JOIN_WINDOW: int = 1800
+    # 事故卡死保护：active 事故 last_seen_at 超过 N 小时无新告警 → 自动闭案（B6）
+    # 成员告警在源头被删 / AM 重启丢状态 / 手动 webhook 测试时避免事故永远停留 active
+    INCIDENT_STALE_AUTO_CLOSE_HOURS: int = 6
     # 告警 → 服务名静态映射（JSON 字符串，如 '{"node-exporter": "host-infra"}'），
     # 优先级高于 labels 自动提取；用于告警规则无 service 标签的环境
     ALERT_SERVICE_MAP: Optional[str] = None
+    # B3 服务重要性矩阵：影响度 × 紧急度 → 优先级 P1-P4（ITIL 共识）
+    # JSON 字符串，如 '{"payment-sim": "critical", "user-service": "normal"}'
+    # critical=核心支付/认证、normal=辅助业务、low=非业务（默认 normal）
+    # 消费点：诊断卡片显示影响等级、escalation 判定用影响等级而非原始 severity
+    SERVICE_CRITICALITY: Optional[str] = None
     # ==== 执行层可靠性 ====
     # 诊断任务表：每任务最大尝试次数（超过标 dead）
     DIAG_TASK_MAX_ATTEMPTS: int = 3
@@ -256,6 +264,14 @@ class Settings(BaseSettings):
     # CORS配置（逗号分隔的字符串）
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 
+    # ========== C2: 敏感信息脱敏代码块策略 ==========
+    # 控制 sanitizer 对 ``` 代码块 / 行内代码 的脱敏行为：
+    #   strict（默认/生产）：代码块内的高置信凭据（API key/AWS key/私钥）仍脱敏，
+    #       普通文本模式（手机号/身份证/邮箱/内网IP）豁免（代码块中可能是测试数据）
+    #   loose（开发调试）：代码块完全豁免，保留代码示例原样
+    # 背景：原实现无条件豁免代码块，LLM 把敏感数据放进代码块即可绕过脱敏
+    SANITIZER_SANITIZE_CODE: str = "strict"
+
     @field_validator("ENV", mode="before")
     @classmethod
     def normalize_env(cls, v: str) -> str:
@@ -263,6 +279,15 @@ class Settings(BaseSettings):
         v = (v or "development").strip().lower()
         if v not in ("development", "production", "test"):
             raise ValueError(f"ENV 必须是 development/production/test，当前值: {v}")
+        return v
+
+    @field_validator("SANITIZER_SANITIZE_CODE", mode="after")
+    @classmethod
+    def validate_sanitizer_code_mode(cls, v: str) -> str:
+        """C2: 代码块脱敏策略只允许 strict/loose，统一小写"""
+        v = (v or "strict").strip().lower()
+        if v not in ("strict", "loose"):
+            raise ValueError(f"SANITIZER_SANITIZE_CODE 必须是 strict 或 loose，当前值: {v}")
         return v
 
     @field_validator("VECTOR_STORE_BACKEND", mode="after")

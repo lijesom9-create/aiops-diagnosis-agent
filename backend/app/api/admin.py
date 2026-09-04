@@ -1,4 +1,4 @@
-﻿"""
+"""
 管理后台 API（仅管理员）
 
 提供：
@@ -130,6 +130,9 @@ async def update_user_role(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="更新失败"
         )
+
+    # C1 JWT 吊销：角色变更（尤其降权）后使该用户旧 token 立即失效，防降权后仍持 admin 权限
+    await db.increment_token_version(user_id)
 
     logger.info(f"用户角色变更: {user_id} {old_role} -> {body.role} (操作者: {current_user.user_id})")
     return {"user_id": user_id, "username": user.get("username"), "old_role": old_role, "new_role": body.role}

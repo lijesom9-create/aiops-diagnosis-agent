@@ -47,6 +47,16 @@ def _track_checked_out():
         pass
 
 
+def track_pool_checked_out():
+    """供请求中间件每次请求后调用：池耗尽期业务全失败也要刷新 Gauge
+
+    若只在 create_order/get_order/mark_paid 成功后刷新，耗尽时所有调用
+    都在 engine.connect() 抛 TimeoutError、走不到刷新行，Gauge 会停留在
+    旧值（0），DemoServicePoolSaturation（>=5）告警永不触发。
+    """
+    _track_checked_out()
+
+
 def init():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     with engine.begin() as conn:
