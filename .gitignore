@@ -102,6 +102,7 @@ chromadb/
 # AI assistant config
 .claude/
 .workbuddy/
+.zcode/
 
 # Evaluation error logs
 *.err
@@ -111,6 +112,8 @@ chromadb/
 # ===========================================
 # 评测用 PDF/MD 教材（FastAPI 教程、Agent 书籍、RAG 书籍等版权内容，不入库）
 backend/evaluation/data/documents/
+# 本地嵌入式 Qdrant 运行数据（生产路径为 Qdrant Server，本地遗留存储不入库）
+backend/evaluation/data/qdrant_db/
 # BM25 索引（运行时生成）
 backend/evaluation/data/bm25_index.pkl
 # Embedding 缓存（运行时生成）
