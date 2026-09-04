@@ -1,4 +1,4 @@
-﻿"""
+"""
 个人知识助手 - 主应用入口
 基于 RAG + LangGraph 的智能问答系统
 """
@@ -95,6 +95,7 @@ async def lifespan(app: FastAPI):
     # 2) 原子认领保证多副本部署时不重复诊断
     worker_task = None
     sweep_task = None
+    pred_task = None
     if settings.ALERT_AUTO_DIAGNOSIS_ENABLED:
         try:
             recovered = await db.recover_stale_diagnosis_tasks(settings.DIAG_TASK_STALE_SECONDS)
@@ -109,10 +110,19 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"诊断 worker 启动失败（自动诊断不可用，不影响主服务）: {e}")
 
+    # 主动感知/预判风险（方向1）：仅写 ops_risk_* 指标供看板，不发告警不进事故闭环
+    if settings.PREDICTION_ENABLED:
+        try:
+            from app.prediction.infer_status import risk_prediction_loop
+            pred_task = asyncio.create_task(risk_prediction_loop())
+            logger.info("预判风险循环已启动（仅提示，不发告警）")
+        except Exception as e:
+            logger.warning(f"预判循环启动失败（不影响主服务）: {e}")
+
     yield
 
     # 关闭时：每个步骤独立 try/except，确保全部执行（防止一个失败导致后续资源泄漏）
-    for _t in (sweep_task, worker_task):
+    for _t in (sweep_task, worker_task, pred_task):
         if _t:
             try:
                 _t.cancel()

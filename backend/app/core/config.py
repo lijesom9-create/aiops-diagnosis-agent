@@ -231,6 +231,22 @@ class Settings(BaseSettings):
     INCIDENT_KNOWLEDGE_MIN_SUFFICIENCY: str = "medium"
     # 质量门槛：根因置信度（confidence）需 >= 此级别才自动入库
     INCIDENT_KNOWLEDGE_MIN_CONFIDENCE: str = "medium"
+    # ==== 主动感知/预判风险（方向1）====
+    # 仅风险提示：查现有 demo 指标做斜率/容量外推，写 ops_risk_* 指标供看板，
+    # 不发真实告警、不进事故闭环——符合"辅助不替代"安全边界。
+    PREDICTION_ENABLED: bool = True
+    # 预判循环执行间隔（秒）
+    PREDICTION_INTERVAL_SECONDS: int = 60
+    # 只报未来 N 分钟内可能破阈的风险
+    PREDICTION_HORIZON_MIN: int = 30
+    # p99 破 SLO 阈值（毫秒）
+    PREDICTION_P99_THRESHOLD_MS: float = 800.0
+    # 连接池上限（对齐 demo db.POOL_LIMIT）
+    PREDICTION_POOL_LIMIT: int = 5
+    # 连接池饱和判定线（checked_out / 上限）
+    PREDICTION_POOL_SATURATION_RATIO: float = 0.8
+    # 斜率相对当前量级多少/分钟才算"显著上行"
+    PREDICTION_RISING_RATIO: float = 0.2
     # 告警 → 服务名静态映射（JSON 字符串，如 '{"node-exporter": "host-infra"}'），
     # 优先级高于 labels 自动提取；用于告警规则无 service 标签的环境
     ALERT_SERVICE_MAP: Optional[str] = None

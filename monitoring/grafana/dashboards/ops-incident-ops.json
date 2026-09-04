@@ -328,6 +328,94 @@
         "type": "prometheus",
         "uid": "prometheus"
       }
+    },
+    {
+      "id": 8,
+      "title": "主动风险预判 · 最大等级（0-3，仅提示不发告警）",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 6,
+        "h": 8
+      },
+      "description": "方向1 主动感知：基于现有 demo 指标做斜率/容量外推的全局最大风险级别。仅风险提示，不产生真实告警、不进事故闭环（安全边界）。0=无 1=低 2=中 3=高。",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "orange", "value": 2 },
+              { "color": "red", "value": 3 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "ops_risk_max_level",
+          "legendFormat": "max_level",
+          "refId": "A"
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 9,
+      "title": "主动风险等级（按分析器）",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 6,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "description": "p99 / 连接池两个分析器的风险等级波动（0-3）。等级来自线性斜率外推与容量饱和判定，随时间演进的领先预警信号。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 3,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "ops_risk_level{analyzer=~\"p99|pool\"}",
+          "legendFormat": "{{analyzer}}",
+          "refId": "A"
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     }
   ]
 }
