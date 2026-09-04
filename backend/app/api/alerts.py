@@ -922,6 +922,16 @@ async def _process_diagnosis_task(task: Dict[str, Any]):
             from ..observability.metrics import get_metrics
             get_metrics().increment("ops_diagnosis_total", 1, labels={
                 "trigger": trigger, "result": "done"})
+            # 上 H3 定位段时长（首次诊断完成时刻 - first_seen_at）——"定位空转段"直接度量
+            if trigger == "initial":
+                from datetime import datetime as _dt
+                first_seen = incident.get("first_seen_at")
+                if first_seen:
+                    start = first_seen if isinstance(first_seen, _dt) else _dt.fromisoformat(str(first_seen))
+                    get_metrics().observe(
+                        "ops_incident_diag_time_seconds",
+                        (_dt.now() - start).total_seconds(),
+                        labels={"service": incident.get("service", "unknown")})
         except Exception:
             pass
     except Exception as e:
@@ -978,6 +988,18 @@ async def handle_resolved_alerts(alerts_data: List[Dict[str, Any]]):
                 updates["status"] = "resolving"
                 updates["resolved_at"] = _dt.now()
                 await db.update_incident_fields(incident_id, updates)
+                # 上 H3 MTTR（恢复耗时 = resolved_at - first_seen_at，首个恢复信号即计）
+                try:
+                    from ..observability.metrics import get_metrics
+                    first_seen = incident.get("first_seen_at")
+                    if first_seen:
+                        start = first_seen if isinstance(first_seen, _dt) else _dt.fromisoformat(str(first_seen))
+                        get_metrics().observe(
+                            "ops_incident_mttr_seconds",
+                            (_dt.now() - start).total_seconds(),
+                            labels={"service": incident.get("service", "unknown")})
+                except Exception as e:
+                    logger.debug(f"MTTR 指标计算失败（不影响闭案）: {e}")
                 logger.info(f"事故 {incident_id} 全部告警恢复，进入安静期"
                             f"（{settings.INCIDENT_RESOLVE_QUIET_PERIOD}s 后生成摘要）")
                 # 安静期：确认不复燃再闭案。sleep 在事件循环中不阻塞其他请求；

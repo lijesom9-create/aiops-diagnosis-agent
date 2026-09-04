@@ -234,6 +234,100 @@
         "type": "prometheus",
         "uid": "prometheus"
       }
+    },
+    {
+      "id": 6,
+      "title": "MTTR 恢复耗时（P95 / 平均）",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "description": "事故从触发到恢复的耗时（resolved_at - first_seen_at，首个恢复信号即计）。H3 的核心目标指标——验证诊断是否缩短了整体定位+恢复段。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(ops_incident_mttr_seconds_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "P95",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(ops_incident_mttr_seconds_sum[$__rate_interval])) / clamp_min(sum(increase(ops_incident_mttr_seconds_count[$__rate_interval])), 0.001)",
+          "legendFormat": "avg",
+          "refId": "B"
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 7,
+      "title": "定位段时间（首次诊断完成，P95 / 平均）",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "description": "事故触发到首份诊断报告完成的耗时（first diagnosis done - first_seen_at）——MTTR 中占 50-70% 的“定位空转段”的直接度量，是 H3 验证自动诊断价值的领先指标。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(ops_incident_diag_time_seconds_bucket[$__rate_interval])) by (le))",
+          "legendFormat": "P95",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(ops_incident_diag_time_seconds_sum[$__rate_interval])) / clamp_min(sum(increase(ops_incident_diag_time_seconds_count[$__rate_interval])), 0.001)",
+          "legendFormat": "avg",
+          "refId": "B"
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     }
   ]
 }
