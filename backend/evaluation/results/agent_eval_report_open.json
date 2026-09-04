@@ -1,0 +1,225 @@
+{
+  "dataset": "agent_eval_scenarios",
+  "top_k": 8,
+  "llm_judge": false,
+  "summary": {
+    "scenario_count": 5,
+    "completed": 5,
+    "failed": 0,
+    "mcp_tools_loaded": 9,
+    "tool_call_accuracy": 0.433,
+    "tool_coverage": 0.667,
+    "tool_order_ok_rate": 0.2,
+    "evidence_recall": 0.317,
+    "evidence_metrics_channel": 0.567,
+    "evidence_logs_channel": 0.317,
+    "evidence_knowledge_channel": 0.067,
+    "root_cause_accuracy": 0.04,
+    "report_rate": 1.0,
+    "confidence_ok_rate": 1.0,
+    "diagnosis_success_rate": 1.0,
+    "avg_latency_s": 142.9
+  },
+  "per_scenario": [
+    {
+      "scenario_id": "SC-OPEN-001",
+      "title": "支付变慢但错误率不高：池在高占用未耗尽，背景对账任务抢占连接",
+      "ground_truth_incident": "INC-2026-201",
+      "tools_used": [
+        "query_alerts",
+        "query_system_overview",
+        "list_containers",
+        "get_recent_changes",
+        "search_knowledge",
+        "get_service_dependencies",
+        "query_logs",
+        "query_prometheus",
+        "query_loki",
+        "query_prometheus_range"
+      ],
+      "step_count": 5,
+      "tool_call": {
+        "coverage": 0.667,
+        "order_ok": 0.0,
+        "accuracy": 0.333
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.5,
+          "logs": 0.25,
+          "knowledge": 0.0
+        },
+        "recall": 0.25
+      },
+      "root_cause": {
+        "recall": 0.0,
+        "root_cause_extracted": "**最可能根因：定时对账任务的大事务/慢 SQL 与在线支付链路形成 DB 锁竞争（等待型故障），延迟随等待队列单调爬升；v2.3.1 发版与连接池余量小为放大器。**\n\n因果链（能解释全部症状）：\n\n1. **触发**：凌晨定时对账任务启"
+      },
+      "diagnosis": {
+        "report_ok": 1.0,
+        "confidence_ok": 1.0,
+        "confidence_level": "high",
+        "success": 1.0
+      },
+      "latency_s": 143.0
+    },
+    {
+      "scenario_id": "SC-OPEN-002",
+      "title": "支付回调延迟但最终送达：消费组重平衡导致补偿滞后，非回调丢失",
+      "ground_truth_incident": "INC-2026-202",
+      "tools_used": [
+        "query_alerts",
+        "list_containers",
+        "search_knowledge",
+        "get_recent_changes",
+        "query_logs",
+        "query_prometheus",
+        "get_service_dependencies",
+        "create_incident_ticket"
+      ],
+      "step_count": 7,
+      "tool_call": {
+        "coverage": 0.667,
+        "order_ok": 0.0,
+        "accuracy": 0.333
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.667,
+          "logs": 0.333,
+          "knowledge": 0.0
+        },
+        "recall": 0.333
+      },
+      "root_cause": {
+        "recall": 0.0,
+        "root_cause_extracted": "**机制根因（高置信）——消费组 rebalance 期间消费暂停导致消息滞留、均衡后追平：**\n订单状态更新由 Kafka 消费组消费\"支付成功事件\"驱动。rebalance 发生时（eager 协议下）**组内消费整体暂停**（分区 r"
+      },
+      "diagnosis": {
+        "report_ok": 1.0,
+        "confidence_ok": 1.0,
+        "confidence_level": "high",
+        "success": 1.0
+      },
+      "latency_s": 166.8
+    },
+    {
+      "scenario_id": "SC-OPEN-003",
+      "title": "搜索偶发超时+订单统计变慢同现：读未路由到从库，大事务放大主库压力",
+      "ground_truth_incident": "INC-2026-203",
+      "tools_used": [
+        "query_alerts",
+        "list_containers",
+        "query_system_overview",
+        "query_prometheus",
+        "query_logs",
+        "search_knowledge",
+        "get_recent_changes"
+      ],
+      "step_count": 6,
+      "tool_call": {
+        "coverage": 0.667,
+        "order_ok": 1.0,
+        "accuracy": 0.833
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.5,
+          "logs": 0.0,
+          "knowledge": 0.333
+        },
+        "recall": 0.278
+      },
+      "root_cause": {
+        "recall": 0.0,
+        "root_cause_extracted": "**最可能根因：读写分离\"只配通了主从复制链路，未真正接通只读路由\"——读流量实际仍全部落在主库，从库因无流量而闲置。**\n\n因果链如下：\n\n1. **近期启用读写分离**：仅完成了主从复制 + 配置中心下发路由规则，**应用层读 SQL "
+      },
+      "diagnosis": {
+        "report_ok": 1.0,
+        "confidence_ok": 1.0,
+        "confidence_level": "medium",
+        "success": 1.0
+      },
+      "latency_s": 118.5
+    },
+    {
+      "scenario_id": "SC-OPEN-004",
+      "title": "Redis 大 key 热点未命中：回源打爆数据库连接，非缓存雪崩全盘",
+      "ground_truth_incident": "INC-2026-204",
+      "tools_used": [
+        "query_alerts",
+        "list_containers",
+        "query_system_overview",
+        "search_knowledge",
+        "query_logs",
+        "query_prometheus",
+        "get_recent_changes"
+      ],
+      "step_count": 5,
+      "tool_call": {
+        "coverage": 0.667,
+        "order_ok": 0.0,
+        "accuracy": 0.333
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.5,
+          "logs": 0.5,
+          "knowledge": 0.0
+        },
+        "recall": 0.333
+      },
+      "root_cause": {
+        "recall": 0.0,
+        "root_cause_extracted": "**结论：单热点 key 缓存击穿（重建无互斥保护）→ 回源请求并发穿透 + 慢 SQL 放大连接占用 → DB 连接池打满 → 等待线程堆积造成偶发大幅变慢，并随热 key 过期周期复发。** 因果链如下：\n\n1. **触发（单点空窗）*"
+      },
+      "diagnosis": {
+        "report_ok": 1.0,
+        "confidence_ok": 1.0,
+        "confidence_level": "medium",
+        "success": 1.0
+      },
+      "latency_s": 133.1
+    },
+    {
+      "scenario_id": "SC-OPEN-005",
+      "title": "灰度发布期间偶发 401：新旧实例签名密钥不一致，非密钥被泄露",
+      "ground_truth_incident": "INC-2026-205",
+      "tools_used": [
+        "query_alerts",
+        "list_containers",
+        "query_system_overview",
+        "get_recent_changes",
+        "get_service_dependencies",
+        "search_knowledge",
+        "query_logs",
+        "query_loki"
+      ],
+      "step_count": 6,
+      "tool_call": {
+        "coverage": 0.667,
+        "order_ok": 0.0,
+        "accuracy": 0.333
+      },
+      "evidence": {
+        "per_channel": {
+          "metrics": 0.667,
+          "logs": 0.5,
+          "knowledge": 0.0
+        },
+        "recall": 0.389
+      },
+      "root_cause": {
+        "recall": 0.2,
+        "root_cause_extracted": "**最可能根因：新版本与旧版本在 JWT 签发/校验链路上存在不兼容差异（最典型为：新版实例使用了不同验签密钥，或新增/收紧校验规则——如校验 kid/issuer/audience/算法/版本号 claim），且新旧实例随机承接请求，构成"
+      },
+      "diagnosis": {
+        "report_ok": 1.0,
+        "confidence_ok": 1.0,
+        "confidence_level": "medium",
+        "success": 1.0
+      },
+      "latency_s": 153.1
+    }
+  ]
+}

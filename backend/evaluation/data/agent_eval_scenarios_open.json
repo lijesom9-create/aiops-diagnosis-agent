@@ -1,0 +1,101 @@
+{
+  "dataset": "agent_eval_scenarios_open",
+  "version": "1.0",
+  "name": "开放场景（held-out 未见集）",
+  "description": "方向2：非标准化/未见故障的开放推理能力评测。设计原则——与主集 agent_eval_scenarios.json 完全无重叠：scenario_id 用 SC-OPEN-* 前缀、user_input 为全新事件、expected_root_cause 是主集 2+ 个单一故障的『组合』从而不直接命中任一主集答案。若 Agent 在这些上仍能组合多路信号定位根因，说明具备‘面对未见过故障的推理组合能力’，而非预设规则/检索复读。",
+  "created_at": "2026-09-04",
+  "monitoring_tools": ["query_metrics", "query_logs"],
+  "kb_tool": "search_knowledge",
+  "scenarios": [
+    {
+      "scenario_id": "SC-OPEN-001",
+      "title": "支付变慢但错误率不高：池在高占用未耗尽，背景对账任务抢占连接",
+      "is_open": true,
+      "novelty": "组合主集 SC-001(连接池)+SC-006(慢SQL)+SC-003(消费/任务)，但结果不是任何单一答案：池未耗尽、无 500，只有 p99 缓慢抬升——根因是业务低谷期的批量对账任务与在线交易争夺同一连接池，属‘池占用/竞争’而非经典的‘池耗尽’。",
+      "closed_counterparts": ["SC-001", "SC-003", "SC-006"],
+      "user_input": "凌晨低流量时段支付接口未报错但 p99 从 30ms 缓慢爬到 450ms，错误率仍 0.2%，晚高峰前未回落；已排除全量 500 与池耗尽。期间有一条定时对账任务在跑，下单链路明显变慢。请诊断根因。",
+      "ground_truth_incident": "INC-2026-201",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "expected_root_cause": ["批量对账任务", "连接池竞争", "池高占用", "非业务高峰"],
+      "expected_evidence": {
+        "metrics": ["p99", "checked_out", "池占用", "对账"],
+        "logs": ["对账", "checkout", "pool_timeout_ms 升高", "batch"],
+        "knowledge": ["连接池竞争", "任务避开高峰", "慢查询排查"]
+      },
+      "expected_doc_types": ["incident", "manual", "sop"]
+    },
+    {
+      "scenario_id": "SC-OPEN-002",
+      "title": "支付回调延迟但最终送达：消费组重平衡导致补偿滞后，非回调丢失",
+      "is_open": true,
+      "novelty": "组合主集 SC-003(Kafka 消费延迟)+SC-009(回调/对账补偿)，但结论相反方向：回调没有丢、只是被重平衡延迟，最终送达，问题在补偿链路滞后引发的状态血症。需 Agent 区分‘丢失’与‘延迟’，是典型非二元判断。",
+      "closed_counterparts": ["SC-003", "SC-009"],
+      "user_input": "部分支付订单状态更新滞后 20 分钟才变成功，但最终都正确。无回调丢失、无对账补单告警。同一时刻 Kafka 消费组发生过 rebalance，分区再均衡后消费仍能追上。支付结果通知链路正常。请诊断根因。",
+      "ground_truth_incident": "INC-2026-202",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "expected_root_cause": ["消费组重平衡", "回调延迟", "非丢失", "补偿滞后", "分区再均衡"],
+      "expected_evidence": {
+        "metrics": ["LAG", "rebalance", "group"],
+        "logs": ["rebalance", "JoinGroup", "状态补偿"],
+        "knowledge": ["消费延迟排查", "幂等补偿", "重平衡"]
+      },
+      "expected_doc_types": ["incident", "manual", "sop"]
+    },
+    {
+      "scenario_id": "SC-OPEN-003",
+      "title": "搜索偶发超时+订单统计变慢同现：读未路由到从库，大事务放大主库压力",
+      "is_open": true,
+      "novelty": "组合主集 SC-006(慢SQL)+SC-008(主从/大事务)，但核心是架构配置缺陷：读流量本应走从库却走主库，使一个原本可容忍的慢查询放大为 p99 违约。根因关键词未出现在任何主集。",
+      "closed_counterparts": ["SC-006", "SC-008"],
+      "user_input": "搜索接口偶发超时、订单统计报表变慢，两者同时开始但互不相同。数据库主库 CPU 高，从库空闲。确认无新慢 SQL 模板，历史大事务仍在跑。应用配置显示读写路由生效，但实际从库只读流量极少。请诊断根因。",
+      "ground_truth_incident": "INC-2026-203",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "expected_root_cause": ["读未走从库", "读写路由失效", "主库压力", "p99"],
+      "expected_evidence": {
+        "metrics": ["主库CPU", "从库", "只读", "p99"],
+        "logs": ["read_only", "routing", "proxy"],
+        "knowledge": ["读写分离", "路由配置", "从库压力"]
+      },
+      "expected_doc_types": ["incident", "manual", "sop"]
+    },
+    {
+      "scenario_id": "SC-OPEN-004",
+      "title": "Redis 大 key 热点未命中：回源打爆数据库连接，非缓存雪崩全盘",
+      "is_open": true,
+      "novelty": "组合主集 SC-002(缓存)+SC-001(连接池)+SC-007(内存类)，但为‘命中/未命中’细粒度新场景：只有热点 Key 被淘汰导致回源，DB 连接被回源突刺打爆，不是全量缓存雪崩。根因是单热点 Key 生命周期管理缺陷。",
+      "closed_counterparts": ["SC-001", "SC-002", "SC-007"],
+      "user_input": "商品详情偶发大幅变慢但非全站雪崩。热点商品刚过期后第一个请求回源数据库，恰好压垮 DB 连接池，间隔几分钟复现。缓存其余 Key 正常、TTL 无批量集中过期。请诊断根因。",
+      "ground_truth_incident": "INC-2026-204",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "expected_root_cause": ["热点Key", "未命中回源", "回源突刺", "单Key过期", "数据库连接"],
+      "expected_evidence": {
+        "metrics": ["命中率", "回源", "checked_out", "热点key"],
+        "logs": ["miss", "回源", "Timeout", "reload"],
+        "knowledge": ["热点缓存", "重建缓存", "级联回源"]
+      },
+      "expected_doc_types": ["incident", "manual", "sop"]
+    },
+    {
+      "scenario_id": "SC-OPEN-005",
+      "title": "灰度发布期间偶发 401：新旧实例签名密钥不一致，非密钥被泄露",
+      "is_open": true,
+      "novelty": "组合主集 SC-009(回调/一致性)+发布流程，但核心是发布生命周期中的配置漂移：灰度窗口内新旧实例对同一 token 签名密钥不一致导致部分 401；不是密钥轮换失败也不是被攻击。考验 Agent 结合部署上下文推理。",
+      "closed_counterparts": ["SC-009", "SC-005"],
+      "user_input": "新版本从 10% 灰度到 50% 后，出现偶发 401：同一用户同一 token 时好时坏，占比约 1/3，恢复后稳定。无异常登出、无密钥泄露告警。回滚到全部旧版本后 401 消失。请诊断根因。",
+      "ground_truth_incident": "INC-2026-205",
+      "expected_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "required_tools": ["query_metrics", "query_logs", "search_knowledge"],
+      "expected_root_cause": ["灰度发布", "签名密钥不一致", "新旧实例", "部分401", "配置漂移"],
+      "expected_evidence": {
+        "metrics": ["401", "灰度", "error_rate"],
+        "logs": ["signature", "verify", "gray", "401"],
+        "knowledge": ["灰度发布", "密钥一致性", "回滚预案"]
+      },
+      "expected_doc_types": ["incident", "manual", "sop"]
+    }
+  ]
+}
