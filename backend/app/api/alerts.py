@@ -1098,6 +1098,17 @@ async def _generate_incident_summary(incident: Dict[str, Any]):
             card = FeishuClient.build_incident_summary_card(incident, result)
             if client.send_card(open_id, card):
                 logger.info(f"事故 {incident_id} 恢复摘要已推送飞书")
+
+            # 方向3 经验回流：恢复摘要经质量门自动写入知识库（doc_type=incident）
+            # to_thread 脱钩避免嵌入计算阻塞事件循环；质量门与失败兜底都在 ingest 内自判
+            try:
+                from ..knowledge.incident_ingest import ingest_incident_into_knowledge
+                await asyncio.to_thread(
+                    ingest_incident_into_knowledge, incident, report, action_items, content,
+                )
+            except Exception as ingest_err:
+                logger.warning(
+                    f"事故 {incident_id} 知识入库失败（不影响闭案）: {ingest_err}")
     except Exception as e:
         logger.error("事故 {} 恢复摘要生成异常: {}", incident_id, e, exc_info=True)
         await db.update_incident_fields(incident_id, {"status": "resolved"})

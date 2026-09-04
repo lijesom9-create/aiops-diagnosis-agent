@@ -220,6 +220,17 @@ class Settings(BaseSettings):
     # 事故卡死保护：active 事故 last_seen_at 超过 N 小时无新告警 → 自动闭案（B6）
     # 成员告警在源头被删 / AM 重启丢状态 / 手动 webhook 测试时避免事故永远停留 active
     INCIDENT_STALE_AUTO_CLOSE_HOURS: int = 6
+    # ==== 经验回流：恢复摘要 → 知识库（方向3 自动入库，质量门保护）====
+    # resolved 事故经质量门后自动写入 RAG（doc_type=incident），回灌下次诊断。
+    # 安全边界：只入高充分度/高置信度摘要；中等置信度标记待复核并附低置信度注记；
+    # low/unknown 直接跳过，绝不静默替换已有知识（按 incident_id 幂等 upsert）。
+    INCIDENT_KNOWLEDGE_ENABLED: bool = True
+    # 入库文档有效期限（天），到期由 valid_until 软降权/过期
+    INCIDENT_KNOWLEDGE_VALID_DAYS: int = 90
+    # 质量门槛：根因充分度（sufficiency）需 >= 此级别才自动入库
+    INCIDENT_KNOWLEDGE_MIN_SUFFICIENCY: str = "medium"
+    # 质量门槛：根因置信度（confidence）需 >= 此级别才自动入库
+    INCIDENT_KNOWLEDGE_MIN_CONFIDENCE: str = "medium"
     # 告警 → 服务名静态映射（JSON 字符串，如 '{"node-exporter": "host-infra"}'），
     # 优先级高于 labels 自动提取；用于告警规则无 service 标签的环境
     ALERT_SERVICE_MAP: Optional[str] = None

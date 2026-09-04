@@ -1475,6 +1475,10 @@ class UnifiedKnowledgeStore:
         self._invalidate_caches()
         return n1 if n1 >= 0 else n2
 
+    def invalidate_caches(self) -> None:
+        """公开封装：失效全部查询相关缓存（文档增删改后必须调用，避免读到旧结果）"""
+        self._invalidate_caches()
+
     def _invalidate_caches(self) -> None:
         """失效所有查询相关缓存（文档增删改时调用）
 
