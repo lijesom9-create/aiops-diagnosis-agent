@@ -112,7 +112,11 @@ class TestAlertWebhookSecret:
         assert resp.status_code == 401, resp.text
 
     def test_webhook_accepts_bearer_secret(self, client, monkeypatch):
-        """正确的 Bearer 密钥通过鉴权（飞书未配置 → 503，证明已过密钥层）"""
+        """正确的 Bearer 密钥通过鉴权（飞书未配置 → 200 + feishu_sent:false，证明已过密钥层）
+
+        飞书通知非阻断（失败/未配置只记日志，不影响事故创建），故密钥正确时返回
+        200 且 feishu_sent=false（若密钥层失败会是 401）。
+        """
         monkeypatch.setattr(settings, "ALERT_WEBHOOK_SECRET", "right-secret")
         monkeypatch.setattr(settings, "FEISHU_APP_ID", None)
         monkeypatch.setattr(settings, "FEISHU_APP_SECRET", None)
@@ -121,11 +125,11 @@ class TestAlertWebhookSecret:
             json=self._payload(),
             headers={"Authorization": "Bearer right-secret"},
         )
-        # 密钥正确 → 进入飞书配置检查 → 未配置返回 503（若密钥层失败会是 401）
-        assert resp.status_code == 503, resp.text
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["feishu_sent"] is False, resp.text
 
     def test_webhook_accepts_custom_header_secret(self, client, monkeypatch):
-        """自定义头 X-Webhook-Secret 同样可用"""
+        """自定义头 X-Webhook-Secret 同样可用（跨过密钥层 → 200 + feishu_sent:false）"""
         monkeypatch.setattr(settings, "ALERT_WEBHOOK_SECRET", "right-secret")
         monkeypatch.setattr(settings, "FEISHU_APP_ID", None)
         monkeypatch.setattr(settings, "FEISHU_APP_SECRET", None)
@@ -134,7 +138,8 @@ class TestAlertWebhookSecret:
             json=self._payload(),
             headers={"X-Webhook-Secret": "right-secret"},
         )
-        assert resp.status_code == 503, resp.text
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["feishu_sent"] is False, resp.text
 
     def test_alert_test_endpoint_requires_admin(self, client):
         """手动触发测试告警 → 普通用户 403"""
