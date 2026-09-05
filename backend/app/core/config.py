@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     AI_API_KEY: Optional[str] = None
     AI_BASE_URL: Optional[str] = None  # 可选，自定义API地址
 
+    # AI 容灾（主供应商鉴权/余额/持续故障时自动切换备用；不配置则关闭，行为与单供应商一致）
+    AI_FALLBACK_MODEL: Optional[str] = None    # 如 zhipu/glm-4-flash
+    AI_FALLBACK_API_KEY: Optional[str] = None
+    AI_FALLBACK_BASE_URL: Optional[str] = None
+
     # Embedding 配置
     EMBEDDING_API_KEY: Optional[str] = None
     EMBEDDING_MODEL: Optional[str] = None  # 例如 text-embedding-3-small

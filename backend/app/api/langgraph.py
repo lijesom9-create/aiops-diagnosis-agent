@@ -113,6 +113,19 @@ _agent = None
 _agent_lock = _threading.Lock()
 
 
+def _resolve_llm_base_url(model_field: str, explicit: Optional[str]) -> str:
+    """解析 LLM base_url：显式配置优先，否则按 provider 前缀查默认地址表。
+
+    修复原实现的缺陷：AI_BASE_URL 未设时此前硬编码 deepseek 地址，
+    配置 zhipu/qwen 等模型会打到错误端点。
+    """
+    if explicit:
+        return explicit
+    from ..core.ai_service import PROVIDER_CONFIGS, parse_model_name
+    provider_name, _ = parse_model_name(model_field)
+    return PROVIDER_CONFIGS.get(provider_name, {}).get("base_url", "https://api.deepseek.com")
+
+
 def get_agent():
     """获取 Agent 实例（双重检查加锁：并发首调不会构建两个 Agent）"""
     global _agent
@@ -133,10 +146,21 @@ def get_agent():
             "data", "langgraph_checkpoints.db"
         )
 
+        # AI 容灾：配置了 AI_FALLBACK_* 时组装备用模型三元组（ChatOpenAI 不带 provider 前缀）
+        llm_fallback = None
+        if settings.AI_FALLBACK_MODEL and settings.AI_FALLBACK_API_KEY:
+            llm_fallback = {
+                "model": settings.AI_FALLBACK_MODEL.split("/")[-1]
+                if "/" in settings.AI_FALLBACK_MODEL else settings.AI_FALLBACK_MODEL,
+                "base_url": _resolve_llm_base_url(settings.AI_FALLBACK_MODEL, settings.AI_FALLBACK_BASE_URL),
+                "api_key": settings.AI_FALLBACK_API_KEY,
+            }
+
         _agent = LangGraphAgent(
             llm_model=settings.AI_MODEL.split("/")[-1] if "/" in settings.AI_MODEL else settings.AI_MODEL,
-            llm_base_url=settings.AI_BASE_URL or "https://api.deepseek.com",
+            llm_base_url=_resolve_llm_base_url(settings.AI_MODEL, settings.AI_BASE_URL),
             llm_api_key=settings.AI_API_KEY or "dummy",
+            llm_fallback=llm_fallback,
             knowledge_store=get_knowledge_store(),
             checkpoint_path=checkpoint_path,
         )

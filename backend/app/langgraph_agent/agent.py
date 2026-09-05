@@ -66,6 +66,7 @@ class LangGraphAgent:
         checkpoint_path: str = None,
         max_context_tokens: int = 32000,
         reserved_for_output: int = 4000,
+        llm_fallback: Optional[dict] = None,
     ):
         self.max_steps = max_steps
         self.llm_model = llm_model
@@ -89,8 +90,15 @@ class LangGraphAgent:
         self.tools = create_tools()
         self.tool_node = ToolNode(self.tools)
 
-        # 绑定工具到 LLM
+        # 绑定工具到 LLM；配置了备用模型（AI_FALLBACK_*）时挂 langchain 原生 fallback，
+        # 主模型任何失败（鉴权/余额/5xx/超时）自动切换备用，流式与非流式均生效
         self.llm_with_tools = self.llm.bind_tools(self.tools)
+        fallback_llm = self._build_fallback_llm(llm_fallback)
+        if fallback_llm is not None:
+            self.llm_with_tools = self.llm_with_tools.with_fallbacks(
+                [fallback_llm.bind_tools(self.tools)]
+            )
+            logger.info(f"Agent LLM 容灾已启用: 备用模型 {llm_fallback.get('model')}")
 
         # 设置知识库
         if knowledge_store:
@@ -107,6 +115,8 @@ class LangGraphAgent:
             max_tokens=100,   # 重写查询不需要长输出
             timeout=llm_timeout,  # 查询重写同样应用超时保护
         )
+        if fallback_llm is not None:
+            query_rewriter = query_rewriter.with_fallbacks([fallback_llm])
         set_query_rewriter_llm(query_rewriter)
 
         # 初始化 Checkpoint（会话记忆）
@@ -142,6 +152,26 @@ class LangGraphAgent:
         logger.info(
             f"LangGraph Agent 初始化完成，模型: {llm_model}，"
             f"上下文预算: {max_context_tokens} tokens（预留输出 {reserved_for_output}）"
+        )
+
+    def _build_fallback_llm(self, llm_fallback: Optional[dict]):
+        """构建备用 ChatOpenAI（AI 容灾）；未配置或配置不完整返回 None
+
+        llm_fallback: {"model": str, "api_key": str, "base_url": str}，
+        model/base_url 由 get_agent 按 provider 前缀解析（主配置不带 provider 前缀）。
+        """
+        if not llm_fallback or not llm_fallback.get("model") or not llm_fallback.get("api_key"):
+            return None
+        from ..core.config import settings as _settings
+        llm_timeout = getattr(_settings, "LLM_REQUEST_TIMEOUT", 60.0)
+        return ChatOpenAI(
+            model=llm_fallback["model"],
+            base_url=llm_fallback.get("base_url") or "https://api.deepseek.com",
+            api_key=llm_fallback["api_key"],
+            temperature=0.3,
+            max_tokens=1500,
+            model_kwargs={"parallel_tool_calls": True},
+            timeout=llm_timeout,
         )
 
     async def init_mcp_tools(self, mcp_config: Optional[Dict] = None) -> int:

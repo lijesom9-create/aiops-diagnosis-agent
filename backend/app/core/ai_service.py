@@ -13,6 +13,14 @@ from loguru import logger
 from .config import settings
 
 
+class NonRetryableLLMError(Exception):
+    """不可重试的 LLM 调用错误（401 鉴权 / 402 余额 / 403 权限类）。
+
+    重试对这类错误无意义（同样的请求必然同样失败），应立即上抛，
+    由 FailoverProvider 据此触发主备切换。
+    """
+
+
 class AIModelProvider(ABC):
     """AI模型提供商抽象基类"""
 
@@ -78,6 +86,10 @@ def parse_model_name(model_name: str) -> Tuple[str, str]:
     else:
         # 默认使用deepseek
         return "deepseek", model_name
+
+
+# 鉴权/余额/权限类状态码：重试无意义，直接上抛（FailoverProvider 据此切换备用）
+_NON_RETRYABLE_STATUS = {401, 402, 403}
 
 
 class OpenAICompatibleProvider(AIModelProvider):
@@ -149,6 +161,10 @@ class OpenAICompatibleProvider(AIModelProvider):
                 )
 
                 if response.status_code != 200:
+                    if response.status_code in _NON_RETRYABLE_STATUS:
+                        raise NonRetryableLLMError(
+                            f"API请求不可重试(HTTP {response.status_code}): {response.text[:200]}"
+                        )
                     raise Exception(f"API请求失败: {response.text}")
 
                 data = response.json()
@@ -158,6 +174,8 @@ class OpenAICompatibleProvider(AIModelProvider):
                     "finish_reason": data["choices"][0]["finish_reason"]
                 }
 
+            except NonRetryableLLMError:
+                raise  # 鉴权/余额类错误重试无意义，立即上抛触发容灾切换
             except Exception as e:
                 last_error = e
                 if attempt < self.max_retries - 1:
@@ -221,6 +239,13 @@ class OpenAICompatibleProvider(AIModelProvider):
                     },
                     timeout=self.timeout
                 ) as response:
+                    if response.status_code != 200:
+                        # 原实现不检查状态码：4xx 错误体会因无 "data: " 行而静默返回空响应
+                        if response.status_code in _NON_RETRYABLE_STATUS:
+                            raise NonRetryableLLMError(
+                                f"流式API请求不可重试(HTTP {response.status_code}): {(await response.aread()).decode('utf-8', 'ignore')[:200]}"
+                            )
+                        raise Exception(f"流式API请求失败: HTTP {response.status_code}")
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
                             data = line[6:]
@@ -234,6 +259,8 @@ class OpenAICompatibleProvider(AIModelProvider):
                 # 成功完成，直接返回
                 return
 
+            except NonRetryableLLMError:
+                raise
             except Exception as e:
                 last_error = e
                 if attempt < self.max_retries - 1:
@@ -390,33 +417,104 @@ class MockProvider(AIModelProvider):
             await asyncio.sleep(0.02)
 
 
+class FailoverProvider(AIModelProvider):
+    """主备容灾 Provider：primary 失败时自动切换 fallback。
+
+    切换时机：
+    - NonRetryableLLMError（401 鉴权 / 402 余额 / 403 权限）→ 立即切换（重试无意义）
+    - 其他异常（429/5xx/超时/连接）→ primary 内部重试耗尽后切换
+    - 流式：仅在**首个 chunk 输出前**失败才切换；中途失败切换会导致内容重复，
+      保持原样上抛交由调用方处理
+    """
+
+    def __init__(self, primary: AIModelProvider, fallback: AIModelProvider):
+        self.primary = primary
+        self.fallback = fallback
+
+    def _record_failover(self, reason: str) -> None:
+        # 指标埋点失败不应影响容灾主流程（同 alerts 埋点约定）
+        try:
+            from ..observability.metrics import get_metrics
+            get_metrics().increment("ai_provider_failover_total", 1, labels={"reason": reason})
+        except Exception:
+            pass
+        logger.warning(f"AI 主供应商调用失败，已切换备用供应商: {reason}")
+
+    async def chat(self, messages: List[Dict], tools: Optional[List[Dict]] = None) -> Dict:
+        try:
+            return await self.primary.chat(messages, tools)
+        except NonRetryableLLMError as e:
+            self._record_failover(f"non_retryable: {str(e)[:120]}")
+            return await self.fallback.chat(messages, tools)
+        except Exception as e:
+            # primary.chat 内部已带 3 次重试，走到这里即重试耗尽（或熔断/限流拒绝）
+            self._record_failover(f"exhausted: {type(e).__name__}: {str(e)[:120]}")
+            return await self.fallback.chat(messages, tools)
+
+    async def chat_stream(self, messages: List[Dict]) -> AsyncIterator[str]:
+        emitted = False
+        try:
+            async for chunk in self.primary.chat_stream(messages):
+                emitted = True
+                yield chunk
+            return
+        except Exception as e:
+            if emitted:
+                # 流式已输出部分内容：切换会重复输出，保持上抛
+                raise
+            self._record_failover(f"stream_connect: {type(e).__name__}: {str(e)[:120]}")
+        async for chunk in self.fallback.chat_stream(messages):
+            yield chunk
+
+    async def close(self):
+        """关闭两个底层 provider 的连接（MockProvider 无 close，按需跳过）"""
+        for p in (self.primary, self.fallback):
+            closer = getattr(p, "close", None)
+            if closer:
+                await closer()
+
+
+def _build_single_provider(model_str: str, api_key: str, base_url_override: Optional[str] = None) -> Optional[AIModelProvider]:
+    """按 provider/model 配置构建单个 provider实例；provider 未知时返回 None（调用方决定降级方式）"""
+    provider_name, model_name = parse_model_name(model_str)
+    logger.info(f"使用AI提供商: {provider_name}, 模型: {model_name}")
+
+    provider_config = PROVIDER_CONFIGS.get(provider_name)
+    if not provider_config:
+        logger.warning(f"未知的提供商: {provider_name}")
+        return None
+
+    base_url = base_url_override or provider_config["base_url"]
+
+    if provider_name == "anthropic":
+        return AnthropicProvider(api_key, model_name)
+    # DeepSeek、智谱、OpenAI、通义千问都使用OpenAI兼容API
+    return OpenAICompatibleProvider(api_key, model_name, base_url)
+
+
 def create_ai_provider() -> AIModelProvider:
-    """创建AI模型提供商"""
+    """创建AI模型提供商（配置了 AI_FALLBACK_* 时返回主备容灾实例）"""
 
     # 检查是否配置了API密钥
     if not settings.AI_API_KEY:
         logger.warning("未配置AI_API_KEY，使用模拟模式")
         return MockProvider()
 
-    # 解析模型名称
-    provider_name, model_name = parse_model_name(settings.AI_MODEL)
-    logger.info(f"使用AI提供商: {provider_name}, 模型: {model_name}")
-
-    # 获取提供商配置
-    provider_config = PROVIDER_CONFIGS.get(provider_name)
-    if not provider_config:
-        logger.warning(f"未知的提供商: {provider_name}，使用模拟模式")
+    primary = _build_single_provider(settings.AI_MODEL, settings.AI_API_KEY, settings.AI_BASE_URL)
+    if primary is None:
+        logger.warning("主供应商配置无效，使用模拟模式")
         return MockProvider()
 
-    # 确定base_url
-    base_url = settings.AI_BASE_URL or provider_config["base_url"]
+    if settings.AI_FALLBACK_MODEL and settings.AI_FALLBACK_API_KEY:
+        fallback = _build_single_provider(
+            settings.AI_FALLBACK_MODEL, settings.AI_FALLBACK_API_KEY, settings.AI_FALLBACK_BASE_URL
+        )
+        if fallback is not None:
+            logger.info(f"AI容灾已启用: 主={settings.AI_MODEL}, 备={settings.AI_FALLBACK_MODEL}")
+            return FailoverProvider(primary, fallback)
+        logger.warning("AI_FALLBACK_* 配置无效，容灾未启用")
 
-    # 根据提供商创建实例
-    if provider_name == "anthropic":
-        return AnthropicProvider(settings.AI_API_KEY, model_name)
-    else:
-        # DeepSeek、智谱、OpenAI、通义千问都使用OpenAI兼容API
-        return OpenAICompatibleProvider(settings.AI_API_KEY, model_name, base_url)
+    return primary
 
 
 # 全局AI服务实例
