@@ -20,7 +20,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 DOCS_DIR = BACKEND_DIR / "data" / "demo_docs"
 DOC_TYPES = ("manual", "sop", "incident", "postmortem")
 
-from app.document.frontmatter import parse_frontmatter, extract_business_metadata  # noqa: E402
+from app.document.frontmatter import extract_business_metadata, parse_frontmatter  # noqa: E402
 
 
 def collect_docs() -> list:
@@ -33,8 +33,8 @@ def collect_docs() -> list:
 
 
 async def seed():
-    from app.shared_services import init_knowledge_store
     from app.document.uploader import DocumentUploader
+    from app.shared_services import init_knowledge_store
 
     docs = collect_docs()
     if not docs:

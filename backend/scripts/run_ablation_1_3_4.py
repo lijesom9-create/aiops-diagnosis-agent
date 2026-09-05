@@ -18,14 +18,12 @@ from app.evaluation.retrieval_eval import (
     RetrievalEvaluator,
     build_eval_index_from_files,
     build_expected_index,
-    hybrid_rrf_pc_search,
     hybrid_rrf_search,
     load_file_queries,
     make_hybrid_rrf_cross_search,
     make_hybrid_rrf_pc_cross_search,
 )
 from app.retrieval.reranker import CrossEncoderReranker
-
 
 DOCS_DIR = Path("evaluation/data/documents")
 QUERIES_PATH = Path("evaluation/data/queries.json")

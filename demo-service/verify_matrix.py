@@ -30,7 +30,6 @@ from datetime import datetime, timezone
 
 import requests
 
-
 # --- 配置 ---
 
 FAULT_CONFIG = {
@@ -673,7 +672,7 @@ def main():
         )
     output_path = os.path.abspath(output_path)
 
-    print(f"\nR5 故障注入验证矩阵")
+    print("\nR5 故障注入验证矩阵")
     print(f"故障类型: {','.join(fault_names)}")
     print(f"Backend:  {args.backend_url}")
     print(f"Demo:     {args.demo_url}")
@@ -759,7 +758,7 @@ def main():
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
-    print(f"\n验证矩阵完成")
+    print("\n验证矩阵完成")
     print(f"总计: {len(results)}  通过: {passed}  部分: {partial}  失败: {failed}")
     acceptance = "达标" if summary["acceptance_met"] else "未达标"
     print(f"达标判定: {acceptance}")

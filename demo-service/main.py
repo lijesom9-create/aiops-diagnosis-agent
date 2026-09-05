@@ -20,14 +20,13 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
+import db
+import faults
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
 from loguru import logger
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel
-
-import db
-import faults
 
 SIM_TRAFFIC = os.environ.get("SIM_TRAFFIC", "1") == "1"
 
