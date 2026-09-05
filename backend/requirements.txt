@@ -36,10 +36,10 @@ langchain-mcp-adapters==0.3.1  # MultiServerMCPClient 加载 MCP 工具（需 la
 mcp==1.27.0  # FastMCP（ops_monitoring_server 使用）
 
 # 向量数据库与语义嵌入
-chromadb==1.5.8
+chromadb==1.5.9
 sentence-transformers==5.4.1  # Embedding 与 CrossEncoder 重排器
 FlagEmbedding==1.4.0  # BGE-M3（dense + sparse 同源，sparse 替代自研 BM25）
-qdrant-client==1.17.1  # Qdrant 向量库
+qdrant-client==1.19.0  # Qdrant 向量库
 
 # 机器学习 / 重排器 / CLIP
 torch==2.13.0+cpu  # 模型推理（CPU 版本，配合 --extra-index-url 使用）
