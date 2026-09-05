@@ -82,7 +82,7 @@ FeishuClient → 飞书告警卡片（firing 红 / resolved 绿）
 
 | 层 | 技术 |
 |----|------|
-| 后端 | Python 3.12, FastAPI, LangGraph |
+| 后端 | Python 3.12, FastAPI 0.141+ / LangGraph 1.2+ |
 | Agent | LangGraph（意图路由 + ReAct 循环） + MCP (langchain-mcp-adapters) |
 | LLM | DeepSeek / Qwen / 任意 OpenAI 兼容接口 |
 | 嵌入 | BAAI/bge-m3（本地，dense 1024 维 + sparse 同源） |
@@ -90,7 +90,7 @@ FeishuClient → 飞书告警卡片（firing 红 / resolved 绿）
 | 向量库 | Qdrant（Docker Server 模式 / 本地嵌入式） |
 | 文档库 | MongoDB (Motor) |
 | 缓存/队列 | Redis（可选）+ Celery |
-| 会话持久化 | SQLite（AsyncSqliteSaver） |
+| 会话持久化 | SQLite（AsyncSqliteSaver）/ MongoDB（MongoDBSaver，`CHECKPOINT_BACKEND=mongodb`） |
 | 前端 | React 18 + TS + Tailwind + Zustand（用户端 3000 / 管理端 8080） |
 
 ---
@@ -155,10 +155,16 @@ python scripts/seed_ops_kb.py    # 将 data/ops_docs/ 的 206 篇（21 类）运
 └──────┬────────┘   └────────┬─────────┘
        │   HTTP / SSE         │
 ┌──────▼─────────────────────▼─────────┐
-│         API 层 (FastAPI)              │
+│      API 层 (FastAPI，薄 handler)     │
 │  /api/langgraph | /api/documents |   │
 │  /api/auth | /api/admin | /api/health│
 │  中间件: CORS | 请求ID | 限流 | 异常   │
+└──────┬───────────────────────────────┘
+       │
+┌──────▼───────────────────────────────┐
+│   业务编排层 (app/services/)          │
+│  alert_service(告警引擎/事故生命周期) │
+│  document_service(文档摄取/处理)      │
 └──────┬───────────────────────────────┘
        │
 ┌──────▼───────────────────────────────┐
@@ -312,15 +318,19 @@ REDIS_URL=                       # 留空使用内存缓存
 
 ```bash
 cd backend
-python -m pytest tests/ -v
+python -m pytest tests/ -q
 ```
+
+- **当前基线：488 passed / 3 skipped / 0 failed**（全量回归约 7-12 分钟，任何重构/升级后以此为准）
+- e2e 覆盖 91 项：`test_api_e2e.py`(43) + `test_e2e_fixes.py`(30) + `test_ops_e2e.py`(18)（运维诊断 /chat 与 /chat/stream 全链路，TestClient + mock，不依赖外部服务）
+- 质量门禁：`ruff check backend demo-service` 零告警（规则集 E4/E7/E9/F/I/B/ASYNC）；mypy 渐进接入（CI 非阻塞）
 
 主要测试套件：
 - `test_agent_graph_flow.py`：Agent 图流转（监控→知识库→诊断报告、循环保护、MCP 降级）
 - `test_admin_api.py` / `test_admin_permission.py`：RBAC 与管理 API
 - `test_ops_e2e.py`：运维诊断 E2E
-- `test_document_upload.py`：文档上传
-- 注：`test_documents.py` 等部分历史用例仍引用已移除的 `/api/topics` 接口，属遗留失败，与当前功能无关
+- `test_document_upload.py` / `test_security_hardening.py`：文档上传与安全
+- 注：`scripts/e2e_real_test.py` 为真实 LLM 的端到端脚本，但其引用的 `/api/teaching` 接口已在 LangGraph 迁移中移除（现为 `/api/langgraph/*`），脚本待改写后才能使用
 
 ---
 
@@ -387,15 +397,24 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
 education-agent/
 ├── backend/
-│   ├── main.py                  # FastAPI 入口 + lifespan
+│   ├── main.py                  # FastAPI 入口 + lifespan（路由挂载 / 依赖注入）
 │   ├── app/
-│   │   ├── langgraph_agent/     # Agent（agent.py / tools.py / state.py）
-│   │   ├── knowledge/           # 统一知识存储（RAG 核心）
+│   │   ├── api/                 # 薄 handler 层：langgraph / documents / auth / alerts / admin ...
+│   │   ├── services/            # 业务编排层：alert_service(告警引擎) / document_service(文档摄取)
+│   │   ├── langgraph_agent/     # Agent 核心
+│   │   │   ├── agent.py         #   图构建与 ReAct 编排
+│   │   │   ├── evidence.py      #   证据解析与组装（纯函数）
+│   │   │   ├── prompts.py       #   诊断/QA 系统 prompt 模板
+│   │   │   ├── tools.py         #   工具 facade（兼容转发）
+│   │   │   ├── tools_retrieval.py / tools_web.py / tools_memory.py / tools_ops.py
+│   │   │   ├── retrieval_context.py  # 检索上下文与查询重写（ContextVar / 知识库注入）
+│   │   │   ├── tool_cache.py    #   工具结果缓存
+│   │   │   └── state.py         #   图状态定义
+│   │   ├── knowledge/           # 统一知识存储（unified_store + query_rewrite / store_utils）
 │   │   ├── retrieval/           # qdrant_store / embeddings / reranker / fusion ...
 │   │   ├── document/            # 上传 / 分块 / 解析 / frontmatter
-│   │   ├── api/                 # langgraph / documents / auth / admin / memory ...
 │   │   ├── tasks/               # Celery 文档导入任务
-│   │   ├── core/                # config / database / cache / prompt_guard ...
+│   │   ├── core/                # config / database(+db_mixins 按域 Mixin) / cache / prompt_guard ...
 │   │   └── memory/              # 记忆系统
 │   ├── mcp_servers/             # ops_monitoring_server（FastMCP 监控工具）
 │   ├── scripts/                 # seed_ops_kb.py 等
@@ -404,6 +423,7 @@ education-agent/
 ├── frontend/                    # 用户端前端（React + TS）
 ├── admin-frontend/              # 管理后台（React + TS）
 ├── docker-compose.yml           # 编排（dev / prod 覆盖文件）
+├── docs/代码质量整改记录.md      # 代码质量整改全记录（T1-T10）
 └── docs/ARCHITECTURE.md         # 架构设计文档
 ```
 
@@ -415,6 +435,7 @@ education-agent/
 - ✅ 真实监控源接入（Prometheus + node-exporter + Loki + Promtail）
 - ✅ 告警通知闭环（Alertmanager → Bridge → 飞书卡片，端到端验证通过）
 - ✅ 管理后台前端（监控看板 / 告警管理 / 日志查询 / 知识库 / 任务 / 用户）
+- ✅ 代码质量整改 T1-T10：业务编排层下沉 `app/services/`、巨型文件拆分（database 2009→299、tools 1346→147、documents 940→690）、ruff 零告警、FastAPI 0.141 / LangGraph 1.2 框架升级；全量回归 488 passed 基线不变（详见 [docs/代码质量整改记录.md](docs/代码质量整改记录.md)）
 
 后续方向：
 - 多 Agent 协作（监控 Agent / 日志 Agent / 知识 Agent 分工协同）
