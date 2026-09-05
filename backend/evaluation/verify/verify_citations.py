@@ -155,7 +155,7 @@ print("\n  ✓ 测试 2 通过")
 print("\n【测试 3】_merge_retrieved_docs 去重")
 print("-" * 70)
 
-from app.langgraph_agent.agent import LangGraphAgent
+from app.langgraph_agent.evidence import _merge_retrieved_docs, _build_citations
 
 # 构造有重复的检索结果
 docs_with_dupes = [
@@ -164,7 +164,7 @@ docs_with_dupes = [
     {"doc_id": "doc_a", "title": "A", "score": 0.9, "content": "内容A..."},  # 重复
     {"doc_id": "doc_c", "title": "C", "score": 0.7, "content": "内容C..."},
 ]
-merged = LangGraphAgent._merge_retrieved_docs(docs_with_dupes)
+merged = _merge_retrieved_docs(docs_with_dupes)
 assert len(merged) == 3, f"去重后应为 3 条，实际 {len(merged)}"
 print(f"  原始 {len(docs_with_dupes)} 条 -> 去重后 {len(merged)} 条")
 print("  ✓ 去重正确")
@@ -183,7 +183,7 @@ raw_docs = [
     {"index": 1, "doc_id": "doc_c", "title": "文档C", "heading_path": "第三章", "score": 0.78, "content": "内容C...", "source": "knowledge_base", "image_path": None},
 ]
 
-citations = LangGraphAgent._build_citations(raw_docs)
+citations = _build_citations(raw_docs)
 
 print(f"  原始 {len(raw_docs)} 条 -> 去重后 {len(citations)} 条")
 for c in citations:
@@ -212,7 +212,7 @@ print("  ✓ 精简: 不含 content 字段")
 print(f"  ✓ 图片引用: {len(img_citations)} 条带 image_path")
 
 # 测试空输入
-assert LangGraphAgent._build_citations([]) == []
+assert _build_citations([]) == []
 print("  ✓ 空输入返回空列表")
 
 print("\n  ✓ 测试 4 通过")
@@ -233,7 +233,7 @@ search_knowledge.invoke({"query": "FastAPI", "limit": 3})
 
 # 模拟 _call_agent 第 1 次调用（工具执行后）
 buffered_round1 = pop_retrieval_buffer()
-retrieved_after_round1 = LangGraphAgent._merge_retrieved_docs(buffered_round1)
+retrieved_after_round1 = _merge_retrieved_docs(buffered_round1)
 print(f"  第 1 轮工具调用后: retrieved_docs={len(retrieved_after_round1)} 条")
 
 # 第 2 轮：再次 search_knowledge（不同查询）
@@ -256,11 +256,11 @@ search_knowledge.invoke({"query": "自动校验", "limit": 3})
 buffered_round2 = pop_retrieval_buffer()
 # 模拟 _call_agent 的合并逻辑
 existing = retrieved_after_round1
-retrieved_after_round2 = LangGraphAgent._merge_retrieved_docs(existing + buffered_round2)
+retrieved_after_round2 = _merge_retrieved_docs(existing + buffered_round2)
 print(f"  第 2 轮工具调用后: retrieved_docs={len(retrieved_after_round2)} 条")
 
 # 生成最终 citations
-final_citations = LangGraphAgent._build_citations(retrieved_after_round2)
+final_citations = _build_citations(retrieved_after_round2)
 print("\n  最终 citations:")
 for c in final_citations:
     print(f"    [{c['index']}] score={c['score']:.2f} | {c['title']} | {c['heading_path']}")

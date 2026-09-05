@@ -129,20 +129,20 @@ class TestChangesEvidence:
     """变更事件证据解析"""
 
     def test_parse_changes_evidence_with_events(self):
-        from app.langgraph_agent.agent import LangGraphAgent
+        from app.langgraph_agent.evidence import _parse_changes_evidence
         data = {
             "service": "payment-service", "hours": 2, "count": 1,
             "changes": [{"change_id": "CHG-1", "type": "deploy",
                          "time": "2026-08-02T14:20:00Z", "description": "v2.3.1 发版"}],
         }
-        ev = LangGraphAgent._parse_changes_evidence(data)
+        ev = _parse_changes_evidence(data)
         assert ev["type"] == "changes"
         assert ev["service"] == "payment-service"
         assert "发版" in ev["summary"] or "deploy" in ev["summary"]
 
     def test_parse_changes_evidence_empty(self):
-        from app.langgraph_agent.agent import LangGraphAgent
-        ev = LangGraphAgent._parse_changes_evidence({"service": "x", "hours": 24, "changes": []})
+        from app.langgraph_agent.evidence import _parse_changes_evidence
+        ev = _parse_changes_evidence({"service": "x", "hours": 24, "changes": []})
         assert ev["type"] == "changes"
         assert "无变更" in ev["summary"]
 

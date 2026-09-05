@@ -36,6 +36,8 @@ import pytest
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
+from app.langgraph_agent.evidence import _extract_monitoring_evidence
+
 try:
     import certifi
     _correct_ca = certifi.where()
@@ -457,7 +459,7 @@ class TestMonitoringEvidenceExtraction:
             tool_call_id="call_1",
         )
 
-        evidence = agent._extract_monitoring_evidence([ai_msg, tool_msg])
+        evidence = _extract_monitoring_evidence([ai_msg, tool_msg])
         assert len(evidence) >= 1
         assert evidence[0]["type"] == "metrics"
         assert evidence[0]["service"] == "mysql"
@@ -474,5 +476,5 @@ class TestMonitoringEvidenceExtraction:
             tool_call_id="call_1",
         )
 
-        evidence = agent._extract_monitoring_evidence([ai_msg, tool_msg])
+        evidence = _extract_monitoring_evidence([ai_msg, tool_msg])
         assert len(evidence) == 0, "search_knowledge 不应产生监控证据"

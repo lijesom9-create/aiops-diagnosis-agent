@@ -638,28 +638,6 @@ class LangGraphAgent:
             "monitoring_evidence": monitoring_evidence,
         }
 
-    @staticmethod
-
-    @staticmethod
-
-    @staticmethod
-
-    @staticmethod
-
-    @staticmethod
-
-    @staticmethod
-
-    @staticmethod
-
-    @staticmethod
-
-    @staticmethod
-
-    @staticmethod
-
-    @staticmethod
-
     # ========== 上下文管理：Token 预算裁剪 ==========
 
     def _count_message_tokens(self, msg) -> int:
@@ -921,8 +899,6 @@ class LangGraphAgent:
 
         # 兜底：最后一条消息内容
         return getattr(messages[-1], "content", "") or ""
-
-    @staticmethod
 
     def _build_system_prompt(self, state: AgentState, user_id: str = None) -> str:
         """构建系统提示（根据意图选择模板，注入记忆上下文 + 证据看板）
@@ -1191,8 +1167,6 @@ class LangGraphAgent:
 - 不要调用 query_metrics / query_logs（当前仅有 mock 数据，不可信，会误导诊断）
 - 不要在报告中假装有监控数据
 """
-
-    @staticmethod
 
     def _get_sufficiency_for_run(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """从 run 的结果组件计算证据充分度（含 MCP 降级判定）"""
