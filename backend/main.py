@@ -198,7 +198,11 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
         token = request_id_ctx.set(request_id)
         try:
-            response = await call_next(request)
+            # loguru 上下文绑定：下游所有 logger 调用自动携带 request_id（轻量链路追踪）
+            # ContextVar 实现，跨 await 保留；已知局限：LangGraph ToolNode 独立线程内
+            # 的同步工具日志可能丢失绑定（run_in_executor 不复制 contextvars）
+            with logger.contextualize(request_id=request_id):
+                response = await call_next(request)
             response.headers["X-Request-ID"] = request_id
             return response
         finally:

@@ -432,12 +432,8 @@ class FailoverProvider(AIModelProvider):
         self.fallback = fallback
 
     def _record_failover(self, reason: str) -> None:
-        # 指标埋点失败不应影响容灾主流程（同 alerts 埋点约定）
-        try:
-            from ..observability.metrics import get_metrics
-            get_metrics().increment("ai_provider_failover_total", 1, labels={"reason": reason})
-        except Exception:
-            pass
+        from ..observability.metrics import safe_increment
+        safe_increment("ai_provider_failover_total", 1, labels={"reason": reason})
         logger.warning(f"AI 主供应商调用失败，已切换备用供应商: {reason}")
 
     async def chat(self, messages: List[Dict], tools: Optional[List[Dict]] = None) -> Dict:

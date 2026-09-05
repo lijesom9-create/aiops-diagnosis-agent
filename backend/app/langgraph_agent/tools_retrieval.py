@@ -235,6 +235,10 @@ def search_knowledge(
 
             return "未找到相关知识"
 
+        # 知识库未初始化是必须关注的运行时降级（原实现完全无日志无指标）
+        from ..observability.metrics import safe_increment
+        safe_increment("rag_knowledge_store_missing_total", 1)
+        logger.warning("知识库未初始化，search_knowledge 降级返回提示")
         return "知识库未初始化"
 
     except Exception as e:

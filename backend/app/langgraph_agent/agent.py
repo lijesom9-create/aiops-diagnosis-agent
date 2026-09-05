@@ -228,7 +228,7 @@ class LangGraphAgent:
                     client.get_tools(), timeout=mcp_timeout
                 )
             except asyncio.TimeoutError:
-                self._mcp_status = "timeout"
+                self._set_mcp_status("timeout")
                 self._mcp_last_error = f"MCP 加载超时（>{mcp_timeout}s）"
                 logger.error(
                     f"MCP 工具加载超时（>{mcp_timeout}s），降级为纯知识库模式。"
@@ -239,7 +239,7 @@ class LangGraphAgent:
                 return 0
 
             if not mcp_tools:
-                self._mcp_status = "failed"
+                self._set_mcp_status("empty")
                 self._mcp_last_error = "MCP 返回空工具列表"
                 logger.warning("MCP 工具加载为空，保留原有工具集")
                 return 0
@@ -266,7 +266,7 @@ class LangGraphAgent:
             self._mcp_initialized = True
             self._mcp_tools_count = len(mcp_tools)
             self._mcp_client = client  # 持有引用避免 GC
-            self._mcp_status = "success"
+            self._set_mcp_status("success")
             self._mcp_last_error = None
 
             tool_names = [t.name for t in mcp_tools]
@@ -277,10 +277,16 @@ class LangGraphAgent:
             return len(mcp_tools)
 
         except Exception as e:
-            self._mcp_status = "failed"
+            self._set_mcp_status("failed")
             self._mcp_last_error = str(e)
             logger.error("MCP 工具加载失败（Agent 将仅使用原有工具）: {}", e)
             return 0
+
+    def _set_mcp_status(self, status: str) -> None:
+        """更新 MCP 状态并计数（降级可观测：timeout/empty/failed 都是需要关注的降级终态）"""
+        self._mcp_status = status
+        from ..observability.metrics import safe_increment
+        safe_increment("agent_mcp_status_total", 1, labels={"status": status})
 
     async def _safe_close_mcp_client(self, client) -> None:
         """安全关闭 MCP client（best effort，失败忽略）
@@ -648,6 +654,8 @@ class LangGraphAgent:
             # 注意：异常文本（如 OpenAI 400 body 的 JSON）含花括号，loguru 会对消息做二次
             # format 而把 {…} 当占位符 → KeyError。故用占位符传参而非 f-string 内联。
             logger.error("LLM 调用失败: {}", e, exc_info=True)
+            from ..observability.metrics import safe_increment
+            safe_increment("agent_llm_fallback_total", 1, labels={"path": "call_agent"})
             response = AIMessage(content="抱歉，处理过程中出现内部错误，请稍后重试")
 
         # 跟踪工具调用
@@ -1160,6 +1168,8 @@ class LangGraphAgent:
             # 异常文本/堆栈可能含花括号，loguru 二次 format 会把 {…} 当占位符致 KeyError，
             # 必须用占位符传参，且勿把日志失败带崩诊断返回。
             logger.error("Agent 执行失败: {}", e, exc_info=True)
+            from ..observability.metrics import safe_increment
+            safe_increment("agent_llm_fallback_total", 1, labels={"path": "run"})
             return {
                 "content": "抱歉，处理过程中出现内部错误，请稍后重试",
                 "tools_used": [],
@@ -1333,6 +1343,8 @@ class LangGraphAgent:
 
         except Exception as e:
             logger.error("流式执行失败: {}", e, exc_info=True)
+            from ..observability.metrics import safe_increment
+            safe_increment("agent_llm_fallback_total", 1, labels={"path": "run_stream"})
             yield {
                 "type": "error",
                 "content": "抱歉，处理过程中出现内部错误，请稍后重试",

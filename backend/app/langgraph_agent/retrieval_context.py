@@ -241,6 +241,8 @@ def _rewrite_query_with_context(query: str, conv_ctx: Optional[List[str]] = None
 
     # LLM 重写
     if not _query_rewriter_llm:
+        from ..observability.metrics import safe_increment
+        safe_increment("rag_rewrite_degraded_total", 1, labels={"reason": "llm_missing"})
         logger.debug("查询重写 LLM 未初始化，跳过")
         return query
 
@@ -294,6 +296,8 @@ def _rewrite_query_with_context(query: str, conv_ctx: Optional[List[str]] = None
         return rewritten
 
     except Exception as e:
+        from ..observability.metrics import safe_increment
+        safe_increment("rag_rewrite_degraded_total", 1, labels={"reason": "llm_error"})
         logger.debug(f"查询重写失败（静默降级）: {e}")
         return query
 
@@ -310,6 +314,8 @@ def _generate_alternative_query(query: str) -> Optional[str]:
         替代查询，或 None（LLM 不可用/生成失败）
     """
     if not _query_rewriter_llm:
+        from ..observability.metrics import safe_increment
+        safe_increment("rag_rewrite_degraded_total", 1, labels={"reason": "llm_missing"})
         return None
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
@@ -329,5 +335,7 @@ def _generate_alternative_query(query: str) -> Optional[str]:
         if alt and alt != query:
             return alt
     except Exception as e:
+        from ..observability.metrics import safe_increment
+        safe_increment("rag_rewrite_degraded_total", 1, labels={"reason": "alt_error"})
         logger.debug(f"生成替代查询失败（静默降级）: {e}")
     return None

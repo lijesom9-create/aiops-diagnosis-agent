@@ -130,6 +130,8 @@ class RedisCache(CacheBackend):
                 return json.loads(raw)
         except Exception as e:
             logger.debug(f"Redis GET 失败（降级处理）: {e}")
+            from ..observability.metrics import safe_increment
+            safe_increment("cache_fallback_total", 1, labels={"op": "get"})
         return None
 
     def set(self, namespace: str, value: Any, *args, **kwargs):
@@ -138,6 +140,8 @@ class RedisCache(CacheBackend):
             self._redis.setex(key, self._ttl, json.dumps(value, ensure_ascii=False, default=str))
         except Exception as e:
             logger.debug(f"Redis SET 失败（降级处理）: {e}")
+            from ..observability.metrics import safe_increment
+            safe_increment("cache_fallback_total", 1, labels={"op": "set"})
 
     def delete_pattern(self, namespace: str, pattern: str):
         """删除匹配模式的所有键（用于文档更新/删除时失效缓存）"""
@@ -148,6 +152,8 @@ class RedisCache(CacheBackend):
                 self._redis.delete(*keys)
         except Exception as e:
             logger.debug(f"Redis DELETE 失败: {e}")
+            from ..observability.metrics import safe_increment
+            safe_increment("cache_fallback_total", 1, labels={"op": "delete"})
 
     def clear(self, namespace: Optional[str] = None):
         if namespace:
@@ -159,6 +165,8 @@ class RedisCache(CacheBackend):
                     self._redis.delete(*keys)
             except Exception as e:
                 logger.debug(f"Redis CLEAR 失败: {e}")
+                from ..observability.metrics import safe_increment
+                safe_increment("cache_fallback_total", 1, labels={"op": "clear"})
 
 
 # ========== 单例缓存实例 ==========
@@ -197,6 +205,8 @@ def get_cache(ttl: int = 300) -> CacheBackend:
                 logger.info("Redis 连接成功，使用 Redis 缓存")
             except Exception as e:
                 logger.warning(f"Redis 连接失败，降级到内存缓存: {e}")
+                from ..observability.metrics import safe_increment
+                safe_increment("cache_fallback_total", 1, labels={"op": "init"})
                 _cache_instance = MemoryCache(ttl=ttl)
         else:
             logger.info("未配置 REDIS_URL，使用内存缓存")

@@ -168,3 +168,14 @@ def get_metrics() -> Metrics:
             if not HAS_PROMETHEUS:
                 logger.warning("prometheus-client 未安装，指标仅快照模式（无 /metrics 暴露）")
         return _metrics
+
+
+def safe_increment(name: str, value: float = 1.0, labels: Dict = None) -> None:
+    """指标埋点的容错封装：采集失败静默忽略（埋点不应影响业务主流程）。
+
+    降级/异常路径埋点的统一入口——调用方不再各自写 try/except。
+    """
+    try:
+        get_metrics().increment(name, value, labels)
+    except Exception:
+        pass
