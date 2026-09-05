@@ -1,5 +1,7 @@
 # Web 框架
-fastapi==0.115.12
+# 注：0.132 起默认 strict_content_type=True——JSON 请求缺 Content-Type: application/json 会被拒（实测 422）。
+#     本项目 API/测试/客户端均走标准 json=（自动带 application/json），不受影响；starlette 钉 0.46（0.141.1 依赖 >=0.46.0，无需跳 1.0）。
+fastapi==0.141.1
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20  # FastAPI 表单/文件上传（UploadFile/Form）所需
 
