@@ -3,42 +3,18 @@
 支持MongoDB和内存存储（开发测试用）
 """
 
-import copy
-import re
-import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from loguru import logger
 
+from app.core.db_mixins import ContentMixin, UsersMixin
+from app.core.db_utils import clean_mongo_doc, clean_mongo_docs, escape_regex  # noqa: F401 (re-export)
+
 from .config import settings
 
 
-def escape_regex(pattern: str) -> str:
-    """转义正则表达式特殊字符，防止注入"""
-    return re.escape(pattern)
-
-
-def clean_mongo_doc(doc: Optional[Dict]) -> Optional[Dict]:
-    """清理MongoDB文档，移除ObjectId，转换datetime为字符串（不修改原始文档）"""
-    if doc is None:
-        return None
-    result = copy.deepcopy(doc)
-    if "_id" in result:
-        del result["_id"]
-    # 转换datetime对象为字符串
-    for key, value in result.items():
-        if isinstance(value, datetime):
-            result[key] = value.isoformat()
-    return result
-
-
-def clean_mongo_docs(docs: List[Dict]) -> List[Dict]:
-    """清理MongoDB文档列表"""
-    return [clean_mongo_doc(doc) for doc in docs]
-
-
-class Database:
+class Database(UsersMixin, ContentMixin):
     """数据库管理类"""
 
     def __init__(self):
@@ -140,635 +116,55 @@ class Database:
 
     # ========== 用户操作 ==========
 
-    async def create_user(self, user_data: dict) -> str:
-        await self.connect()
-        user_data["created_at"] = datetime.now()
-        user_data["updated_at"] = datetime.now()
-        user_data.setdefault("token_version", 0)  # C1 JWT 吊销：版本号，logout/改密/降权时递增
-        if self._use_mongo:
-            await self._mongo.users.insert_one(user_data)
-        else:
-            self._users.append(user_data)
-        return user_data.get("user_id")
 
-    async def get_user(self, user_id: str) -> Optional[dict]:
-        await self.connect()
-        if self._use_mongo:
-            return await self._mongo.users.find_one({"user_id": user_id})
-        for u in self._users:
-            if u.get("user_id") == user_id:
-                return u
-        return None
 
-    async def increment_token_version(self, user_id: str) -> int:
-        """递增 token_version（C1 JWT 服务端吊销）
 
-        logout / 改密 / 降权时调用——使该用户所有旧 token 立即失效
-        （get_current_user 校验 token.ver != db.token_version → 401）。
-        老用户无 token_version 字段时 $inc 自动建为 1（即首次递增后旧 token 失效）。
-        """
-        await self.connect()
-        if self._use_mongo:
-            result = await self._mongo.users.find_one_and_update(
-                {"user_id": user_id},
-                {"$inc": {"token_version": 1}, "$set": {"updated_at": datetime.now()}},
-                return_document=True,
-            )
-            return (result or {}).get("token_version", 1)
-        for u in self._users:
-            if u.get("user_id") == user_id:
-                u["token_version"] = (u.get("token_version") or 0) + 1
-                u["updated_at"] = datetime.now()
-                return u["token_version"]
-        return 0
 
-    async def get_user_by_username(self, username: str) -> Optional[dict]:
-        await self.connect()
-        if self._use_mongo:
-            return await self._mongo.users.find_one({"username": username})
-        for u in self._users:
-            if u.get("username") == username:
-                return u
-        return None
 
-    async def update_user(self, user_id: str, update_data: dict) -> bool:
-        await self.connect()
-        update_data["updated_at"] = datetime.now()
-        if self._use_mongo:
-            result = await self._mongo.users.update_one({"user_id": user_id}, {"$set": update_data})
-            return result.modified_count > 0
-        for u in self._users:
-            if u.get("user_id") == user_id:
-                u.update(update_data)
-                return True
-        return False
 
-    async def get_all_users(self, page: int = 1, page_size: int = 20) -> tuple:
-        """分页列出所有用户（管理员视角，过滤 hashed_password）
-
-        Returns:
-            (users, total): 用户列表（无敏感字段）+ 总数
-        """
-        await self.connect()
-        if self._use_mongo:
-            total = await self._mongo.users.count_documents({})
-            skip = (page - 1) * page_size
-            cursor = self._mongo.users.find({}, {"_id": 0, "hashed_password": 0}).sort("created_at", -1).skip(skip).limit(page_size)
-            users = await cursor.to_list(page_size)
-            return clean_mongo_docs(users), total
-        total = len(self._users)
-        start = (page - 1) * page_size
-        sorted_users = sorted(self._users, key=lambda x: x.get("created_at", ""), reverse=True)
-        users = [{k: v for k, v in u.items() if k != "hashed_password"} for u in sorted_users[start:start + page_size]]
-        return users, total
-
-    async def count_users(self) -> int:
-        """用户总数"""
-        await self.connect()
-        if self._use_mongo:
-            return await self._mongo.users.count_documents({})
-        return len(self._users)
 
     # ========== 主题操作 ==========
 
-    async def create_topic(self, topic_data: dict) -> str:
-        """创建学习主题"""
-        await self.connect()
-        topic_data["created_at"] = datetime.now()
-        topic_data["updated_at"] = datetime.now()
-        if self._use_mongo:
-            await self._mongo.topics.insert_one(topic_data)
-        else:
-            self._topics.append(topic_data)
-        return topic_data.get("topic_id")
 
-    async def get_topic(self, topic_id: str) -> Optional[dict]:
-        """获取主题"""
-        await self.connect()
-        if self._use_mongo:
-            doc = await self._mongo.topics.find_one({"topic_id": topic_id}, {"_id": 0})
-            return clean_mongo_doc(doc)
-        for t in self._topics:
-            if t.get("topic_id") == topic_id:
-                return t
-        return None
 
-    async def get_user_topics(
-        self,
-        user_id: str,
-        status: Optional[str] = None,
-        limit: int = 100
-    ) -> List[dict]:
-        """获取用户的所有主题"""
-        await self.connect()
-        if self._use_mongo:
-            query = {"user_id": user_id}
-            if status:
-                query["status"] = status
-            cursor = self._mongo.topics.find(query, {"_id": 0}).sort("updated_at", -1).limit(limit)
-            docs = await cursor.to_list(limit)
-            return clean_mongo_docs(docs)
 
-        result = [t for t in self._topics if t.get("user_id") == user_id]
-        if status:
-            result = [t for t in result if t.get("status") == status]
-        return sorted(
-            result,
-            key=lambda x: x.get("updated_at", ""),
-            reverse=True
-        )[:limit]
 
-    async def update_topic(self, topic_id: str, update_data: dict) -> bool:
-        """更新主题"""
-        await self.connect()
-        update_data["updated_at"] = datetime.now()
-        if self._use_mongo:
-            result = await self._mongo.topics.update_one(
-                {"topic_id": topic_id},
-                {"$set": update_data}
-            )
-            return result.modified_count > 0
-        for t in self._topics:
-            if t.get("topic_id") == topic_id:
-                t.update(update_data)
-                return True
-        return False
-
-    async def delete_topic(self, topic_id: str) -> bool:
-        """删除主题"""
-        await self.connect()
-        if self._use_mongo:
-            result = await self._mongo.topics.delete_one({"topic_id": topic_id})
-            return result.deleted_count > 0
-        original_len = len(self._topics)
-        self._topics = [t for t in self._topics if t.get("topic_id") != topic_id]
-        return len(self._topics) < original_len
 
     # ========== 文档操作 ==========
 
-    async def create_document(self, doc_data: dict) -> str:
-        """创建文档记录"""
-        await self.connect()
-        doc_data["created_at"] = datetime.now()
-        doc_data["updated_at"] = datetime.now()
-        if self._use_mongo:
-            await self._mongo.documents.insert_one(doc_data)
-        else:
-            self._documents.append(doc_data)
-        return doc_data.get("document_id")
 
-    async def get_document(self, document_id: str) -> Optional[dict]:
-        """获取文档记录"""
-        await self.connect()
-        if self._use_mongo:
-            doc = await self._mongo.documents.find_one({"document_id": document_id}, {"_id": 0})
-            return clean_mongo_doc(doc)
-        for d in self._documents:
-            if d.get("document_id") == document_id:
-                return d
-        return None
 
-    async def get_topic_documents(
-        self,
-        topic_id: str,
-        status: Optional[str] = None,
-        limit: int = 100
-    ) -> List[dict]:
-        """获取主题下的所有文档"""
-        await self.connect()
-        if self._use_mongo:
-            query = {"topic_id": topic_id}
-            if status:
-                query["status"] = status
-            cursor = self._mongo.documents.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
-            docs = await cursor.to_list(limit)
-            return clean_mongo_docs(docs)
 
-        result = [d for d in self._documents if d.get("topic_id") == topic_id]
-        if status:
-            result = [d for d in result if d.get("status") == status]
-        return sorted(
-            result,
-            key=lambda x: x.get("created_at", ""),
-            reverse=True
-        )[:limit]
 
-    async def get_user_documents(
-        self,
-        user_id: str,
-        status: Optional[str] = None,
-        limit: int = 100
-    ) -> List[dict]:
-        """获取用户的所有文档（包括公共文档）"""
-        await self.connect()
-        if self._use_mongo:
-            query = {"$or": [{"user_id": user_id}, {"is_public": True}]}
-            if status:
-                query = {"$and": [query, {"status": status}]}
-            cursor = self._mongo.documents.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
-            docs = await cursor.to_list(limit)
-            return clean_mongo_docs(docs)
 
-        result = [d for d in self._documents if d.get("user_id") == user_id or d.get("is_public")]
-        if status:
-            result = [d for d in result if d.get("status") == status]
-        return sorted(
-            result,
-            key=lambda x: x.get("created_at", ""),
-            reverse=True
-        )[:limit]
 
-    async def get_all_documents(
-        self,
-        status: Optional[str] = None,
-        limit: int = 1000,
-    ) -> List[dict]:
-        """获取所有文档（管理员视角，跨用户）"""
-        await self.connect()
-        if self._use_mongo:
-            query: dict = {}
-            if status:
-                query["status"] = status
-            cursor = self._mongo.documents.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
-            docs = await cursor.to_list(limit)
-            return clean_mongo_docs(docs)
-        result = list(self._documents)
-        if status:
-            result = [d for d in result if d.get("status") == status]
-        return sorted(
-            result,
-            key=lambda x: x.get("created_at", ""),
-            reverse=True
-        )[:limit]
-
-    async def update_document(self, document_id: str, update_data: dict) -> bool:
-        """更新文档记录"""
-        await self.connect()
-        update_data["updated_at"] = datetime.now()
-        if self._use_mongo:
-            result = await self._mongo.documents.update_one(
-                {"document_id": document_id},
-                {"$set": update_data}
-            )
-            return result.modified_count > 0
-        for d in self._documents:
-            if d.get("document_id") == document_id:
-                d.update(update_data)
-                return True
-        return False
-
-    async def delete_document(self, document_id: str) -> bool:
-        """删除文档记录"""
-        await self.connect()
-        if self._use_mongo:
-            result = await self._mongo.documents.delete_one({"document_id": document_id})
-            return result.deleted_count > 0
-        original_len = len(self._documents)
-        self._documents = [d for d in self._documents if d.get("document_id") != document_id]
-        return len(self._documents) < original_len
 
     # ========== 学习计划操作 ==========
 
-    async def create_study_plan(self, plan_data: dict) -> str:
-        """创建学习计划"""
-        await self.connect()
-        plan_data["created_at"] = datetime.now()
-        plan_data["updated_at"] = datetime.now()
-        if self._use_mongo:
-            await self._mongo.study_plans.insert_one(plan_data)
-        else:
-            self._study_plans.append(plan_data)
-        return plan_data.get("plan_id")
 
-    async def get_study_plan(self, plan_id: str) -> Optional[dict]:
-        """获取学习计划"""
-        await self.connect()
-        if self._use_mongo:
-            doc = await self._mongo.study_plans.find_one({"plan_id": plan_id}, {"_id": 0})
-            return clean_mongo_doc(doc)
-        for p in self._study_plans:
-            if p.get("plan_id") == plan_id:
-                return p
-        return None
 
-    async def get_topic_study_plans(
-        self,
-        topic_id: str,
-        status: Optional[str] = None,
-        limit: int = 100
-    ) -> List[dict]:
-        """获取主题下的学习计划"""
-        await self.connect()
-        if self._use_mongo:
-            query = {"topic_id": topic_id}
-            if status:
-                query["status"] = status
-            cursor = self._mongo.study_plans.find(query, {"_id": 0}).sort("updated_at", -1).limit(limit)
-            docs = await cursor.to_list(limit)
-            return clean_mongo_docs(docs)
 
-        result = [p for p in self._study_plans if p.get("topic_id") == topic_id]
-        if status:
-            result = [p for p in result if p.get("status") == status]
-        return sorted(
-            result,
-            key=lambda x: x.get("updated_at", ""),
-            reverse=True
-        )[:limit]
 
-    async def update_study_plan(self, plan_id: str, update_data: dict) -> bool:
-        """更新学习计划"""
-        await self.connect()
-        update_data["updated_at"] = datetime.now()
-        if self._use_mongo:
-            result = await self._mongo.study_plans.update_one(
-                {"plan_id": plan_id},
-                {"$set": update_data}
-            )
-            return result.modified_count > 0
-        for p in self._study_plans:
-            if p.get("plan_id") == plan_id:
-                p.update(update_data)
-                return True
-        return False
-
-    async def delete_study_plan(self, plan_id: str) -> bool:
-        """删除学习计划"""
-        await self.connect()
-        if self._use_mongo:
-            result = await self._mongo.study_plans.delete_one({"plan_id": plan_id})
-            return result.deleted_count > 0
-        original_len = len(self._study_plans)
-        self._study_plans = [p for p in self._study_plans if p.get("plan_id") != plan_id]
-        return len(self._study_plans) < original_len
 
     # ========== 组织操作 ==========
 
-    async def create_org(self, name: str, owner_id: str) -> str:
-        """创建组织"""
-        await self.connect()
-        org_id = f"org_{uuid.uuid4().hex[:12]}"
-        org = {
-            "org_id": org_id,
-            "name": name,
-            "owner_id": owner_id,
-            "created_at": datetime.now(),
-            "updated_at": datetime.now(),
-        }
-        if self._use_mongo:
-            await self._mongo.organizations.insert_one(org)
-        else:
-            self._organizations.append(org)
-        return org_id
 
-    async def get_org(self, org_id: str) -> Optional[Dict]:
-        """获取组织"""
-        await self.connect()
-        if self._use_mongo:
-            return await self._mongo.organizations.find_one({"org_id": org_id}, {"_id": 0})
-        for org in self._organizations:
-            if org.get("org_id") == org_id:
-                return org
-        return None
 
-    async def get_org_by_name(self, name: str) -> Optional[Dict]:
-        """按名称获取组织"""
-        await self.connect()
-        if self._use_mongo:
-            return await self._mongo.organizations.find_one({"name": name}, {"_id": 0})
-        for org in self._organizations:
-            if org.get("name") == name:
-                return org
-        return None
 
-    async def get_user_orgs(self, user_id: str) -> List[Dict]:
-        """获取用户创建的组织"""
-        await self.connect()
-        if self._use_mongo:
-            cursor = self._mongo.organizations.find({"owner_id": user_id}, {"_id": 0})
-            return await cursor.to_list(100)
-        return [org for org in self._organizations if org.get("owner_id") == user_id]
 
     # ========== 会话操作 ==========
 
-    async def create_session(self, user_id: str, title: str = "新对话") -> str:
-        await self.connect()
-        session_id = f"session_{uuid.uuid4().hex[:12]}"
-        session = {
-            "session_id": session_id,
-            "user_id": user_id,
-            "title": title,
-            "messages": [],
-            "created_at": datetime.now(),
-            "updated_at": datetime.now()
-        }
-        if self._use_mongo:
-            await self._mongo.chat_sessions.insert_one(session)
-        else:
-            self._sessions.append(session)
-        return session_id
 
-    async def get_session(self, session_id: str) -> Optional[dict]:
-        """获取会话（不含消息）"""
-        await self.connect()
-        if self._use_mongo:
-            doc = await self._mongo.chat_sessions.find_one(
-                {"session_id": session_id},
-                {"_id": 0, "messages": 0}
-            )
-            return clean_mongo_doc(doc)
-        for s in self._sessions:
-            if s.get("session_id") == session_id:
-                # 统一转换 datetime → ISO 字符串（与 get_user_sessions 一致）
-                result = {k: v for k, v in s.items() if k != "messages"}
-                for key in ("created_at", "updated_at"):
-                    if isinstance(result.get(key), datetime):
-                        result[key] = result[key].isoformat()
-                return result
-        return None
 
-    async def update_session_title(self, session_id: str, title: str) -> None:
-        """更新会话标题"""
-        await self.connect()
-        if self._use_mongo:
-            await self._mongo.chat_sessions.update_one(
-                {"session_id": session_id},
-                {"$set": {"title": title, "updated_at": datetime.now()}}
-            )
-        else:
-            for s in self._sessions:
-                if s.get("session_id") == session_id:
-                    s["title"] = title
-                    s["updated_at"] = datetime.now()
-                    break
 
-    async def add_message(self, session_id: str, message: dict):
-        await self.connect()
-        message["timestamp"] = datetime.now()
-        if self._use_mongo:
-            await self._mongo.chat_sessions.update_one(
-                {"session_id": session_id},
-                {"$push": {"messages": message}, "$set": {"updated_at": datetime.now()}}
-            )
-        else:
-            for s in self._sessions:
-                if s.get("session_id") == session_id:
-                    s["messages"].append(message)
-                    s["updated_at"] = datetime.now()
-                    break
 
-    async def get_session_messages(self, session_id: str, limit: int = 50) -> List[dict]:
-        await self.connect()
-        if self._use_mongo:
-            session = await self._mongo.chat_sessions.find_one(
-                {"session_id": session_id},
-                {"_id": 0}
-            )
-            if session and "messages" in session:
-                # 转换 datetime 对象为字符串
-                messages = session["messages"][-limit:]
-                for msg in messages:
-                    if isinstance(msg.get("timestamp"), datetime):
-                        msg["timestamp"] = msg["timestamp"].isoformat()
-                return messages
-            return []
-        for s in self._sessions:
-            if s.get("session_id") == session_id:
-                messages = s.get("messages", [])[-limit:]
-                for msg in messages:
-                    if isinstance(msg.get("timestamp"), datetime):
-                        msg["timestamp"] = msg["timestamp"].isoformat()
-                return messages
-        return []
 
-    async def get_user_sessions(self, user_id: str, limit: int = 20) -> List[dict]:
-        """获取用户的所有会话（含 message_count，不含消息体）
 
-        Args:
-            user_id: 用户 ID
-            limit: 返回数量上限
 
-        Returns:
-            List[dict]: 会话列表，按 updated_at 降序，每项含 message_count
-        """
-        await self.connect()
-        if self._use_mongo:
-            # 用 aggregation 计算消息数量，避免拉取整个 messages 数组
-            cursor = self._mongo.chat_sessions.aggregate([
-                {"$match": {"user_id": user_id}},
-                {"$project": {
-                    "_id": 0,
-                    "session_id": 1,
-                    "user_id": 1,
-                    "title": 1,
-                    "created_at": 1,
-                    "updated_at": 1,
-                    "message_count": {"$size": {"$ifNull": ["$messages", []]}},
-                }},
-                {"$sort": {"updated_at": -1}},
-                {"$limit": limit},
-            ])
-            sessions = await cursor.to_list(limit)
-        else:
-            sessions = []
-            for s in self._sessions:
-                if s.get("user_id") != user_id:
-                    continue
-                sessions.append({
-                    "session_id": s.get("session_id"),
-                    "user_id": s.get("user_id"),
-                    "title": s.get("title", "新对话"),
-                    "created_at": s.get("created_at"),
-                    "updated_at": s.get("updated_at"),
-                    "message_count": len(s.get("messages", [])),
-                })
-
-        # 清理 datetime → ISO 字符串（统一响应格式）
-        for s in sessions:
-            if isinstance(s.get("updated_at"), datetime):
-                s["updated_at"] = s["updated_at"].isoformat()
-            if isinstance(s.get("created_at"), datetime):
-                s["created_at"] = s["created_at"].isoformat()
-
-        # 内存模式已排序，MongoDB 模式由 aggregation 排序；这里统一兜底排序
-        def _sort_key(x):
-            val = x.get("updated_at", "")
-            return val if isinstance(val, str) else str(val)
-
-        return sorted(sessions, key=_sort_key, reverse=True)[:limit]
-
-    async def get_session_message_count(self, session_id: str) -> int:
-        """获取会话消息数量"""
-        await self.connect()
-        if self._use_mongo:
-            session = await self._mongo.chat_sessions.find_one(
-                {"session_id": session_id},
-                {"_id": 0, "messages": 1}
-            )
-            if session and "messages" in session:
-                return len(session["messages"])
-            return 0
-        for s in self._sessions:
-            if s.get("session_id") == session_id:
-                return len(s.get("messages", []))
-        return 0
-
-    async def delete_session(self, session_id: str) -> bool:
-        """删除会话（含全部消息）
-
-        Args:
-            session_id: 会话 ID
-
-        Returns:
-            bool: 是否删除成功
-        """
-        await self.connect()
-        if self._use_mongo:
-            result = await self._mongo.chat_sessions.delete_one(
-                {"session_id": session_id}
-            )
-            return result.deleted_count > 0
-        original_len = len(self._sessions)
-        self._sessions = [
-            s for s in self._sessions if s.get("session_id") != session_id
-        ]
-        return len(self._sessions) < original_len
 
     # ========== 学习进度操作 ==========
 
-    async def update_progress(self, user_id: str, course_id: str, topic: str, score: int):
-        await self.connect()
-        progress = {
-            "user_id": user_id,
-            "course_id": course_id,
-            "topic": topic,
-            "score": score,
-            "updated_at": datetime.now()
-        }
-        if self._use_mongo:
-            await self._mongo.learning_progress.update_one(
-                {"user_id": user_id, "course_id": course_id, "topic": topic},
-                {"$set": progress}, upsert=True
-            )
-        else:
-            for p in self._progress:
-                if p.get("user_id") == user_id and p.get("course_id") == course_id and p.get("topic") == topic:
-                    p.update(progress)
-                    return
-            self._progress.append(progress)
 
-    async def get_user_progress(self, user_id: str, course_id: Optional[str] = None) -> List[dict]:
-        await self.connect()
-        if self._use_mongo:
-            query = {"user_id": user_id}
-            if course_id:
-                query["course_id"] = course_id
-            cursor = self._mongo.learning_progress.find(query, {"_id": 0})
-            return await cursor.to_list(100)
-        result = [p for p in self._progress if p.get("user_id") == user_id]
-        if course_id:
-            result = [p for p in result if p.get("course_id") == course_id]
-        return result
 
     # ========== 题目操作 ==========
 
