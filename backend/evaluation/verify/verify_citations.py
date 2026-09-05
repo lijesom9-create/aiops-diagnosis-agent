@@ -155,7 +155,7 @@ print("\n  ✓ 测试 2 通过")
 print("\n【测试 3】_merge_retrieved_docs 去重")
 print("-" * 70)
 
-from app.langgraph_agent.evidence import _merge_retrieved_docs, _build_citations
+from app.langgraph_agent.evidence import _build_citations, _merge_retrieved_docs
 
 # 构造有重复的检索结果
 docs_with_dupes = [

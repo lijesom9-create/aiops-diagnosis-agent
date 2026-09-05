@@ -141,7 +141,7 @@ async def main():
     for candidate_multiplier in (2, 3, 4):
         fn = make_hybrid_rrf_cross_search(cross_reranker)
 
-        def make_param_search(cm=candidate_multiplier):
+        def make_param_search(cm=candidate_multiplier, fn=fn):
             def search(store, query, source, k, **kw):
                 return fn(
                     store, query, source, k, rrf_k=60,
@@ -172,7 +172,7 @@ async def main():
     for rewrite_mode in ("basic", "enhanced"):
         fn = make_hybrid_rrf_pc_cross_search(cross_reranker)
 
-        def make_pc_search(rm=rewrite_mode):
+        def make_pc_search(rm=rewrite_mode, fn=fn):
             def search(store, query, source, k, **kw):
                 return fn(
                     store, query, source, k, rrf_k=60,

@@ -52,7 +52,8 @@ def build_mixin(names, class_name):
     for nm in sorted([x for x in names if x in meth_span], key=lambda x: meth_span[x][0]):
         s, e = meth_span[nm]
         for ln in lines[s-1:e]:
-            body.append(ln); text.append(ln)
+            body.append(ln)
+            text.append(ln)
     joined = "\n".join(text)
     used_h = []
     for h in ("clean_mongo_docs","clean_mongo_doc","escape_regex"):
@@ -64,12 +65,17 @@ def build_mixin(names, class_name):
     uses_ty = [t for t in TY_NAMES if re.search(r"\b"+t+r"\b", joined)]
     uses_logger = re.search(r"\blogger\b", joined)
     uses_settings = re.search(r"\bsettings\b", joined)
-    if uses_datetime: import_lines.append("from datetime import datetime, timedelta")
-    if uses_uuid: import_lines.append("import uuid")
-    if uses_ty: import_lines.append("from typing import " + ", ".join(uses_ty))
+    if uses_datetime:
+        import_lines.append("from datetime import datetime, timedelta")
+    if uses_uuid:
+        import_lines.append("import uuid")
+    if uses_ty:
+        import_lines.append("from typing import " + ", ".join(uses_ty))
     import_lines.append("import asyncio")
-    if uses_logger: import_lines.append("from loguru import logger")
-    if uses_settings: import_lines.append("from app.core.config import settings")
+    if uses_logger:
+        import_lines.append("from loguru import logger")
+    if uses_settings:
+        import_lines.append("from app.core.config import settings")
     header = ('"""Database %s 领域 Mixin（T3-B② 从 database.py 拆分）。"""\n\n' + "\n".join(import_lines) + "\n\n") % class_name
     return header + "class " + class_name + ":\n" + "\n".join(body) + "\n"
 

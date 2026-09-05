@@ -109,7 +109,7 @@ class TestEvidenceSufficiency:
 
     def test_full_evidence_high_score(self):
         """监控 + 知识库 + 变更 + 拓扑 + 完整报告 → 高分"""
-        from app.langgraph_agent.evidence import _compute_evidence_sufficiency, _build_citations
+        from app.langgraph_agent.evidence import _compute_evidence_sufficiency
         suff = _compute_evidence_sufficiency(
             monitoring_evidence=[{"type": "metrics"}, {"type": "logs"}],
             citations=[{"doc_id": "1"}, {"doc_id": "2"}],
@@ -123,7 +123,7 @@ class TestEvidenceSufficiency:
 
     def test_no_evidence_low_score(self):
         """无监控、无引用、无工具 → 低分"""
-        from app.langgraph_agent.evidence import _compute_evidence_sufficiency, _build_citations
+        from app.langgraph_agent.evidence import _compute_evidence_sufficiency
         suff = _compute_evidence_sufficiency(
             monitoring_evidence=[], citations=[], tools_used=[],
             diagnosis_report={"root_cause": "x"},
@@ -134,7 +134,7 @@ class TestEvidenceSufficiency:
 
     def test_mcp_degraded_caps_at_50(self):
         """监控源降级 → 总分封顶 50（prompt 硬约束的数值化）"""
-        from app.langgraph_agent.evidence import _compute_evidence_sufficiency, _build_citations
+        from app.langgraph_agent.evidence import _compute_evidence_sufficiency
         suff = _compute_evidence_sufficiency(
             monitoring_evidence=[{"type": "metrics"}],
             citations=[{"doc_id": "1"}, {"doc_id": "2"}],
@@ -148,7 +148,7 @@ class TestEvidenceSufficiency:
 
     def test_partial_monitoring_types(self):
         """只有一类监控证据 → 15 分"""
-        from app.langgraph_agent.evidence import _compute_evidence_sufficiency, _build_citations
+        from app.langgraph_agent.evidence import _compute_evidence_sufficiency
         suff = _compute_evidence_sufficiency(
             monitoring_evidence=[{"type": "logs"}],
             citations=[], tools_used=[], diagnosis_report=None,
@@ -157,7 +157,7 @@ class TestEvidenceSufficiency:
         assert suff["factors"]["monitoring"]["types"] == ["logs"]
 
     def test_level_thresholds(self):
-        from app.langgraph_agent.evidence import _compute_evidence_sufficiency, _build_citations
+        from app.langgraph_agent.evidence import _compute_evidence_sufficiency
         assert _compute_evidence_sufficiency(
             [], [], [], None)["level"] == "low"
         # 40 分边界：monitoring 30 + kb 12(1条引用) 不足；构造 25+15=40
@@ -222,7 +222,7 @@ class TestFreshness:
 
     def test_citation_expired_flag(self):
         """引用列表携带过期标记（artifact 的 metadata._expired 透传）"""
-        from app.langgraph_agent.evidence import _compute_evidence_sufficiency, _build_citations
+        from app.langgraph_agent.evidence import _build_citations
         docs = [
             {"doc_id": "d1", "title": "旧 SOP", "metadata": {"_expired": True}},
             {"doc_id": "d2", "title": "新 SOP", "metadata": {}},

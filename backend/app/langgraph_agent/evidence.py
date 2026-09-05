@@ -8,10 +8,12 @@
 """
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage, ToolMessage
 import json
 import re
 from typing import Any, Dict, List, Optional
+
+from langchain_core.messages import AIMessage, ToolMessage
+
 
 def _collect_retrieved_docs(messages) -> List[Dict]:
     """从 messages 中的 ToolMessage 提取 artifact（备用方案）
@@ -62,7 +64,6 @@ def _extract_monitoring_evidence(messages) -> List[Dict]:
     Returns:
         [{"type":"metrics"/"logs", "service":"...", "summary":"...", "details":{...}}]
     """
-    import json
 
     # 1. 构建 tool_call_id → tool_name 映射（从 AIMessage.tool_calls）
     tool_call_names: Dict[str, str] = {}
@@ -535,7 +536,6 @@ def _parse_diagnosis_report(content: str) -> Optional[Dict]:
             "confidence_level": "high" # high/medium/low（解析失败为 unknown）
         } 或 None（无 root_cause 且无 solution 时视为非诊断回答）
     """
-    import re
 
     if not content:
         return None
