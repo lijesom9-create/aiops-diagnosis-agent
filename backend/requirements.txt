@@ -4,7 +4,7 @@ uvicorn[standard]==0.34.0
 python-multipart==0.0.20  # FastAPI 表单/文件上传（UploadFile/Form）所需
 
 # 数据库（MongoDB）
-pymongo==4.16.0  # motor 底层驱动；pin 4.16 以兼容 langchain-mongodb（其约束 pymongo<4.17）
+pymongo==4.17.0  # motor 底层驱动；langgraph-checkpoint-mongodb 0.5.0 约束 pymongo>=4.12,<4.18（4.17 满足）
 motor==3.7.1  # 异步 MongoDB 驱动
 
 # 认证与安全
@@ -20,12 +20,15 @@ httpx==0.28.1  # 异步 HTTP 客户端（AI/VLM API 调用）
 tiktoken==0.12.0  # token 计数
 
 # LangChain / LangGraph（注：版本与已验证可运行的本地环境对齐，LangChain 1.x 系列）
+langchain==1.4.0  # langchain-checkpoint-mongodb 0.5.0 经 langchain-mongodb 引入；含 beta 的 langchain.mcp 命名空间
 langchain-openai==1.1.12
-langchain-core==1.5.3
+langchain-core==1.6.2
 langchain-text-splitters==1.1.1  # 文档分块
-langgraph==1.1.6
-langgraph-checkpoint-sqlite==3.0.3  # LangGraph SQLite 持久化检查点
-langgraph-checkpoint-mongodb==0.4.0  # LangGraph Mongo 检查点（多副本共享会话，CHECKPOINT_BACKEND=mongodb）
+langchain-mongodb==0.12.0  # langgraph-checkpoint-mongodb 0.5.0 的依赖（pymongo>=4.12,<4.18）
+langgraph==1.2.11
+langgraph-checkpoint==4.2.0  # langgraph 1.2.11 要求 langgraph-checkpoint>=4.1.0
+langgraph-checkpoint-sqlite==3.1.1  # LangGraph SQLite 持久化检查点
+langgraph-checkpoint-mongodb==0.5.0  # LangGraph Mongo 检查点（多副本共享会话，CHECKPOINT_BACKEND=mongodb）
 prometheus-client==0.25.0  # /metrics 指标暴露（应用自观测，Prometheus 采集）
 aiosqlite==0.22.1  # 异步 SQLite（AsyncSqliteSaver 所需）
 
