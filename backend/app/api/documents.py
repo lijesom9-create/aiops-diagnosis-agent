@@ -1,162 +1,69 @@
 """
-Document API - 文档管理
+Document API - 文档管理（薄 handler 层）
 
 支持 PDF/Word/TXT/Markdown 上传，解析、分块、向量化。
 包含：去重检查、批量入库、文档更新（先删后加）。
+
+分层：业务逻辑（文件名/编码安全处理、分类校验、哈希去重、frontmatter 解析、
+公共文档记录构造、处理投递、产物清理、后台解析流水线）已下沉到
+services/document_service.py（T10）。本文件仅保留：
+- 端点路由与依赖注入（get_current_user / require_admin / get_db / BackgroundTasks）
+- HTTP 请求/响应转换与 HTTPException 状态码映射
+- 图片访问端点（含路径逃逸三层安全校验，安全敏感代码整体留在 HTTP 层）
+- 对外符号转发（main.py / 测试依赖 app.api.documents 的符号保持不变）
 """
 
-import hashlib
 import os
 import re
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from loguru import logger
-from pydantic import BaseModel
 
 from ..core.auth import UserResponse, get_current_user, require_admin
 from ..core.config import settings
 from ..core.database import Database, get_db
-from ..document.uploader import DocumentUploader
-from ..models.document import DocumentCategory, DocumentStatus
-from ..storage.file_storage import get_file_storage
+from ..models.document import DocumentStatus
+from ..services.document_service import (
+    # 向后兼容转发（main / 潜在调用方依赖 app.api.documents 的符号）
+    _ALLOWED_EXTENSIONS,
+    # handler 直接依赖
+    BatchUploadResponse,
+    DocumentListResponse,
+    DocumentResponse,
+    _check_duplicate,
+    _compute_file_hash,
+    _extract_extension,
+    _fix_encoding,
+    _process_document,
+    _sanitize_filename,
+    build_document_record,
+    extract_biz_meta,
+    get_document_uploader,
+    normalize_category,
+    purge_document_artifacts,
+    set_knowledge_store,
+    submit_document_processing,
+)
 
 router = APIRouter(prefix="/api/documents", tags=["文档管理"])
 
-
-def _fix_encoding(text: str) -> str:
-    """修复编码问题：尝试多种编码方式修复乱码"""
-    if not text:
-        return text
-
-    # 尝试 latin-1 -> UTF-8
-    try:
-        result = text.encode('latin-1').decode('utf-8')
-        if result != text:
-            return result
-    except (UnicodeDecodeError, UnicodeEncodeError):
-        pass
-
-    # 尝试 latin-1 -> GBK
-    try:
-        result = text.encode('latin-1').decode('gbk')
-        if result != text:
-            return result
-    except (UnicodeDecodeError, UnicodeEncodeError):
-        pass
-
-    # 尝试直接用 GBK 解码（如果已经是 GBK 编码的 bytes 被错误解码）
-    try:
-        # 检查是否包含 GBK 特征的乱码字符
-        if any('\x80' <= c <= '\xff' for c in text):
-            return text.encode('latin-1').decode('utf-8', errors='replace')
-    except Exception:
-        pass
-
-    return text
-
-
-# 允许的文件扩展名白名单
-_ALLOWED_EXTENSIONS = {"pdf", "docx", "txt", "md", "markdown"}
-
-
-def _sanitize_filename(filename: str) -> str:
-    """清理文件名，防止路径穿越和特殊字符注入
-
-    - 只取 basename（去除任何路径分隔符）
-    - 去除控制字符
-    - 限制长度（128 字节）
-    """
-    if not filename:
-        return "unnamed"
-    # 只取 basename，防止 ../../etc/passwd 这类注入
-    safe = Path(filename).name
-    # 去除控制字符（\x00-\x1f, \x7f）
-    safe = re.sub(r"[\x00-\x1f\x7f]", "_", safe)
-    # 限制长度
-    if len(safe.encode("utf-8")) > 128:
-        # 保留扩展名，截断主名
-        stem = Path(safe).stem[:60]
-        suffix = Path(safe).suffix
-        safe = f"{stem}{suffix}"
-    return safe or "unnamed"
-
-
-def _extract_extension(filename: str) -> str:
-    """安全提取文件扩展名（小写，无点）"""
-    if "." not in filename:
-        return ""
-    return filename.rsplit(".", 1)[-1].lower()
-
-
-# ========== 请求/响应模型 ==========
-
-class DocumentResponse(BaseModel):
-    """文档响应"""
-    document_id: str
-    filename: str
-    title: str
-    status: str
-    chunk_count: int
-    char_count: int
-    created_at: str
-    category: str = "other"
-    tags: List[str] = []
-    version: int = 1
-
-
-class DocumentListResponse(BaseModel):
-    """文档列表响应"""
-    documents: List[DocumentResponse]
-    total: int
-
-
-# ========== 辅助函数 ==========
-
-_uploader: Optional[DocumentUploader] = None
-_knowledge_store = None
-
-
-def set_knowledge_store(store):
-    """设置知识存储（由 main.py 调用）"""
-    global _knowledge_store
-    _knowledge_store = store
-
-
-def _compute_file_hash(content: bytes) -> str:
-    """计算文件内容的 MD5 哈希（用于去重）"""
-    return hashlib.md5(content).hexdigest()
-
-
-async def _check_duplicate(
-    db: Database, user_id: str, file_hash: str
-) -> Optional[dict]:
-    """检查用户是否已上传过相同哈希的文档
-
-    Returns:
-        已存在的文档记录（dict），如不存在返回 None
-    """
-    documents = await db.get_user_documents(user_id)
-    for doc in documents:
-        if doc.get("file_hash") == file_hash:
-            return doc
-    return None
-
-
-def get_document_uploader() -> DocumentUploader:
-    """获取文档上传服务实例"""
-    global _uploader
-    if _uploader is None:
-        # 延迟获取 knowledge_store，确保已初始化
-        from ..shared_services import get_knowledge_store
-        ks = _knowledge_store or get_knowledge_store()
-        if not ks:
-            raise RuntimeError("KnowledgeStore 未初始化，无法创建 DocumentUploader")
-        _uploader = DocumentUploader(knowledge_store=ks)
-    return _uploader
+__all__ = [
+    # 端点
+    "router",
+    "list_documents", "upload_document", "get_document_status", "retry_document",
+    "delete_document", "update_document", "batch_upload_documents", "get_image",
+    # 模型
+    "DocumentResponse", "DocumentListResponse", "BatchUploadResponse",
+    # 转发：业务符号（业务已下沉，main / 测试依赖 app.api.documents 的符号）
+    "_ALLOWED_EXTENSIONS", "_check_duplicate", "_compute_file_hash",
+    "_extract_extension", "_fix_encoding", "_process_document", "_sanitize_filename",
+    "build_document_record", "extract_biz_meta", "get_document_uploader",
+    "normalize_category", "purge_document_artifacts", "set_knowledge_store",
+    "submit_document_processing",
+]
 
 
 # ========== API 端点 ==========
@@ -239,9 +146,7 @@ async def upload_document(
         admin_user_id = current_user.user_id
 
         # 校验分类
-        valid_categories = [c.value for c in DocumentCategory]
-        if category not in valid_categories:
-            category = "other"
+        category = normalize_category(category)
 
         # 读取文件内容
         content = await file.read()
@@ -272,22 +177,7 @@ async def upload_document(
             )
 
         # 解析 Markdown YAML frontmatter → 运维业务 metadata（doc_type/service/severity 等）
-        # 与 scripts/seed_ops_kb.py 共用逻辑；无 frontmatter 时为空 dict，不影响原有流程
-        from app.document.frontmatter import extract_business_metadata, parse_frontmatter
-        biz_meta: dict = {}
-        try:
-            content_text = content.decode("utf-8", errors="ignore")
-            frontmatter, _ = parse_frontmatter(content_text)
-            biz_meta = extract_business_metadata(frontmatter)
-        except Exception as e:
-            logger.debug(f"frontmatter 解析失败（忽略，按普通文档处理）: {e}")
-        # 诊断共享标记随 chunk metadata 入库（字符串形式，检索过滤器按 "true" 匹配）；
-        # 上传端点仅 admin 可调，默认共享符合"运维知识供诊断系统使用"的预期，敏感文档显式关闭
-        biz_meta["shared_to_diagnosis"] = "true" if shared_to_diagnosis else "false"
-
-        # frontmatter 声明的 doc_type 优先于文件扩展名（如 manual/incident/sop 业务分类）
-        if biz_meta.get("doc_type"):
-            doc_type = str(biz_meta["doc_type"]).lower()
+        biz_meta, doc_type = extract_biz_meta(content, shared_to_diagnosis, doc_type)
 
         # 去重检查：公共文档全局去重（user_id="" 命中所有公共文档）
         file_hash = _compute_file_hash(content)
@@ -308,57 +198,26 @@ async def upload_document(
                 )
 
         # 创建文档记录
-        document_id = f"doc_{uuid.uuid4().hex[:12]}"
-        now = datetime.now().isoformat()
-        document = {
-            "document_id": document_id,
-            "user_id": "",  # 公共文档：留空使检索层对所有用户可见
-            "uploaded_by": admin_user_id,  # 审计：记录导入者
-            "is_public": True,  # 列表层据此返回给所有用户
-            "filename": filename,
-            "title": title or filename,
-            "doc_type": doc_type,
-            "status": DocumentStatus.PENDING.value,
-            "chunk_count": 0,
-            "char_count": 0,
-            "file_hash": file_hash,
-            "created_at": now,
-            "category": category,
-            "tags": [],
-            # 运维业务 metadata（frontmatter 解析）：供文档列表展示 & 检索过滤
-            "service": biz_meta.get("service"),
-            "severity": biz_meta.get("severity"),
-            "incident_id": biz_meta.get("incident_id"),
-            "extra_metadata": biz_meta or None,
-        }
+        document_id, document = build_document_record(
+            admin_user_id=admin_user_id,
+            filename=filename,
+            title=title or filename,
+            doc_type=doc_type,
+            file_hash=file_hash,
+            biz_meta=biz_meta,
+            category=category,
+            tags=[],
+        )
 
         await db.create_document(document)
 
         # 异步处理：USE_CELERY=True 走 Celery worker；False 降级到 BackgroundTasks 同步处理
-        if settings.USE_CELERY:
-            # Celery 模式：先存文件到 FileStorage，再投递 task（task 从路径读取，避免 bytes 过 broker）
-            file_storage = get_file_storage()
-            file_info = await file_storage.save(
-                content=content, filename=filename,
-                user_id=admin_user_id, document_id=document_id,
-            )
-            file_path = file_info["file_path"]
-            await db.update_document(document_id, {"file_path": file_path})
-
-            from app.tasks.document_tasks import process_document
-            task = process_document.delay(
-                document_id, file_path, filename, title or filename, biz_meta,
-            )
-            await db.update_document(document_id, {"task_id": task.id})
-            logger.info(f"文档已投递 Celery task: {document_id} task={task.id} (导入者: {admin_user_id})")
-        else:
-            # 降级模式：BackgroundTasks 同步处理（user_id 传空=公共文档）
-            uploader = get_document_uploader()
-            background_tasks.add_task(
-                _process_document,
-                db, uploader, document_id, content, filename, title, "", biz_meta,
-            )
-            logger.info(f"文档已提交 BackgroundTasks: {document_id} - {filename} (导入者: {admin_user_id})")
+        await submit_document_processing(
+            db, background_tasks,
+            document_id=document_id, content=content, filename=filename,
+            title=title, admin_user_id=admin_user_id, biz_meta=biz_meta,
+            audit_log=True,
+        )
 
         return DocumentResponse(
             document_id=document_id,
@@ -367,7 +226,7 @@ async def upload_document(
             status=DocumentStatus.PENDING.value,
             chunk_count=0,
             char_count=0,
-            created_at=now,
+            created_at=document["created_at"],
             category=category,
             tags=[],
         )
@@ -528,19 +387,8 @@ async def delete_document(
                 detail="文档不存在"
             )
 
-        # 删除向量数据
-        if _knowledge_store:
-            try:
-                _knowledge_store.delete_by_document(document_id)
-            except Exception as e:
-                logger.warning(f"删除向量数据失败: {e}")
-
-        # 删除文档对应的图片（多模态 RAG）
-        try:
-            from ..document.image_store import get_image_store
-            get_image_store().delete_document_images(document_id)
-        except Exception as e:
-            logger.warning(f"删除文档图片失败: {e}")
+        # 删除向量数据 + 图片（业务下沉 document_service）
+        await purge_document_artifacts(document_id)
 
         # 删除文档记录
         await db.delete_document(document_id)
@@ -600,20 +448,8 @@ async def update_document(
         else:
             title = doc.get("title", filename)
 
-        # 1. 删除旧向量数据
-        if _knowledge_store:
-            try:
-                _knowledge_store.delete_by_document(document_id)
-                logger.info(f"更新文档：已删除旧向量数据 {document_id}")
-            except Exception as e:
-                logger.warning(f"删除旧向量数据失败: {e}")
-
-        # 2. 删除旧图片
-        try:
-            from ..document.image_store import get_image_store
-            get_image_store().delete_document_images(document_id)
-        except Exception as e:
-            logger.warning(f"删除旧图片失败: {e}")
+        # 1+2. 删除旧向量数据 + 旧图片（业务下沉 document_service）
+        await purge_document_artifacts(document_id, updated=True)
 
         # 3. 更新 DB 记录状态（递增版本号，追踪文档版本）
         file_hash = _compute_file_hash(content)
@@ -628,7 +464,8 @@ async def update_document(
             "version": old_version + 1,
         })
 
-        # 4. 后台异步重新处理（保持原文档可见性：公共文档 user_id 为空）
+        # 4. 后台异步重新处理（保持原文档可见性：user_id 沿用原文档记录）
+        # 注意：update 始终走 BackgroundTasks，不经 USE_CELERY 分支（与拆分前行为一致）
         uploader = get_document_uploader()
         background_tasks.add_task(
             _process_document,
@@ -660,15 +497,6 @@ async def update_document(
 
 # ========== 批量入库 ==========
 
-class BatchUploadResponse(BaseModel):
-    """批量上传响应"""
-    total: int
-    success: int
-    skipped: int
-    failed: int
-    results: List[dict]
-
-
 @router.post("/batch-upload", response_model=BatchUploadResponse)
 async def batch_upload_documents(
     background_tasks: BackgroundTasks,
@@ -692,6 +520,8 @@ async def batch_upload_documents(
     """
     try:
         admin_user_id = current_user.user_id
+        # 注意：batch 保留内联白名单（与单文件上传的 _ALLOWED_EXTENSIONS 是两处独立校验，
+        # 历史行为如此，T10 拆分不合并）
         supported_types = {"pdf", "docx", "txt", "md", "markdown"}
 
         results: List[dict] = []
@@ -740,60 +570,25 @@ async def batch_upload_documents(
                     continue
 
             # 解析 Markdown YAML frontmatter → 运维业务 metadata（与单文件上传一致）
-            from app.document.frontmatter import extract_business_metadata, parse_frontmatter
-            biz_meta: dict = {}
-            try:
-                frontmatter, _ = parse_frontmatter(content.decode("utf-8", errors="ignore"))
-                biz_meta = extract_business_metadata(frontmatter)
-            except Exception as e:
-                logger.debug(f"frontmatter 解析失败（忽略，按普通文档处理）: {e}")
-            # 诊断共享标记随 chunk metadata 入库（与单文件上传一致）
-            biz_meta["shared_to_diagnosis"] = "true" if shared_to_diagnosis else "false"
-            if biz_meta.get("doc_type"):
-                doc_type = str(biz_meta["doc_type"]).lower()
+            biz_meta, doc_type = extract_biz_meta(content, shared_to_diagnosis, doc_type)
 
             # 创建文档记录（公共文档）
-            document_id = f"doc_{uuid.uuid4().hex[:12]}"
-            now = datetime.now().isoformat()
-            document = {
-                "document_id": document_id,
-                "user_id": "",  # 公共文档
-                "uploaded_by": admin_user_id,
-                "is_public": True,
-                "filename": filename,
-                "title": filename,
-                "doc_type": doc_type,
-                "status": DocumentStatus.PENDING.value,
-                "chunk_count": 0,
-                "char_count": 0,
-                "file_hash": file_hash,
-                "created_at": now,
-                "service": biz_meta.get("service"),
-                "severity": biz_meta.get("severity"),
-                "incident_id": biz_meta.get("incident_id"),
-                "extra_metadata": biz_meta or None,
-            }
+            document_id, document = build_document_record(
+                admin_user_id=admin_user_id,
+                filename=filename,
+                title=filename,
+                doc_type=doc_type,
+                file_hash=file_hash,
+                biz_meta=biz_meta,
+            )
             await db.create_document(document)
 
             # 异步处理：USE_CELERY 走 Celery worker；否则降级 BackgroundTasks
-            if settings.USE_CELERY:
-                file_storage = get_file_storage()
-                file_info = await file_storage.save(
-                    content=content, filename=filename,
-                    user_id=admin_user_id, document_id=document_id,
-                )
-                file_path = file_info["file_path"]
-                await db.update_document(document_id, {"file_path": file_path})
-
-                from app.tasks.document_tasks import process_document
-                task = process_document.delay(document_id, file_path, filename, filename, biz_meta)
-                await db.update_document(document_id, {"task_id": task.id})
-            else:
-                uploader = get_document_uploader()
-                background_tasks.add_task(
-                    _process_document,
-                    db, uploader, document_id, content, filename, filename, "", biz_meta,
-                )
+            await submit_document_processing(
+                db, background_tasks,
+                document_id=document_id, content=content, filename=filename,
+                title=filename, admin_user_id=admin_user_id, biz_meta=biz_meta,
+            )
 
             success_count += 1
             results.append({
@@ -893,48 +688,3 @@ async def get_image(
     media_type = _IMG_MIME_MAP.get(ext, "image/png")
 
     return Response(content=image_bytes, media_type=media_type)
-
-
-# ========== 后台处理 ==========
-
-async def _process_document(
-    db: Database,
-    uploader: DocumentUploader,
-    document_id: str,
-    content: bytes,
-    filename: str,
-    title: Optional[str],
-    user_id: str,
-    extra_metadata: Optional[dict] = None,
-):
-    """后台处理文档：解析、分块、向量化
-
-    extra_metadata: 运维业务 metadata（frontmatter 解析的 doc_type/service/severity 等），
-    注入到每个 chunk，支撑检索层 metadata_filter 精准过滤。
-    """
-    try:
-        await db.update_document(document_id, {"status": DocumentStatus.PROCESSING.value})
-
-        result = await uploader.upload(
-            content=content,
-            filename=filename,
-            title=title,
-            user_id=user_id,
-            document_id=document_id,
-            extra_metadata=extra_metadata,
-        )
-
-        await db.update_document(document_id, {
-            "status": DocumentStatus.COMPLETED.value,
-            "chunk_count": result.get("chunk_count", 0),
-            "char_count": result.get("char_count", 0),
-        })
-
-        logger.info(f"文档处理完成: {document_id} - {filename}")
-
-    except Exception as e:
-        logger.error(f"文档处理失败: {document_id} - {filename}, {e}")
-        await db.update_document(document_id, {
-            "status": DocumentStatus.FAILED.value,
-            "error_message": str(e),
-        })
