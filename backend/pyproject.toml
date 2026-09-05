@@ -67,3 +67,23 @@ warn_redundant_casts = true
 # 基础告警：未用 ignore、冗余 cast、返回值不匹配
 warn_return_any = false
 no_implicit_optional = true
+
+# ========== 测试覆盖率度量 ==========
+# 运行方式：
+#   python -m pytest tests -q --cov=app --cov-report=term   （全量 + 覆盖率）
+# 口径：只度量生产代码 app/；evaluation（脚本性质）与测试自身不计入
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "app/evaluation/*",
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+show_missing = false
+skip_covered = false

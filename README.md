@@ -84,7 +84,7 @@ FeishuClient → 飞书告警卡片（firing 红 / resolved 绿）
 |----|------|
 | 后端 | Python 3.12, FastAPI 0.141+ / LangGraph 1.2+ |
 | Agent | LangGraph（意图路由 + ReAct 循环） + MCP (langchain-mcp-adapters) |
-| LLM | DeepSeek / Qwen / 任意 OpenAI 兼容接口 |
+| LLM | DeepSeek / Qwen / 任意 OpenAI 兼容接口（`AI_FALLBACK_*` 主备容灾自动切换） |
 | 嵌入 | BAAI/bge-m3（本地，dense 1024 维 + sparse 同源） |
 | 重排 | BAAI/bge-reranker-base（ONNX Runtime） |
 | 向量库 | Qdrant（Docker Server 模式 / 本地嵌入式） |
@@ -318,19 +318,23 @@ REDIS_URL=                       # 留空使用内存缓存
 
 ```bash
 cd backend
-python -m pytest tests/ -q
+python -m pytest tests/ -q                                    # 全量回归
+python -m pytest tests/ -q --cov=app --cov-report=term        # 全量 + 覆盖率（app/）
+python scripts/e2e_real_test.py                               # 真实 LLM 端到端（需 .env 配置 AI_API_KEY 与 MongoDB，消耗 API 额度）
 ```
 
-- **当前基线：488 passed / 3 skipped / 0 failed**（全量回归约 7-12 分钟，任何重构/升级后以此为准）
-- e2e 覆盖 91 项：`test_api_e2e.py`(43) + `test_e2e_fixes.py`(30) + `test_ops_e2e.py`(18)（运维诊断 /chat 与 /chat/stream 全链路，TestClient + mock，不依赖外部服务）
+- **当前基线：514 passed / 3 skipped / 0 failed**（全量回归约 7-12 分钟，任何重构/升级后以此为准）
+- e2e 覆盖 91 项：`test_api_e2e.py`(43) + `test_e2e_fixes.py`(30) + `test_ops_e2e.py`(18)（运维诊断 /chat 与 /chat/stream 全链路，TestClient + mock，不依赖外部服务）；另有 `scripts/e2e_real_test.py` 真实 LLM + 真实 Mongo 端到端（五阶段：注册/会话/问答/SSE 流式/文档面）
 - 质量门禁：`ruff check backend demo-service` 零告警（规则集 E4/E7/E9/F/I/B/ASYNC）；mypy 渐进接入（CI 非阻塞）
+- 开发依赖：`pip install -r requirements-dev.txt`（pytest 套件此前为隐式依赖，现已显式化）
 
 主要测试套件：
 - `test_agent_graph_flow.py`：Agent 图流转（监控→知识库→诊断报告、循环保护、MCP 降级）
 - `test_admin_api.py` / `test_admin_permission.py`：RBAC 与管理 API
 - `test_ops_e2e.py`：运维诊断 E2E
 - `test_document_upload.py` / `test_security_hardening.py`：文档上传与安全
-- 注：`scripts/e2e_real_test.py` 为真实 LLM 的端到端脚本，但其引用的 `/api/teaching` 接口已在 LangGraph 迁移中移除（现为 `/api/langgraph/*`），脚本待改写后才能使用
+- `test_ai_failover.py`：AI 供应商主备容灾（错误分类/切换时机/装配，全离线）
+- `test_document_lifecycle.py`：文档幂等与卡死恢复（投递补偿/删除挂起/批量隔离）
 
 ---
 
