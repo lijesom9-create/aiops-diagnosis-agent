@@ -13,12 +13,13 @@
 api/documents.py 保留薄 handler + 符号转发（main.py / 测试的导入路径不变）。
 """
 
+import asyncio
 import hashlib
 import re
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from fastapi import BackgroundTasks
 from loguru import logger
@@ -277,52 +278,236 @@ async def submit_document_processing(
     Celery 分支的 title 落 `title or filename`，BackgroundTasks 分支保留原样传 title
     （与拆分前逐字一致：单文件上传两分支本就不对称，batch 传 filename 无差异）。
     audit_log=True（单文件上传）时记录含导入者的审计日志；batch 保持原有静默。
+
+    幂等补偿：投递链路（存文件 / 写 file_path / task.delay）任何一步失败时，
+    先将记录标记 FAILED（retry 端点仅接受 failed/completed）再上抛，
+    避免记录永久卡在 PENDING 成为"幽灵文档"。
     """
-    if settings.USE_CELERY:
-        file_storage = get_file_storage()
-        file_info = await file_storage.save(
-            content=content, filename=filename,
-            user_id=admin_user_id, document_id=document_id,
-        )
-        file_path = file_info["file_path"]
-        await db.update_document(document_id, {"file_path": file_path})
+    try:
+        if settings.USE_CELERY:
+            file_storage = get_file_storage()
+            file_info = await file_storage.save(
+                content=content, filename=filename,
+                user_id=admin_user_id, document_id=document_id,
+            )
+            file_path = file_info["file_path"]
+            await db.update_document(document_id, {"file_path": file_path})
 
-        from app.tasks.document_tasks import process_document
-        task = process_document.delay(
-            document_id, file_path, filename, title or filename, biz_meta,
-        )
-        await db.update_document(document_id, {"task_id": task.id})
-        if audit_log:
-            logger.info(f"文档已投递 Celery task: {document_id} task={task.id} (导入者: {admin_user_id})")
-    else:
-        uploader = get_document_uploader()
-        background_tasks.add_task(
-            _process_document,
-            db, uploader, document_id, content, filename, title, "", biz_meta,
-        )
-        if audit_log:
-            logger.info(f"文档已提交 BackgroundTasks: {document_id} - {filename} (导入者: {admin_user_id})")
+            from app.tasks.document_tasks import process_document
+            task = process_document.delay(
+                document_id, file_path, filename, title or filename, biz_meta,
+            )
+            await db.update_document(document_id, {"task_id": task.id})
+            if audit_log:
+                logger.info(f"文档已投递 Celery task: {document_id} task={task.id} (导入者: {admin_user_id})")
+        else:
+            uploader = get_document_uploader()
+            background_tasks.add_task(
+                _process_document,
+                db, uploader, document_id, content, filename, title, "", biz_meta,
+            )
+            if audit_log:
+                logger.info(f"文档已提交 BackgroundTasks: {document_id} - {filename} (导入者: {admin_user_id})")
+    except Exception as e:
+        try:
+            await db.update_document(document_id, {
+                "status": DocumentStatus.FAILED.value,
+                "error_message": f"处理任务投递失败: {str(e)[:200]}",
+            })
+        except Exception:
+            # 补偿写失败仅记日志，不掩盖原始投递异常
+            logger.warning(f"投递失败补偿标记写入失败: {document_id}")
+        raise
 
 
-async def purge_document_artifacts(document_id: str, *, updated: bool = False) -> None:
+async def purge_document_artifacts(document_id: str, *, updated: bool = False) -> Tuple[bool, bool]:
     """删除文档的向量数据与图片（delete / update 消重）。
 
     updated=True 为 update 流程：成功删向量记 info 日志，失败日志措辞带"旧"。
-    单项清理失败只告警不中断（尽力清理，DB 记录删除不受阻）。
+
+    Returns:
+        (vector_ok, images_ok)——失败不抛异常，由调用方决定补偿策略
+        （delete 流程挂起记录待 sweep 重试；update 流程终止重处理防重复 chunk）。
     """
+    vector_ok = True
     if _knowledge_store:
         try:
             _knowledge_store.delete_by_document(document_id)
             if updated:
                 logger.info(f"更新文档：已删除旧向量数据 {document_id}")
         except Exception as e:
+            vector_ok = False
             logger.warning(f"删除{'旧' if updated else ''}向量数据失败: {e}")
 
+    images_ok = True
     try:
         from ..document.image_store import get_image_store
         get_image_store().delete_document_images(document_id)
     except Exception as e:
+        images_ok = False
         logger.warning(f"删除{'旧' if updated else '文档'}图片失败: {e}")
+
+    return vector_ok, images_ok
+
+
+async def delete_document_with_cleanup(db: Database, document_id: str) -> str:
+    """删除文档（带孤儿向量防护）。
+
+    向量清理失败时**不删记录**：标记 status=deleting + purge_pending 挂起，
+    由 document_stale_sweep_loop 周期重试清理，成功后才移除记录——
+    避免"记录已删、向量仍在"的孤儿数据继续被检索命中。
+
+    Returns:
+        "deleted" | "deferred" | "not_found"
+    """
+    doc = await db.get_document(document_id)
+    if not doc:
+        return "not_found"
+
+    vector_ok, _ = await purge_document_artifacts(document_id)
+    if not vector_ok:
+        await db.update_document(document_id, {
+            "status": DocumentStatus.DELETING.value,
+            "purge_pending": True,
+            "error_message": "向量数据清理失败，删除挂起（系统将自动重试）",
+        })
+        logger.warning(f"文档删除挂起（向量清理失败，待 sweep 重试）: {document_id}")
+        return "deferred"
+
+    await db.delete_document(document_id)
+    logger.info(f"文档删除成功: {document_id}")
+    return "deleted"
+
+
+async def process_batch_file(
+    db: Database,
+    background_tasks: BackgroundTasks,
+    *,
+    file,
+    admin_user_id: str,
+    skip_duplicate: bool,
+    shared_to_diagnosis: bool,
+) -> dict:
+    """处理批量上传中的单个文件：校验 → 去重 → 建档 → 投递。
+
+    校验类失败（类型不支持/内容为空）返回 failed 条目而不抛异常——调用方逐文件
+    计数继续处理下一文件（原实现单文件异常会中断整批）；
+    建档后的投递异常向上传播（submit_document_processing 内已补偿标记 FAILED）。
+
+    注意：batch 保留内联白名单（与单文件上传的 _ALLOWED_EXTENSIONS 是两处独立
+    校验，T10 拆分时按"保留历史差异"原则未合并）。
+
+    Returns:
+        结果条目，status ∈ {pending, skipped, failed}
+    """
+    raw_filename = file.filename or "unnamed"
+    filename = _fix_encoding(raw_filename)
+    doc_type = filename.split(".")[-1].lower() if "." in filename else ""
+
+    supported_types = {"pdf", "docx", "txt", "md", "markdown"}
+    if doc_type not in supported_types:
+        return {
+            "filename": filename,
+            "status": "failed",
+            "reason": f"不支持的文件类型: {doc_type}",
+        }
+
+    content = await file.read()
+    if not content:
+        return {
+            "filename": filename,
+            "status": "failed",
+            "reason": "文件内容为空",
+        }
+
+    # 去重检查（公共文档全局去重）
+    file_hash = _compute_file_hash(content)
+    if skip_duplicate:
+        existing = await _check_duplicate(db, "", file_hash)
+        if existing:
+            return {
+                "filename": filename,
+                "status": "skipped",
+                "document_id": existing.get("document_id", ""),
+                "reason": "文件已存在",
+            }
+
+    # 解析 Markdown YAML frontmatter → 运维业务 metadata（与单文件上传一致）
+    biz_meta, doc_type = extract_biz_meta(content, shared_to_diagnosis, doc_type)
+
+    # 创建文档记录（公共文档）
+    document_id, document = build_document_record(
+        admin_user_id=admin_user_id,
+        filename=filename,
+        title=filename,
+        doc_type=doc_type,
+        file_hash=file_hash,
+        biz_meta=biz_meta,
+    )
+    await db.create_document(document)
+
+    # 异步处理：USE_CELERY 走 Celery worker；否则降级 BackgroundTasks
+    await submit_document_processing(
+        db, background_tasks,
+        document_id=document_id, content=content, filename=filename,
+        title=filename, admin_user_id=admin_user_id, biz_meta=biz_meta,
+    )
+
+    return {
+        "filename": filename,
+        "status": "pending",
+        "document_id": document_id,
+    }
+
+
+# ========== 卡死恢复（幂等补偿扫描，复用事故域 stale sweep 先例） ==========
+
+async def recover_stale_documents() -> int:
+    """启动/周期捞回：卡死的 PENDING/PROCESSING → FAILED（可经 retry 端点重投）。
+
+    卡死来源：投递前进程重启（BackgroundTask 丢失）、worker 崩溃（Celery 无
+    acks_late，task 静默丢失）、Mongo 写挂等。误伤窗口：真实处理超
+    DOC_STALE_SECONDS 的大文档会被提前标失败，但 worker 后续成功会覆盖回
+    COMPLETED（最终状态一致），阈值默认 1800s 足够宽裕。
+    """
+    from ..core.database import db as _db
+    stale = await _db.find_stale_documents(settings.DOC_STALE_SECONDS)
+    for doc in stale:
+        await _db.update_document(doc.get("document_id"), {
+            "status": DocumentStatus.FAILED.value,
+            "error_message": f"处理超时（>{settings.DOC_STALE_SECONDS}s 未推进），已自动标记失败，可重试",
+        })
+        logger.warning(
+            f"卡死文档已标记失败: {doc.get('document_id')} 原状态={doc.get('status')}"
+        )
+    return len(stale)
+
+
+async def finalize_pending_deletes() -> int:
+    """finalize deleting 挂起文档：重试向量清理，成功后移除记录。"""
+    from ..core.database import db as _db
+    pending = await _db.find_documents_by_status(DocumentStatus.DELETING.value)
+    done = 0
+    for doc in pending:
+        doc_id = doc.get("document_id")
+        vector_ok, _ = await purge_document_artifacts(doc_id)
+        if vector_ok:
+            await _db.delete_document(doc_id)
+            done += 1
+            logger.info(f"挂起删除完成（向量清理成功）: {doc_id}")
+    return done
+
+
+async def document_stale_sweep_loop() -> None:
+    """文档卡死扫描循环（main.py lifespan 启动，独立于告警诊断域）"""
+    interval = max(60, settings.DOC_SWEEP_INTERVAL_SECONDS)
+    while True:
+        try:
+            await recover_stale_documents()
+            await finalize_pending_deletes()
+        except Exception as e:
+            logger.warning(f"文档卡死扫描失败（下轮重试）: {e}")
+        await asyncio.sleep(interval)
 
 
 # ========== 后台处理 ==========

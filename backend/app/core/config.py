@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     AI_FALLBACK_API_KEY: Optional[str] = None
     AI_FALLBACK_BASE_URL: Optional[str] = None
 
+    # 文档卡死恢复（幂等补偿）：PENDING/PROCESSING 超 DOC_STALE_SECONDS 未推进 → FAILED 可重试；
+    # deleting 挂起（向量清理失败）由扫描周期重试清理后移除记录
+    DOC_STALE_SECONDS: int = 1800
+    DOC_SWEEP_INTERVAL_SECONDS: int = 600
+
     # Embedding 配置
     EMBEDDING_API_KEY: Optional[str] = None
     EMBEDDING_MODEL: Optional[str] = None  # 例如 text-embedding-3-small

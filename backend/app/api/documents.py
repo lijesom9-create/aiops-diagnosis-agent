@@ -40,9 +40,11 @@ from ..services.document_service import (
     _process_document,
     _sanitize_filename,
     build_document_record,
+    delete_document_with_cleanup,
     extract_biz_meta,
     get_document_uploader,
     normalize_category,
+    process_batch_file,
     purge_document_artifacts,
     set_knowledge_store,
     submit_document_processing,
@@ -387,13 +389,10 @@ async def delete_document(
                 detail="文档不存在"
             )
 
-        # 删除向量数据 + 图片（业务下沉 document_service）
-        await purge_document_artifacts(document_id)
-
-        # 删除文档记录
-        await db.delete_document(document_id)
-
-        logger.info(f"文档删除成功: {document_id}")
+        # 删除（带孤儿向量防护：向量清理失败 → 挂起 deleting，由 sweep 周期重试后移除）
+        outcome = await delete_document_with_cleanup(db, document_id)
+        if outcome == "deferred":
+            return {"message": "文档已标记删除，向量清理将在后台自动重试"}
 
         return {"message": "文档已删除"}
 
@@ -448,8 +447,18 @@ async def update_document(
         else:
             title = doc.get("title", filename)
 
-        # 1+2. 删除旧向量数据 + 旧图片（业务下沉 document_service）
-        await purge_document_artifacts(document_id, updated=True)
+        # 1+2. 删除旧向量数据 + 旧图片；向量清理失败必须终止重处理——
+        # 否则旧 chunk 残留 + 新 chunk 入库会导致检索结果重复
+        vector_ok, _ = await purge_document_artifacts(document_id, updated=True)
+        if not vector_ok:
+            await db.update_document(document_id, {
+                "status": DocumentStatus.FAILED.value,
+                "error_message": "旧向量数据清理失败，已终止更新（可重试）",
+            })
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="旧向量清理失败，更新已终止，请稍后重试"
+            )
 
         # 3. 更新 DB 记录状态（递增版本号，追踪文档版本）
         file_hash = _compute_file_hash(content)
@@ -520,9 +529,6 @@ async def batch_upload_documents(
     """
     try:
         admin_user_id = current_user.user_id
-        # 注意：batch 保留内联白名单（与单文件上传的 _ALLOWED_EXTENSIONS 是两处独立校验，
-        # 历史行为如此，T10 拆分不合并）
-        supported_types = {"pdf", "docx", "txt", "md", "markdown"}
 
         results: List[dict] = []
         success_count = 0
@@ -530,72 +536,29 @@ async def batch_upload_documents(
         failed_count = 0
 
         for file in files:
-            raw_filename = file.filename or "unnamed"
-            filename = _fix_encoding(raw_filename)
-            doc_type = filename.split(".")[-1].lower() if "." in filename else ""
-
-            # 文件类型检查
-            if doc_type not in supported_types:
-                failed_count += 1
-                results.append({
-                    "filename": filename,
+            # 单文件异常隔离：一个文件失败不再中断整批（原实现整批 try 包住循环体）；
+            # 校验类失败（类型/空内容）由 process_batch_file 返回 failed 条目
+            try:
+                entry = await process_batch_file(
+                    db, background_tasks,
+                    file=file,
+                    admin_user_id=admin_user_id,
+                    skip_duplicate=skip_duplicate,
+                    shared_to_diagnosis=shared_to_diagnosis,
+                )
+            except Exception as e:
+                entry = {
+                    "filename": getattr(file, "filename", None) or "unnamed",
                     "status": "failed",
-                    "reason": f"不支持的文件类型: {doc_type}",
-                })
-                continue
-
-            # 读取内容
-            content = await file.read()
-            if not content:
+                    "reason": f"处理异常: {str(e)[:100]}",
+                }
+            results.append(entry)
+            if entry["status"] == "pending":
+                success_count += 1
+            elif entry["status"] == "skipped":
+                skipped_count += 1
+            else:
                 failed_count += 1
-                results.append({
-                    "filename": filename,
-                    "status": "failed",
-                    "reason": "文件内容为空",
-                })
-                continue
-
-            # 去重检查（公共文档全局去重）
-            file_hash = _compute_file_hash(content)
-            if skip_duplicate:
-                existing = await _check_duplicate(db, "", file_hash)
-                if existing:
-                    skipped_count += 1
-                    results.append({
-                        "filename": filename,
-                        "status": "skipped",
-                        "document_id": existing.get("document_id", ""),
-                        "reason": "文件已存在",
-                    })
-                    continue
-
-            # 解析 Markdown YAML frontmatter → 运维业务 metadata（与单文件上传一致）
-            biz_meta, doc_type = extract_biz_meta(content, shared_to_diagnosis, doc_type)
-
-            # 创建文档记录（公共文档）
-            document_id, document = build_document_record(
-                admin_user_id=admin_user_id,
-                filename=filename,
-                title=filename,
-                doc_type=doc_type,
-                file_hash=file_hash,
-                biz_meta=biz_meta,
-            )
-            await db.create_document(document)
-
-            # 异步处理：USE_CELERY 走 Celery worker；否则降级 BackgroundTasks
-            await submit_document_processing(
-                db, background_tasks,
-                document_id=document_id, content=content, filename=filename,
-                title=filename, admin_user_id=admin_user_id, biz_meta=biz_meta,
-            )
-
-            success_count += 1
-            results.append({
-                "filename": filename,
-                "status": "pending",
-                "document_id": document_id,
-            })
 
         logger.info(
             f"批量上传完成: {len(files)} 个文件, "

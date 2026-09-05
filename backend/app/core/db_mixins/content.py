@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from app.core.db_utils import clean_mongo_doc, clean_mongo_docs
@@ -194,6 +194,40 @@ class ContentMixin:
         original_len = len(self._documents)
         self._documents = [d for d in self._documents if d.get("document_id") != document_id]
         return len(self._documents) < original_len
+
+    async def find_stale_documents(self, stale_seconds: int, statuses=None, limit: int = 100) -> List[dict]:
+        """查询卡死的文档（指定状态超 threshold 未推进）
+
+        供启动捞回与周期扫描使用（与诊断域 find_stale_active_incidents 同模式）。
+        卡死判定锚点 updated_at 由 create/update_document 自动维护。
+        """
+        if statuses is None:
+            statuses = ["pending", "processing"]
+        cutoff = datetime.now() - timedelta(seconds=stale_seconds)
+        await self.connect()
+        if self._use_mongo:
+            cursor = self._mongo.documents.find(
+                {"status": {"$in": list(statuses)}, "updated_at": {"$lt": cutoff}},
+                {"_id": 0},
+            ).limit(limit)
+            return [clean_mongo_doc(d) async for d in cursor]
+        return [
+            dict(d) for d in self._documents
+            if d.get("status") in statuses
+            and isinstance(d.get("updated_at"), datetime)
+            and d["updated_at"] < cutoff
+        ][:limit]
+
+    async def find_documents_by_status(self, status: str, limit: int = 100) -> List[dict]:
+        """按状态查询文档（如 deleting 挂起清理的 finalize 扫描）"""
+        await self.connect()
+        if self._use_mongo:
+            cursor = self._mongo.documents.find(
+                {"status": status},
+                {"_id": 0},
+            ).limit(limit)
+            return [clean_mongo_doc(d) async for d in cursor]
+        return [dict(d) for d in self._documents if d.get("status") == status][:limit]
     async def create_study_plan(self, plan_data: dict) -> str:
         """创建学习计划"""
         await self.connect()

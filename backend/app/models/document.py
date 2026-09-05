@@ -35,6 +35,7 @@ class DocumentStatus(str, Enum):
     PROCESSING = "processing" # 正在解析
     COMPLETED = "completed"   # 处理完成
     FAILED = "failed"         # 处理失败
+    DELETING = "deleting"     # 删除挂起（向量清理失败，等待后台重试后移除记录）
 
 
 class DocumentCategory(str, Enum):

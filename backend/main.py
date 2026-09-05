@@ -96,6 +96,7 @@ async def lifespan(app: FastAPI):
     worker_task = None
     sweep_task = None
     pred_task = None
+    doc_sweep_task = None
     if settings.ALERT_AUTO_DIAGNOSIS_ENABLED:
         try:
             recovered = await db.recover_stale_diagnosis_tasks(settings.DIAG_TASK_STALE_SECONDS)
@@ -119,10 +120,25 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"预判循环启动失败（不影响主服务）: {e}")
 
+    # 文档卡死恢复（幂等补偿）：启动捞回 + 周期扫描
+    # PENDING/PROCESSING 超时 → FAILED（可经 retry 重投）；deleting 挂起重试向量清理后移除
+    try:
+        from app.services.document_service import (
+            document_stale_sweep_loop,
+            recover_stale_documents,
+        )
+        recovered_docs = await recover_stale_documents()
+        if recovered_docs:
+            logger.info(f"文档卡死恢复: {recovered_docs} 个标记为失败（可重试）")
+        doc_sweep_task = asyncio.create_task(document_stale_sweep_loop())
+        logger.info("文档卡死扫描已启动")
+    except Exception as e:
+        logger.warning(f"文档卡死扫描启动失败（不影响主服务）: {e}")
+
     yield
 
     # 关闭时：每个步骤独立 try/except，确保全部执行（防止一个失败导致后续资源泄漏）
-    for _t in (sweep_task, worker_task, pred_task):
+    for _t in (sweep_task, worker_task, pred_task, doc_sweep_task):
         if _t:
             try:
                 _t.cancel()
