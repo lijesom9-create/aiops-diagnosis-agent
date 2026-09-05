@@ -7,7 +7,7 @@ on:
     branches: ["main", "master"]
 
 env:
-  PYTHON_VERSION: "3.11"
+  PYTHON_VERSION: "3.12"
   NODE_VERSION: "18"
 
 jobs:
@@ -126,8 +126,8 @@ jobs:
           pip install mypy
           cd backend
           pip install --no-cache-dir \
-            "fastapi==0.115.12" "pydantic==2.12.5" "pydantic-settings==2.14.2" \
-            "loguru==0.7.2" "PyJWT==2.11.0" "passlib[bcrypt]==1.7.4" \
+            "fastapi==0.141.1" "pydantic==2.13.5" "pydantic-settings==2.14.2" \
+            "loguru==0.7.3" "PyJWT==2.13.0" "passlib[bcrypt]==1.7.4" \
             "httpx==0.28.1" "motor==3.7.1"
 
       - name: Run mypy (app/core + app/api only)
@@ -165,15 +165,17 @@ jobs:
         run: |
           cd backend
           pip install --no-cache-dir \
-            "fastapi==0.115.12" "uvicorn[standard]==0.34.0" "python-multipart==0.0.12" \
+            "fastapi==0.141.1" "uvicorn[standard]==0.34.0" "python-multipart==0.0.31" \
             "pymongo==4.17.0" "motor==3.7.1" \
-            "PyJWT==2.11.0" "passlib[bcrypt]==1.7.4" "bcrypt==4.0.1" \
-            "pydantic==2.12.5" "pydantic-settings==2.14.2" "python-dotenv==1.0.0" \
-            "httpx==0.28.1" "requests>=2.31.0" "loguru==0.7.2" \
+            "PyJWT==2.13.0" "passlib[bcrypt]==1.7.4" "bcrypt==4.0.1" \
+            "pydantic==2.13.5" "pydantic-settings==2.14.2" "python-dotenv==1.2.2" \
+            "httpx==0.28.1" "requests>=2.31.0" "loguru==0.7.3" \
             "websockets==12.0" \
-            "pytest==7.4.3" "pytest-asyncio==0.23.2"
+            "langchain-core==1.6.2" "langchain-openai==1.1.14" "langgraph==1.2.11" \
+            "email-validator==2.3.0" \
+            -r requirements-dev.txt
 
-      - name: Run unit tests
+      - name: Run unit tests (with coverage)
         run: |
           cd backend
           pytest tests/test_api_e2e.py::TestHealthAndConfig \
@@ -186,13 +188,38 @@ jobs:
                   tests/test_admin_api.py \
                   tests/test_admin_permission.py \
                   tests/test_security_hardening.py \
-                  -v --tb=short --no-header
-        timeout-minutes: 5
+                  tests/test_ai_failover.py \
+                  -v --tb=short --no-header --cov=app --cov-report=term
+        timeout-minutes: 10
         env:
           MONGODB_URL: mongodb://localhost:27017
           INTENT_USE_LLM: "false"
           USE_REACT: "false"
           USE_LOCAL_EMBEDDING: "false"
+
+  # ──────────────────────────────────────────────
+  # Security: pip-audit 依赖漏洞审计（核心子集，起步仅报告）
+  # 审计范围见 backend/requirements-audit.txt（不含 torch 等本地版本 wheel）；
+  # 已知豁免：chromadb 1.5.9 上游无修复版（4 项），待新版本发布后升级收口
+  # ──────────────────────────────────────────────
+  security:
+    name: Dependency Audit (pip-audit)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install pip-audit
+        run: pip install pip-audit==2.10.1
+
+      - name: Audit core dependency subset
+        run: |
+          cd backend
+          pip-audit -r requirements-audit.txt --no-deps
 
   # ──────────────────────────────────────────────
   # Docker: build & push images (main/master only)

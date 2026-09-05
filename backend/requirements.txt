@@ -3,14 +3,14 @@
 #     本项目 API/测试/客户端均走标准 json=（自动带 application/json），不受影响；starlette 钉 0.46（0.141.1 依赖 >=0.46.0，无需跳 1.0）。
 fastapi==0.141.1
 uvicorn[standard]==0.34.0
-python-multipart==0.0.20  # FastAPI 表单/文件上传（UploadFile/Form）所需
+python-multipart==0.0.31  # FastAPI 表单/文件上传（UploadFile/Form）所需
 
 # 数据库（MongoDB）
 pymongo==4.17.0  # motor 底层驱动；langgraph-checkpoint-mongodb 0.5.0 约束 pymongo>=4.12,<4.18（4.17 满足）
 motor==3.7.1  # 异步 MongoDB 驱动
 
 # 认证与安全
-PyJWT==2.11.0
+PyJWT==2.13.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1  # pin 版本以兼容 passlib 1.7.4
 email-validator==2.3.0  # pydantic.EmailStr 所需
@@ -23,7 +23,7 @@ tiktoken==0.12.0  # token 计数
 
 # LangChain / LangGraph（注：版本与已验证可运行的本地环境对齐，LangChain 1.x 系列）
 langchain==1.4.0  # langchain-checkpoint-mongodb 0.5.0 经 langchain-mongodb 引入；含 beta 的 langchain.mcp 命名空间
-langchain-openai==1.1.12
+langchain-openai==1.1.14
 langchain-core==1.6.2
 langchain-text-splitters==1.1.1  # 文档分块
 langchain-mongodb==0.12.0  # langgraph-checkpoint-mongodb 0.5.0 的依赖（pymongo>=4.12,<4.18）
@@ -38,7 +38,7 @@ aiosqlite==0.22.1  # 异步 SQLite（AsyncSqliteSaver 所需）
 # 运维诊断 Agent 通过 MultiServerMCPClient 加载 mcp_servers/ops_monitoring_server 的
 # query_metrics / query_logs 工具；缺这两个包会导致 Docker 中 MCP 加载失败降级
 langchain-mcp-adapters==0.3.1  # MultiServerMCPClient 加载 MCP 工具（需 langchain-core>=1.3）
-mcp==1.27.0  # FastMCP（ops_monitoring_server 使用）
+mcp==1.28.1  # FastMCP（ops_monitoring_server 使用）
 
 # 向量数据库与语义嵌入
 chromadb==1.5.9

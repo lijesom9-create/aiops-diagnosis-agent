@@ -1,0 +1,34 @@
+# 供应链安全审计子集（pip-audit 用；CI security job 消费）
+#
+# 为什么不是完整 requirements.txt：torch==2.13.0+cpu 等本地版本 wheel 与
+# ML 全栈会让审计环境装不动/解析失败；本文件覆盖暴露面最大的核心依赖
+# （Web 层 / AI 链路 / 数据层 / 认证），与生产运行时同源钉版本。
+# 维护约定：requirements.txt 中下列包升版时同步更新本文件。
+
+fastapi==0.141.1
+uvicorn[standard]==0.34.0
+python-multipart==0.0.31
+pymongo==4.17.0
+motor==3.7.1
+PyJWT==2.13.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+email-validator==2.3.0
+anthropic==0.97.0
+openai==2.30.0
+httpx==0.28.1
+langchain==1.4.0
+langchain-openai==1.1.14
+langchain-core==1.6.2
+langgraph==1.2.11
+langchain-mcp-adapters==0.3.1
+mcp==1.28.1
+qdrant-client==1.19.0
+chromadb==1.5.9
+pydantic==2.13.5
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
+loguru==0.7.3
+redis==5.3.1
+celery==5.5.3
+requests>=2.31.0
