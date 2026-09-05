@@ -43,7 +43,7 @@ def _track_checked_out():
     """借出连接数 Gauge（池饱和度可观测）——从 SQLAlchemy 池状态读取"""
     try:
         POOL_CHECKED_OUT.set(engine.pool.checkedout())
-    except Exception:
+    except Exception:  # Gauge 刷新失败不影响业务请求
         pass
 
 

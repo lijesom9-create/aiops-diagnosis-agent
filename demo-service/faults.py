@@ -93,7 +93,7 @@ def _release_pool_connections():
     for conn in list(_held_conns):
         try:
             conn.close()
-        except Exception:
+        except Exception:  # 单个连接关闭失败不阻断剩余释放
             pass
     _held_conns.clear()
     logger.warning("池连接已全部释放")

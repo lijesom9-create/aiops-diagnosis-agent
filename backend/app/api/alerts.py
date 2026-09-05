@@ -104,7 +104,7 @@ def _route_metric(level: str):
     try:
         from ..observability.metrics import get_metrics
         get_metrics().increment("ops_alert_route_total", 1, labels={"level": level})
-    except Exception:
+    except Exception:  # 指标采集失败不影响告警处理主流程
         pass
 
 
@@ -296,7 +296,7 @@ def _select_culprit(incident: Dict[str, Any], root_cause: str) -> Optional[str]:
                 if age_seconds > 0:
                     # 最早的多加分（用相对值，这里简化：age 越大分越高，上限 3）
                     score += min(3, age_seconds / 3600)
-        except Exception:
+        except Exception:  # 时间分值缺失跳过，不影响告警聚类
             pass
 
         if score > best_score:
@@ -621,7 +621,7 @@ async def _route_alert_to_incident(alert: Dict[str, Any]) -> Tuple[Dict[str, Any
     try:
         from ..observability.metrics import get_metrics
         get_metrics().increment("ops_incidents_created_total", 1)
-    except Exception:
+    except Exception:  # 指标采集失败不影响新建事故
         pass
     logger.info(f"新建事故 {incident_id}: service={service or 'unknown'}, 告警={alertname}")
     return incident, "initial"
@@ -775,7 +775,7 @@ async def diagnosis_worker_loop():
         try:
             await asyncio.wait_for(_worker_wakeup.wait(),
                                    timeout=settings.DIAG_TASK_POLL_SECONDS)
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError:  # 超时=本轮无唤醒信号，继续等下一轮
             pass
         _worker_wakeup.clear()
 
@@ -932,7 +932,7 @@ async def _process_diagnosis_task(task: Dict[str, Any]):
                         "ops_incident_diag_time_seconds",
                         (_dt.now() - start).total_seconds(),
                         labels={"service": incident.get("service", "unknown")})
-        except Exception:
+        except Exception:  # 指标采集失败不影响诊断计时统计
             pass
     except Exception as e:
         attempts = task.get("attempts") or 1
@@ -943,7 +943,7 @@ async def _process_diagnosis_task(task: Dict[str, Any]):
                 from ..observability.metrics import get_metrics
                 get_metrics().increment("ops_diagnosis_total", 1, labels={
                     "trigger": task.get("trigger", "unknown"), "result": "dead"})
-            except Exception:
+            except Exception:  # 指标采集失败不影响 dead 统计
                 pass
             logger.error(
                 "诊断任务 {} 达到重试上限，标记 dead: {}",
@@ -1180,7 +1180,7 @@ async def alertmanager_webhook(payload: AlertmanagerWebhook, request: Request,
         for a in alerts_data:
             get_metrics().increment("ops_alerts_received_total", 1, labels={
                 "status": a.get("status", "firing")})
-    except Exception:
+    except Exception:  # 指标采集失败不影响告警接收
         pass
 
     # 自动诊断（Incident 生命周期 + 持久化任务表）
