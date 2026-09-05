@@ -104,7 +104,7 @@ class FakeFeishu:
 def incident_env(monkeypatch):
     """隔离的事故测试环境：内存 db + mock agent/feishu + 放大间隔避免重诊"""
     import app.api.langgraph as lg
-    from app.api import alerts as alerts_mod
+    from app.services import alert_service as alerts_mod
 
     mem_db = _memory_db()
     agent = FakeAgent()
@@ -478,7 +478,7 @@ class TestRouteMetrics:
 
     @pytest.mark.asyncio
     async def test_route_level_counters(self, incident_env, monkeypatch):
-        from app.api import alerts as alerts_mod
+        from app.services import alert_service as alerts_mod
 
         levels = []
         monkeypatch.setattr(alerts_mod, "_route_metric",

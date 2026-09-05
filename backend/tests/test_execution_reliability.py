@@ -103,7 +103,7 @@ class TestDiagnosisTaskTable:
 @pytest.fixture
 def worker_env(monkeypatch):
     import app.api.langgraph as lg
-    from app.api import alerts as alerts_mod
+    from app.services import alert_service as alerts_mod
 
     mem_db = _memory_db()
     agent = FakeAgent()
