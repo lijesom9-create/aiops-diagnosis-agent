@@ -17,78 +17,8 @@ class ContentMixin:
     _mongo: Any
     _use_mongo: bool
     _documents: List[Dict]
-    _topics: List[Dict]
-    _study_plans: List[Dict]
     _organizations: List[Dict]
 
-    async def create_topic(self, topic_data: dict) -> str:
-        """创建学习主题"""
-        await self.connect()
-        topic_data["created_at"] = datetime.now()
-        topic_data["updated_at"] = datetime.now()
-        if self._use_mongo:
-            await self._mongo.topics.insert_one(topic_data)
-        else:
-            self._topics.append(topic_data)
-        return topic_data.get("topic_id")
-    async def get_topic(self, topic_id: str) -> Optional[dict]:
-        """获取主题"""
-        await self.connect()
-        if self._use_mongo:
-            doc = await self._mongo.topics.find_one({"topic_id": topic_id}, {"_id": 0})
-            return clean_mongo_doc(doc)
-        for t in self._topics:
-            if t.get("topic_id") == topic_id:
-                return t
-        return None
-    async def get_user_topics(
-        self,
-        user_id: str,
-        status: Optional[str] = None,
-        limit: int = 100
-    ) -> List[dict]:
-        """获取用户的所有主题"""
-        await self.connect()
-        if self._use_mongo:
-            query = {"user_id": user_id}
-            if status:
-                query["status"] = status
-            cursor = self._mongo.topics.find(query, {"_id": 0}).sort("updated_at", -1).limit(limit)
-            docs = await cursor.to_list(limit)
-            return clean_mongo_docs(docs)
-
-        result = [t for t in self._topics if t.get("user_id") == user_id]
-        if status:
-            result = [t for t in result if t.get("status") == status]
-        return sorted(
-            result,
-            key=lambda x: x.get("updated_at", ""),
-            reverse=True
-        )[:limit]
-    async def update_topic(self, topic_id: str, update_data: dict) -> bool:
-        """更新主题"""
-        await self.connect()
-        update_data["updated_at"] = datetime.now()
-        if self._use_mongo:
-            result = await self._mongo.topics.update_one(
-                {"topic_id": topic_id},
-                {"$set": update_data}
-            )
-            return result.modified_count > 0
-        for t in self._topics:
-            if t.get("topic_id") == topic_id:
-                t.update(update_data)
-                return True
-        return False
-    async def delete_topic(self, topic_id: str) -> bool:
-        """删除主题"""
-        await self.connect()
-        if self._use_mongo:
-            result = await self._mongo.topics.delete_one({"topic_id": topic_id})
-            return result.deleted_count > 0
-        original_len = len(self._topics)
-        self._topics = [t for t in self._topics if t.get("topic_id") != topic_id]
-        return len(self._topics) < original_len
     async def create_document(self, doc_data: dict) -> str:
         """创建文档记录"""
         await self.connect()
@@ -99,6 +29,7 @@ class ContentMixin:
         else:
             self._documents.append(doc_data)
         return doc_data.get("document_id")
+
     async def get_document(self, document_id: str) -> Optional[dict]:
         """获取文档记录"""
         await self.connect()
@@ -257,74 +188,7 @@ class ContentMixin:
         await self._mongo.documents.create_index(
             [("user_id", 1), ("is_public", 1)], name="idx_user_public"
         )
-    async def create_study_plan(self, plan_data: dict) -> str:
-        """创建学习计划"""
-        await self.connect()
-        plan_data["created_at"] = datetime.now()
-        plan_data["updated_at"] = datetime.now()
-        if self._use_mongo:
-            await self._mongo.study_plans.insert_one(plan_data)
-        else:
-            self._study_plans.append(plan_data)
-        return plan_data.get("plan_id")
-    async def get_study_plan(self, plan_id: str) -> Optional[dict]:
-        """获取学习计划"""
-        await self.connect()
-        if self._use_mongo:
-            doc = await self._mongo.study_plans.find_one({"plan_id": plan_id}, {"_id": 0})
-            return clean_mongo_doc(doc)
-        for p in self._study_plans:
-            if p.get("plan_id") == plan_id:
-                return p
-        return None
-    async def get_topic_study_plans(
-        self,
-        topic_id: str,
-        status: Optional[str] = None,
-        limit: int = 100
-    ) -> List[dict]:
-        """获取主题下的学习计划"""
-        await self.connect()
-        if self._use_mongo:
-            query = {"topic_id": topic_id}
-            if status:
-                query["status"] = status
-            cursor = self._mongo.study_plans.find(query, {"_id": 0}).sort("updated_at", -1).limit(limit)
-            docs = await cursor.to_list(limit)
-            return clean_mongo_docs(docs)
 
-        result = [p for p in self._study_plans if p.get("topic_id") == topic_id]
-        if status:
-            result = [p for p in result if p.get("status") == status]
-        return sorted(
-            result,
-            key=lambda x: x.get("updated_at", ""),
-            reverse=True
-        )[:limit]
-    async def update_study_plan(self, plan_id: str, update_data: dict) -> bool:
-        """更新学习计划"""
-        await self.connect()
-        update_data["updated_at"] = datetime.now()
-        if self._use_mongo:
-            result = await self._mongo.study_plans.update_one(
-                {"plan_id": plan_id},
-                {"$set": update_data}
-            )
-            return result.modified_count > 0
-        for p in self._study_plans:
-            if p.get("plan_id") == plan_id:
-                p.update(update_data)
-                return True
-        return False
-    async def delete_study_plan(self, plan_id: str) -> bool:
-        """删除学习计划"""
-        await self.connect()
-        if self._use_mongo:
-            result = await self._mongo.study_plans.delete_one({"plan_id": plan_id})
-            return result.deleted_count > 0
-        original_len = len(self._study_plans)
-        self._study_plans = [p for p in self._study_plans if p.get("plan_id") != plan_id]
-        return len(self._study_plans) < original_len
     async def create_org(self, name: str, owner_id: str) -> str:
         """创建组织"""
         await self.connect()

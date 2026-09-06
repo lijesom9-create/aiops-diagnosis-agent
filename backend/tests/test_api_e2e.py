@@ -7,9 +7,6 @@ API 端到端测试
 2. POST /api/auth/login — 登录
 3. GET /api/auth/me — 获取当前用户
 4. POST /api/teaching/chat — 教学对话
-5. GET /api/teaching/state — 获取状态
-6. POST /api/teaching/reset — 重置上下文
-7. GET /api/admin/courses — Admin 角色校验
 8. GET /api/health — 健康检查
 9. GET /api/config — DEBUG 守卫
 """
@@ -283,34 +280,6 @@ class TestSecurity:
         assert resp.status_code in (200, 405)
 
 
-# ============================================================
-# 5. 用户学习旅程（端到端）
-# ============================================================
 
-
-
-def _journey_chat_response(messages):
-    """根据用户输入返回模拟的 AI 响应"""
-    last_message = messages[-1].get("content", "")
-
-    if "递归" in last_message and ("什么是" in last_message or "讲解" in last_message):
-        return {"content": "递归就是函数在执行过程中调用自身。", "tool_calls": None, "finish_reason": "end_turn"}
-
-    if "题目" in last_message or "出题" in last_message:
-        return {
-            "content": json.dumps({
-                "question": "以下哪个函数是递归函数？\nA. def f(n): return n * f(n-1)\nB. def f(n): return n + 1",
-                "options": ["A", "B"],
-                "answer": "A",
-                "explanation": "选项A调用了自身 f(n-1)，是递归。"
-            }, ensure_ascii=False),
-            "tool_calls": None,
-            "finish_reason": "end_turn"
-        }
-
-    if "反馈" in last_message or "学生答对" in last_message or "学生答错" in last_message:
-        return {"content": "✅ 答对了！递归函数的关键就是调用自身。", "tool_calls": None, "finish_reason": "end_turn"}
-
-    return {"content": f"我理解了，这是关于'{last_message[:20]}'的内容。", "tool_calls": None, "finish_reason": "end_turn"}
 
 

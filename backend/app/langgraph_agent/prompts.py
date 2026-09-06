@@ -136,8 +136,7 @@ def build_diagnosis_prompt() -> str:
 ### 其他工具
 - 最新版本/外部信息 → web_search（互联网更及时）
 - **创建工单** → create_incident_ticket：仅当 P1/P2 级故障诊断完成、或用户明确要求时调用（诊断结论落地跟进），诊断中途不要调用
-- 用户画像/记忆 → get_user_profile / search_memory（诊断场景少用）
-- 保存诊断结论 → save_memory
+- 诊断结论归档 → 诊断完成后可提醒用户在管理后台沉淀为复盘文档
 
 ## 引用规范（重要）
 - search_knowledge 结果带 [1]、[2] 编号

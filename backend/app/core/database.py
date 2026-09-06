@@ -8,41 +8,26 @@ from typing import Dict, List
 
 from loguru import logger
 
-from app.core.db_mixins import ContentMixin, DiagnosisMixin, IncidentsMixin, KnowledgeMixin, UsersMixin
+from app.core.db_mixins import ContentMixin, DiagnosisMixin, IncidentsMixin, UsersMixin
 from app.core.db_utils import clean_mongo_doc, clean_mongo_docs, escape_regex  # noqa: F401 (re-export)
 
 from .config import settings
 
 
-class Database(UsersMixin, ContentMixin, IncidentsMixin, DiagnosisMixin, KnowledgeMixin):
+class Database(UsersMixin, ContentMixin, IncidentsMixin, DiagnosisMixin):
     """数据库管理类"""
 
     def __init__(self):
         self._users: List[Dict] = []
         self._sessions: List[Dict] = []
-        self._progress: List[Dict] = []
-        self._questions: List[Dict] = []
         self._knowledge: List[Dict] = []
-        self._quiz_records: List[Dict] = []
-        self._analytics: Dict[str, Dict] = {}
-        self._learning_states: List[Dict] = []
-        self._student_states: List[Dict] = []
         self._tool_audit_logs: List[Dict] = []
         self._incidents: List[Dict] = []
         self._diagnosis_tasks: List[Dict] = []
-        self._session_memories: List[Dict] = []
-        self._long_term_memories: List[Dict] = []
-        self._user_profiles: List[Dict] = []
-        self._user_knowledge_bases: List[Dict] = []
         self._organizations: List[Dict] = []
-        self._courses: List[Dict] = []
-        self._knowledge_points: List[Dict] = []
-        self._teaching_experiences: List[Dict] = []
         self._user_documents: List[Dict] = []
         self._evaluation_records: List[Dict] = []
-        self._topics: List[Dict] = []
         self._documents: List[Dict] = []
-        self._study_plans: List[Dict] = []
         self._connected = False
         self._use_mongo = False
         self._mongo = None

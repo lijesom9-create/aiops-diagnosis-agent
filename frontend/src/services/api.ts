@@ -102,28 +102,6 @@ export interface CreateTopicRequest {
   target_date?: string;
 }
 
-export const topicsApi = {
-  list: (status?: string): Promise<AxiosResponse<Topic[]>> =>
-    api.get('/topics', { params: status ? { status } : {} }),
-
-  get: (topicId: string): Promise<AxiosResponse<Topic>> =>
-    api.get(`/topics/${topicId}`),
-
-  create: (data: CreateTopicRequest): Promise<AxiosResponse<Topic>> =>
-    api.post('/topics', data),
-
-  update: (topicId: string, data: Partial<CreateTopicRequest>): Promise<AxiosResponse<Topic>> =>
-    api.put(`/topics/${topicId}`, data),
-
-  delete: (topicId: string): Promise<AxiosResponse<void>> =>
-    api.delete(`/topics/${topicId}`),
-
-  archive: (topicId: string): Promise<AxiosResponse<void>> =>
-    api.post(`/topics/${topicId}/archive`),
-
-  activate: (topicId: string): Promise<AxiosResponse<void>> =>
-    api.post(`/topics/${topicId}/activate`),
-};
 
 // ========== 学习资料 API ==========
 
@@ -136,24 +114,6 @@ export interface Document {
   created_at: string;
 }
 
-export const documentsApi = {
-  list: (topicId: string): Promise<AxiosResponse<Document[]>> =>
-    api.get(`/topics/${topicId}/documents`),
-
-  upload: (topicId: string, file: File): Promise<AxiosResponse<Document>> => {
-    const formData = new FormData();
-    formData.append('file', file);
-    return api.post(`/topics/${topicId}/documents`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-  },
-
-  status: (documentId: string): Promise<AxiosResponse<Document>> =>
-    api.get(`/documents/${documentId}/status`),
-
-  delete: (topicId: string, documentId: string): Promise<AxiosResponse<void>> =>
-    api.delete(`/topics/${topicId}/documents/${documentId}`),
-};
 
 // ========== 学习计划 API ==========
 
@@ -184,19 +144,6 @@ export interface PlanTask {
   type: string;
 }
 
-export const studyPlansApi = {
-  list: (topicId: string): Promise<AxiosResponse<StudyPlan[]>> =>
-    api.get(`/topics/${topicId}/plans`),
-
-  generate: (topicId: string): Promise<AxiosResponse<StudyPlan>> =>
-    api.post(`/topics/${topicId}/plans/generate`),
-
-  get: (planId: string): Promise<AxiosResponse<StudyPlan>> =>
-    api.get(`/plans/${planId}`),
-
-  delete: (planId: string): Promise<AxiosResponse<void>> =>
-    api.delete(`/plans/${planId}`),
-};
 
 // ========== 评估/学习报告 API ==========
 
@@ -207,16 +154,6 @@ export interface EvaluationSummary {
   improvement_trend: string;
 }
 
-export const evaluationApi = {
-  summary: (): Promise<AxiosResponse<EvaluationSummary>> =>
-    api.get('/evaluation/summary'),
-
-  report: (): Promise<AxiosResponse<LearningReport>> =>
-    api.get('/evaluation/report'),
-
-  history: (limit?: number): Promise<AxiosResponse<{ total: number; history: any[] }>> =>
-    api.get('/evaluation/history', { params: limit ? { limit } : {} }),
-};
 
 // ========== 飞书集成 API ==========
 
@@ -348,22 +285,6 @@ export interface ContentResponse {
   word_count: number;
 }
 
-export const blogApi = {
-  generate: (data: BlogGenerateRequest): Promise<AxiosResponse<BlogGenerateResponse>> =>
-    api.post('/blog/generate', data),
-
-  generateOutline: (data: OutlineRequest): Promise<AxiosResponse<OutlineResponse>> =>
-    api.post('/blog/outline', data),
-
-  generateContent: (data: ContentGenerateRequest): Promise<AxiosResponse<ContentResponse>> =>
-    api.post('/blog/content', data),
-
-  approveOutline: (data: OutlineApproveRequest): Promise<AxiosResponse<{ status: string; message: string; outline: string }>> =>
-    api.post('/blog/outline/approve', data),
-
-  generateWithWorkflow: (data: WorkflowGenerateRequest): Promise<AxiosResponse<WorkflowGenerateResponse>> =>
-    api.post('/blog/workflow/generate', data),
-};
 
 // 工作流API
 export interface WorkflowGenerateRequest {
@@ -427,16 +348,6 @@ export interface WorkflowGenerateResponse {
   }>;
 }
 
-export const workflowApi = {
-  generate: (data: WorkflowGenerateRequest): Promise<AxiosResponse<WorkflowGenerateResponse>> =>
-    api.post('/blog/workflow/generate', data),
-
-  getState: (workflowId: string): Promise<AxiosResponse<WorkflowState>> =>
-    api.get(`/workflow/${workflowId}`),
-
-  listWorkflows: (params?: { status?: string; limit?: number }): Promise<AxiosResponse<{ workflows: WorkflowState[] }>> =>
-    api.get('/workflow', { params }),
-};
 
 // ========== RAG 问答 API ==========
 
@@ -502,31 +413,6 @@ export interface MemoryStats {
   archival_entries: number;
 }
 
-export const memoryApi = {
-  getProfile: (): Promise<UserProfile> =>
-    api.get('/memory/profile').then(res => res.data),
-
-  updateProfile: (data: { name?: string; learning_style?: string; preferences?: Record<string, any> }): Promise<{ message: string }> =>
-    api.put('/memory/profile', data).then(res => res.data),
-
-  addWeakTopic: (topic: string): Promise<{ message: string }> =>
-    api.post('/memory/profile/weak-topic', null, { params: { topic } }).then(res => res.data),
-
-  addStrongTopic: (topic: string): Promise<{ message: string }> =>
-    api.post('/memory/profile/strong-topic', null, { params: { topic } }).then(res => res.data),
-
-  addMemory: (content: string, category?: string, tags?: string[]): Promise<{ message: string; entry_id: string }> =>
-    api.post('/memory/entries', { content, category: category || 'note', tags: tags || [] }).then(res => res.data),
-
-  searchMemory: (query: string, category?: string, limit?: number): Promise<{ entries: Array<{ id: string; content: string; category: string; tags: string[]; created_at: string }>; total: number }> =>
-    api.get('/memory/entries', { params: { query, category, limit: limit || 10 } }).then(res => res.data),
-
-  getStats: (): Promise<MemoryStats> =>
-    api.get('/memory/stats').then(res => res.data),
-
-  clearAll: (): Promise<{ message: string; stats: Record<string, number> }> =>
-    api.delete('/memory/clear').then(res => res.data),
-};
 
 // ========== LangGraph Agent API（流式聊天 + 会话管理） ==========
 

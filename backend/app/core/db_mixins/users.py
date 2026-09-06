@@ -269,35 +269,3 @@ class UsersMixin:
             s for s in self._sessions if s.get("session_id") != session_id
         ]
         return len(self._sessions) < original_len
-    async def update_progress(self, user_id: str, course_id: str, topic: str, score: int):
-        await self.connect()
-        progress = {
-            "user_id": user_id,
-            "course_id": course_id,
-            "topic": topic,
-            "score": score,
-            "updated_at": datetime.now()
-        }
-        if self._use_mongo:
-            await self._mongo.learning_progress.update_one(
-                {"user_id": user_id, "course_id": course_id, "topic": topic},
-                {"$set": progress}, upsert=True
-            )
-        else:
-            for p in self._progress:
-                if p.get("user_id") == user_id and p.get("course_id") == course_id and p.get("topic") == topic:
-                    p.update(progress)
-                    return
-            self._progress.append(progress)
-    async def get_user_progress(self, user_id: str, course_id: Optional[str] = None) -> List[dict]:
-        await self.connect()
-        if self._use_mongo:
-            query = {"user_id": user_id}
-            if course_id:
-                query["course_id"] = course_id
-            cursor = self._mongo.learning_progress.find(query, {"_id": 0})
-            return await cursor.to_list(100)
-        result = [p for p in self._progress if p.get("user_id") == user_id]
-        if course_id:
-            result = [p for p in result if p.get("course_id") == course_id]
-        return result

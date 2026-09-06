@@ -1,17 +1,17 @@
 """
 记忆管理器 (Memory Manager)
 
-整合核心记忆、回忆记忆、档案记忆和 RAG 知识，
+整合回忆记忆（对话历史）、档案记忆和 RAG 知识，
 提供统一的记忆管理接口。
 
 架构：
 ┌─────────────────────────────────────────────────────────┐
 │                    MemoryManager                        │
 ├─────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐     │
-│  │ CoreMemory  │  │ RecallMemory│  │ArchivalMemory│     │
-│  │ (核心记忆)  │  │ (回忆记忆)  │  │ (档案记忆)  │     │
-│  └─────────────┘  └─────────────┘  └─────────────┘     │
+│  ┌─────────────┐  ┌─────────────┐                       │
+│  │ RecallMemory│  │ArchivalMemory│                      │
+│  │ (回忆记忆)  │  │ (档案记忆)  │                       │
+│  └─────────────┘  └─────────────┘                       │
 │         │                │                │             │
 │         └────────────────┼────────────────┘             │
 │                          ↓                              │
@@ -27,7 +27,6 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from .archival_memory import ArchivalMemory, MemoryEntry
-from .core_memory import CoreMemory, UserProfile
 from .recall_memory import ConversationTurn, RecallMemory
 
 
@@ -54,8 +53,7 @@ class MemoryManager:
         self.vector_store = vector_store
         self.rag_retriever = rag_retriever
 
-        # 初始化记忆模块
-        self.core_memory = CoreMemory()
+        # 初始化记忆模块（画像层已随教学域裁剪移除；保留会话/档案记忆）
         self.recall_memory = RecallMemory(embedding_model=embedding_model)
         self.archival_memory = ArchivalMemory(
             embedding_model=embedding_model,
@@ -63,24 +61,6 @@ class MemoryManager:
         )
 
         logger.info("MemoryManager 初始化完成")
-
-    # ========== 核心记忆操作 ==========
-
-    def get_user_profile(self, user_id: str) -> UserProfile:
-        """获取用户画像"""
-        return self.core_memory.get_user_profile(user_id)
-
-    def update_user_profile(self, user_id: str, **kwargs) -> UserProfile:
-        """更新用户画像"""
-        return self.core_memory.update_user_profile(user_id, **kwargs)
-
-    def add_weak_topic(self, user_id: str, topic: str):
-        """添加薄弱知识点"""
-        self.core_memory.add_weak_topic(user_id, topic)
-
-    def add_strong_topic(self, user_id: str, topic: str):
-        """添加擅长领域"""
-        self.core_memory.add_strong_topic(user_id, topic)
 
     # ========== 对话操作 ==========
 
@@ -208,7 +188,6 @@ class MemoryManager:
         query: str,
         user_id: str,
         session_id: Optional[str] = None,
-        include_core: bool = True,
         include_recall: bool = True,
         include_archival: bool = True,
         include_rag: bool = True,
@@ -226,7 +205,6 @@ class MemoryManager:
             query: 用户查询
             user_id: 用户 ID
             session_id: 会话 ID
-            include_core: 是否包含核心记忆
             include_recall: 是否包含回忆记忆
             include_archival: 是否包含档案记忆
             include_rag: 是否包含 RAG 知识
@@ -235,7 +213,7 @@ class MemoryManager:
             max_archival_results: 最大档案结果数
             rag_content_limit: RAG 知识单条内容截断长度，None 或 -1 表示不截断
             max_context_tokens: P1-2 上下文 token 预算（None 时从 settings 读取，-1 表示不限制）
-                超预算时按优先级（RAG > archival > recall > core）截断或丢弃
+                超预算时按优先级（RAG > archival > recall）截断或丢弃
 
         Returns:
             str: 组装好的上下文
@@ -261,18 +239,7 @@ class MemoryManager:
         # 收集 parts（每个 part 是 dict，便于做预算控制）
         parts_with_meta: List[Dict[str, Any]] = []
 
-        # 1. 核心记忆（Agent 人设 + 用户画像）—— 最高优先级，不可截断
-        if include_core:
-            core_context = self.core_memory.get_context(user_id)
-            if core_context:
-                parts_with_meta.append({
-                    "name": "core",
-                    "content": core_context,
-                    "priority": 100,         # 最高，必保留
-                    "truncatable": False,
-                })
-
-        # 2. 回忆记忆（对话历史）—— 低优先级，最早可被丢弃
+        # 1. 回忆记忆（对话历史）—— 低优先级，最早可被丢弃
         if include_recall:
             history_context = self.recall_memory.get_context_string(
                 user_id, session_id, max_history_turns
@@ -367,126 +334,4 @@ class MemoryManager:
         contents = [p["content"] for p in selected_parts if p.get("content")]
         return "\n\n".join(contents)
 
-    def build_context_with_metadata(
-        self,
-        query: str,
-        user_id: str,
-        session_id: Optional[str] = None,
-        max_rag_results: Optional[int] = None,
-        max_context_tokens: Optional[int] = None,
-        chat_history: Optional[List[Dict]] = None,
-    ) -> Dict[str, Any]:
-        """
-        构建上下文并附带多模态元数据
-
-        与 build_context 相同，但额外返回：
-        - context: str 上下文字符串
-        - image_references: List[Dict] 命中的图片引用列表
-            [{ "path": str, "type": str, "title": str, "index": int }]
-            前端可据此请求图片展示接口
-
-        用于多模态 RAG 场景下，让聊天 API 同时返回文本答案和图片引用。
-        """
-        # 直接复用 build_context 的逻辑，但拦截 parts_with_meta
-        # 这里通过重新组装来获取 image_references（避免改动 build_context 签名）
-        # 实际生产可重构 build_context 内部，让两个方法共享同一收集逻辑
-        context_str = self.build_context(
-            query=query,
-            user_id=user_id,
-            session_id=session_id,
-            max_rag_results=max_rag_results,
-            max_context_tokens=max_context_tokens,
-            chat_history=chat_history,
-        )
-
-        # 单独跑一遍 RAG 检索，提取图片引用（开销很小）
-        image_refs: List[Dict[str, Any]] = []
-        if self.rag_retriever:
-            try:
-                results = self.search_knowledge(query, max_rag_results, chat_history=chat_history)
-                for i, r in enumerate(results, 1):
-                    meta = r.get("metadata", {})
-                    if meta.get("element_type") == "image" and meta.get("image_path"):
-                        image_refs.append({
-                            "path": meta["image_path"],
-                            "type": meta.get("image_type", "other"),
-                            "title": meta.get("title", ""),
-                            "index": i,
-                            "keywords": meta.get("image_keywords", []),
-                        })
-            except Exception as e:
-                logger.debug(f"提取图片引用失败: {e}")
-
-        return {
-            "context": context_str,
-            "image_references": image_refs,
-        }
-
-    def build_prompt(
-        self,
-        query: str,
-        user_id: str,
-        session_id: Optional[str] = None,
-    ) -> str:
-        """
-        构建完整的 Prompt
-
-        Args:
-            query: 用户查询
-            user_id: 用户 ID
-            session_id: 会话 ID
-
-        Returns:
-            str: 完整的 Prompt
-        """
-        # 组装上下文
-        context = self.build_context(
-            query=query,
-            user_id=user_id,
-            session_id=session_id,
-        )
-
-        # 构建 Prompt
-        prompt = f"""{context}
-
-## 用户问题
-{query}
-
-## 要求
-1. 基于知识库上下文回答
-2. 考虑对话历史，保持连贯
-3. 如果是追问，理解上下文
-4. 引用来源使用 [1]、[2] 标记
-5. 如果上下文没有相关信息，明确说明
-
-## 回答"""
-
-        return prompt
-
     # ========== 清理操作 ==========
-
-    def clear_user_data(self, user_id: str) -> Dict[str, int]:
-        """清空用户的所有数据"""
-        stats = {
-            "sessions": self.recall_memory.clear_user_history(user_id),
-            "entries": self.archival_memory.clear_user_entries(user_id),
-            "profile": 1 if self.core_memory.delete_user(user_id) else 0,
-        }
-        logger.info(f"清空用户数据: {user_id} - {stats}")
-        return stats
-
-    def get_stats(self, user_id: str) -> Dict[str, Any]:
-        """获取用户记忆统计"""
-        profile = self.core_memory.get_user_profile(user_id)
-        sessions = self.recall_memory.get_all_sessions(user_id)
-        entries = self.archival_memory._user_entries.get(user_id, [])
-
-        return {
-            "user_id": user_id,
-            "has_profile": bool(profile.name),
-            "weak_topics": len(profile.weak_topics),
-            "strong_topics": len(profile.strong_topics),
-            "sessions": len(sessions),
-            "total_turns": sum(len(s.turns) for s in sessions),
-            "archival_entries": len(entries),
-        }

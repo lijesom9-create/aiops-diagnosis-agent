@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api import admin, alerts, auth, documents, health, incidents, knowledge, langgraph, memory, monitoring
+from app.api import admin, alerts, auth, documents, health, incidents, knowledge, langgraph, monitoring
 from app.core.config import settings
 from app.core.database import db
 
@@ -299,7 +299,6 @@ app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(knowledge.router)
 app.include_router(health.router)
-app.include_router(memory.router)
 app.include_router(langgraph.router)  # LangGraph Agent (替代 chat.router)
 app.include_router(admin.router)  # 管理后台（仅管理员）
 app.include_router(alerts.router)  # Alertmanager webhook Bridge（告警 → 飞书通知）

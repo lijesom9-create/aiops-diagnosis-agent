@@ -11,7 +11,6 @@ import LoginPage from '@/components/Auth/LoginPage';
 import RegisterPage from '@/components/Auth/RegisterPage';
 import ChatPage from '@/components/Chat/ChatPage';
 import DocumentsPage from '@/components/Documents/DocumentsPage';
-import MemoryPage from '@/components/Memory/MemoryPage';
 import ToastContainer from '@/components/Common/ToastContainer';
 
 // 受保护的路由
@@ -58,7 +57,6 @@ function App() {
         >
           <Route index element={<ChatPage />} />
           <Route path="documents" element={<DocumentsPage />} />
-          <Route path="memory" element={<MemoryPage />} />
         </Route>
 
         {/* 404 */}

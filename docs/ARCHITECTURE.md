@@ -16,7 +16,7 @@
 ┌──────▼─────────────────────▼─────────┐
 │        API 层 (FastAPI :8000)         │
 │  /api/langgraph | /api/documents |   │
-│  /api/auth | /api/admin | /api/memory│
+│  /api/auth | /api/admin | /api/health │
 │  /api/health | /api/knowledge        │
 │  中间件: CORS | request_id | 限流     │
 │  防护: Prompt注入检测 | 敏感信息脱敏   │
@@ -86,7 +86,6 @@ START → route_intent → agent ──should_continue──┬→ tools → age
 | `search_knowledge` | RAG | 知识库检索，支持 `service` + `doc_type` 精准过滤；低质量自动 LLM 改写重试 |
 | `web_search` / `crawl_webpage` | 外部 | Tavily / 网页爬取 |
 | `generate_content` | 生成 | 内容生成 |
-| `get_user_profile` / `save_memory` / `search_memory` | 记忆 | 用户画像 / 记忆读写 |
 
 **工具调用审计**：`run()` 结束后将本次所有工具调用（工具名 + 参数截断 + user_id + session_id + intent）写入 Mongo `tool_audit_logs`（`Database.save_tool_audit_log`，无 Mongo 时内存降级）——满足"哪些数据发给了外部 LLM"的企业安全评审要求。
 

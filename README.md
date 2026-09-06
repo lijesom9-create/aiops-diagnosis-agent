@@ -252,7 +252,6 @@ START → route_intent → agent → should_continue ─┬→ tools → agent �
 | `web_search` | 互联网搜索（Tavily） |
 | `crawl_webpage` | 网页内容爬取 |
 | `generate_content` | 内容生成 |
-| `get_user_profile` / `save_memory` / `search_memory` | 记忆工具 |
 
 > Agent 的所有工具调用写入审计日志（Mongo `tool_audit_logs`：工具名 + 参数 + 调用者 + 会话），满足"哪些数据发给了外部 LLM"的可追溯要求。
 
@@ -272,7 +271,6 @@ START → route_intent → agent → should_continue ─┬→ tools → agent �
 | 文档 | `/api/documents/upload` `/{id}/status` `/{id}/retry` `/batch-upload` `/{id}` | 上传/状态/重试/批量/删除（写操作需管理员） |
 | 知识 | `/api/knowledge/documents/{id}` `/bm25/rebuild` `/stats` | 知识库管理 |
 | 管理 | `/api/admin/stats` `/users` `/users/{id}/role` `/tasks` | 统计/用户/角色/任务（仅管理员） |
-| 记忆 | `/api/memory/*` | 用户画像 / 档案记忆 |
 | 健康 | `/api/health` `/api/health/live` `/api/health/ready` | 健康检查：live 存活探针（恒真）/ ready 就绪探针（真实探测 Mongo/Redis/Qdrant，Docker HEALTHCHECK 使用） |
 
 ---
@@ -410,7 +408,7 @@ education-agent/
 │   │   │   ├── evidence.py      #   证据解析与组装（纯函数）
 │   │   │   ├── prompts.py       #   诊断/QA 系统 prompt 模板
 │   │   │   ├── tools.py         #   工具 facade（兼容转发）
-│   │   │   ├── tools_retrieval.py / tools_web.py / tools_memory.py / tools_ops.py
+│   │   │   ├── tools_retrieval.py / tools_web.py / tools_ops.py
 │   │   │   ├── retrieval_context.py  # 检索上下文与查询重写（ContextVar / 知识库注入）
 │   │   │   ├── tool_cache.py    #   工具结果缓存
 │   │   │   └── state.py         #   图状态定义

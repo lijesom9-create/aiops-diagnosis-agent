@@ -5,20 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-from app.core.db_utils import clean_mongo_doc, clean_mongo_docs, escape_regex
+from app.core.db_utils import clean_mongo_doc
 
 
 class DiagnosisMixin:
-    async def save_question(self, question_data: dict) -> str:
-        await self.connect()
-        question_data["created_at"] = datetime.now()
-        if self._use_mongo:
-            # 复制一份避免 MongoDB 修改原始数据
-            data_to_save = question_data.copy()
-            await self._mongo.questions.insert_one(data_to_save)
-        else:
-            self._questions.append(question_data)
-        return question_data.get("question_id")
     async def save_tool_audit_log(self, entry: dict) -> str:
         """记录 Agent 工具调用审计日志（工具名 + 参数 + 调用者）
 
@@ -171,55 +161,3 @@ class DiagnosisMixin:
                 task.update(fields)
                 return True
         return False
-    async def get_question(self, question_id: str) -> Optional[dict]:
-        """获取题目"""
-        await self.connect()
-        if self._use_mongo:
-            doc = await self._mongo.questions.find_one({"question_id": question_id})
-            return clean_mongo_doc(doc)
-        for q in self._questions:
-            if q.get("question_id") == question_id:
-                return q
-        return None
-    async def get_questions_by_topic(
-        self,
-        topic: str,
-        difficulty: Optional[str] = None,
-        limit: int = 10,
-        fuzzy: bool = False
-    ) -> List[dict]:
-        """
-        按主题获取题目
-
-        Args:
-            topic: 主题
-            difficulty: 难度
-            limit: 数量限制
-            fuzzy: 是否模糊匹配
-        """
-        await self.connect()
-        if self._use_mongo:
-            if fuzzy:
-                # 模糊匹配：topic 包含搜索词（转义特殊字符防止正则注入）
-                query = {"topic": {"$regex": escape_regex(topic), "$options": "i"}}
-            else:
-                query = {"topic": topic}
-            if difficulty:
-                query["difficulty"] = difficulty
-            cursor = self._mongo.questions.find(query)
-            docs = await cursor.to_list(limit)
-            return clean_mongo_docs(docs)
-
-        # 内存模式
-        result = []
-        for q in self._questions:
-            q_topic = q.get("topic", "")
-            if fuzzy:
-                if topic in q_topic or q_topic in topic:
-                    result.append(q)
-            else:
-                if q_topic == topic:
-                    result.append(q)
-        if difficulty:
-            result = [q for q in result if q.get("difficulty") == difficulty]
-        return result[:limit]

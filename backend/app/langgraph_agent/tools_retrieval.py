@@ -20,15 +20,8 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from loguru import logger
 
-try:
-    from langgraph.prebuilt import InjectedState
-except ImportError:
-    InjectedState = None  # 兼容旧版 langgraph
-
-try:
-    from langgraph.types import Command
-except ImportError:  # 旧版 langgraph 无 Command 机制
-    Command = None
+from langgraph.prebuilt import InjectedState
+from langgraph.types import Command  # P3 钉 langgraph>=1.2.11，Command/注入机制必有
 
 from . import retrieval_context
 from .evidence import _merge_retrieved_docs
@@ -88,7 +81,7 @@ def _merge_search_results(results1: List[Dict], results2: List[Dict], limit: int
     return merged[:limit]
 
 
-def _finish_retrieval(text: str, artifact: List[Dict], state, tool_call_id) -> Union[str, Command]:
+def _finish_retrieval(text: str, artifact: List[Dict], state, tool_call_id) -> Union[str, Any]:
     """检索统一出口（P3 回归修复）。
 
     graph 语境（state 注入）→ 返回 Command 把检索结果直接写进 LangGraph state 的
@@ -115,9 +108,9 @@ def search_knowledge(
     limit: int = 5,
     service: Optional[str] = None,
     doc_type: Optional[str] = None,
-    state: Annotated[dict, InjectedState] if InjectedState else dict = None,
-    tool_call_id: Annotated[str, InjectedToolCallId] if InjectedToolCallId else str = "",
-) -> Union[str, Command]:
+    state: Annotated[Optional[dict], InjectedState] = None,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+) -> Union[str, Any]:
     """
     搜索企业知识库
 

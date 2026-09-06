@@ -551,7 +551,7 @@ class LangGraphAgent:
     # ========== P1-2: 上下文一次性组装 ==========
 
     def _build_memory_context(self, state: AgentState, user_msg: str) -> str:
-        """一次性组装记忆上下文（用户画像 + 历史 + 档案记忆）
+        """一次性组装记忆上下文（历史 + 档案记忆）
 
         在 _route_intent 节点调用一次，结果存入 state.memory_context，
         后续 _build_system_prompt 直接读取，避免每步重复检索（原 _build_system_prompt
@@ -572,12 +572,6 @@ class LangGraphAgent:
                 return ""
 
             parts = []
-
-            # 用户画像
-            profile = memory.core_memory.get_user_profile(user_id)
-            profile_context = profile.to_context_string()
-            if profile_context:
-                parts.append(f"## 用户信息\n{profile_context}")
 
             # 最近对话历史
             history = memory.recall_memory.get_recent_history(user_id, limit=5)

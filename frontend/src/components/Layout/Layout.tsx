@@ -4,7 +4,7 @@
 
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
-import { LogOut, User, MessageSquare, FileText, Brain } from 'lucide-react';
+import { LogOut, User, MessageSquare, FileText } from 'lucide-react';
 
 export default function Layout() {
   const { user, logout } = useAuthStore();
@@ -19,7 +19,6 @@ export default function Layout() {
   const navLinks = [
     { path: '/', label: '问答', icon: MessageSquare },
     { path: '/documents', label: '文档', icon: FileText },
-    { path: '/memory', label: '记忆', icon: Brain },
   ];
 
   return (

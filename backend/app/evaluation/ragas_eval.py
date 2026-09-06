@@ -56,7 +56,6 @@ async def _generate_answer(
         query=query,
         user_id="ragas_eval_user",
         session_id="ragas_eval_session",
-        include_core=False,
         include_recall=False,
         include_archival=False,
         include_rag=True,

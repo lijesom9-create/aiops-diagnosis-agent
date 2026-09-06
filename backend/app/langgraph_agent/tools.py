@@ -6,7 +6,6 @@ LangGraph Agent 使用的工具按业务域拆分（T9）：
 - tool_cache.py:        工具结果缓存（ToolCache + _tool_cache 单例）
 - tools_retrieval.py:   search_knowledge（RAG 混合检索 + 权限过滤 + 质量重试）
 - tools_web.py:         web_search / crawl_webpage / generate_content
-- tools_memory.py:      get_user_profile / save_memory / search_memory
 - tools_ops.py:         运维诊断 mock 工具 + 评测场景开关与 mock 数据
 
 本模块保留 create_tools 工厂与历史导入路径的全量再导出：agent.py、
@@ -40,7 +39,6 @@ from .retrieval_context import (
     set_query_rewriter_llm,
 )
 from .tool_cache import ToolCache, _tool_cache
-from .tools_memory import get_user_profile, save_memory, search_memory
 from .tools_ops import (
     _EVAL_SCENARIO_MOCKS,
     _eval_scenario,
@@ -94,9 +92,6 @@ __all__ = [
     "web_search",
     "crawl_webpage",
     "generate_content",
-    "get_user_profile",
-    "save_memory",
-    "search_memory",
     "query_metrics",
     "query_logs",
     "analyze_chart",
@@ -141,7 +136,4 @@ def create_tools() -> list:
         web_search,
         crawl_webpage,
         generate_content,
-        get_user_profile,
-        save_memory,
-        search_memory,
     ]

@@ -174,24 +174,18 @@ class TestDatabaseFixes:
 
     @pytest.mark.asyncio
     async def test_all_collections_initialized(self):
-        """所有集合应在 __init__ 中初始化"""
+        """运维域集合应在 __init__ 中初始化（教学域集合已随聚焦裁剪移除）"""
         from app.core.database import Database
 
         db = Database()
-        # 检查所有之前用 hasattr 懒初始化的属性
-        assert hasattr(db, "_knowledge")
-        assert hasattr(db, "_quiz_records")
-        assert hasattr(db, "_analytics")
-        assert hasattr(db, "_learning_states")
-        assert hasattr(db, "_student_states")
-        assert hasattr(db, "_session_memories")
-        assert hasattr(db, "_long_term_memories")
-        assert hasattr(db, "_user_profiles")
-        assert hasattr(db, "_user_knowledge_bases")
-        assert hasattr(db, "_courses")
-        assert hasattr(db, "_knowledge_points")
-        assert hasattr(db, "_teaching_experiences")
-        assert hasattr(db, "_user_documents")
+        for attr in ("_users", "_sessions", "_documents", "_organizations",
+                     "_tool_audit_logs", "_incidents", "_diagnosis_tasks"):
+            assert hasattr(db, attr)
+        # 教学域集合确认已删除
+        for gone in ("_quiz_records", "_student_states", "_user_profiles",
+                     "_knowledge_points", "_teaching_experiences", "_topics",
+                     "_study_plans", "_courses"):
+            assert not hasattr(db, gone)
 
     @pytest.mark.asyncio
     async def test_sort_key_handles_datetime_and_string(self):
