@@ -325,7 +325,7 @@ python scripts/e2e_real_test.py                               # 真实 LLM 端�
 
 - **当前基线：514 passed / 3 skipped / 0 failed**（全量回归约 7-12 分钟，任何重构/升级后以此为准）
 - e2e 覆盖 91 项：`test_api_e2e.py`(43) + `test_e2e_fixes.py`(30) + `test_ops_e2e.py`(18)（运维诊断 /chat 与 /chat/stream 全链路，TestClient + mock，不依赖外部服务）；另有 `scripts/e2e_real_test.py` 真实 LLM + 真实 Mongo 端到端（五阶段：注册/会话/问答/SSE 流式/文档面）
-- 质量门禁：`ruff check backend demo-service` 零告警（规则集 E4/E7/E9/F/I/B/ASYNC）；mypy 渐进接入（CI 非阻塞）
+- 质量门禁：`ruff check backend demo-service` 零告警（规则集 E4/E7/E9/F/I/B/ASYNC）；**mypy 棘轮**（`python scripts/mypy_ratchet.py`，存量 530 错误冻结、新增代码零错误，CI 阻塞）；**pip-audit** 依赖漏洞审计（核心子集 `requirements-audit.txt`，CI security job）
 - 开发依赖：`pip install -r requirements-dev.txt`（pytest 套件此前为隐式依赖，现已显式化）
 
 主要测试套件：
@@ -440,6 +440,7 @@ education-agent/
 - ✅ 告警通知闭环（Alertmanager → Bridge → 飞书卡片，端到端验证通过）
 - ✅ 管理后台前端（监控看板 / 告警管理 / 日志查询 / 知识库 / 任务 / 用户）
 - ✅ 代码质量整改 T1-T10：业务编排层下沉 `app/services/`、巨型文件拆分（database 2009→299、tools 1346→147、documents 940→690）、ruff 零告警、FastAPI 0.141 / LangGraph 1.2 框架升级；全量回归 488 passed 基线不变（详见 [docs/代码质量整改记录.md](docs/代码质量整改记录.md)）
+- ✅ P0/P1 企业级补齐：AI 供应商主备容灾（`AI_FALLBACK_*`）、文档幂等与卡死恢复（投递补偿/删除挂起/周期扫描）、真实 LLM 端到端脚本复活、降级路径 metrics 化 + request_id 链路贯穿、mypy 棘轮阻塞门禁（存量 530 冻结）、pip-audit 供应链审计（27→4 漏洞）、Mongo 备份/恢复脚本 + 演练预案、PROMPT_VERSION 版本管理
 
 后续方向：
 - 多 Agent 协作（监控 Agent / 日志 Agent / 知识 Agent 分工协同）
