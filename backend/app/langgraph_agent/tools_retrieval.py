@@ -18,10 +18,9 @@ from typing import Annotated, Any, Dict, List, Optional, Union
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
-from loguru import logger
-
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command  # P3 钉 langgraph>=1.2.11，Command/注入机制必有
+from loguru import logger
 
 from . import retrieval_context
 from .evidence import _merge_retrieved_docs

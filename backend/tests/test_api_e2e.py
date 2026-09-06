@@ -11,7 +11,6 @@ API 端到端测试
 9. GET /api/config — DEBUG 守卫
 """
 
-import json
 import os
 import sys
 import uuid
