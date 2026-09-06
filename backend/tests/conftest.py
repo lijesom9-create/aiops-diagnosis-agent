@@ -68,31 +68,7 @@ def reset_cache_each_test():
     reset_cache()
 
 
-# ========== 测试数据库 fixture（集成测试用） ==========
-
-@pytest.fixture
-async def test_db():
-    """提供测试数据库实例，测试后自动清空
-
-    用法：
-        async def test_something(test_db):
-            await test_db.create_session("user1", "test")
-            ...
-
-    特点：
-    - 使用 education_agent_test 数据库，不污染开发数据
-    - 每个测试函数后自动 drop 整个测试数据库
-    """
-    from app.core.database import Database
-    db = Database(
-        url=os.environ.get("MONGODB_URL", "mongodb://localhost:27017"),
-        db_name=os.environ.get("MONGODB_DB_NAME", "education_agent_test"),
-    )
-    await db.connect()
-    yield db
-    # 测试后清空测试数据库
-    try:
-        await db._mongo.client.drop_database("education_agent_test")
-    except Exception:
-        pass
-    await db.close()
+# 说明：原此处有一个从未可用的 test_db fixture（裸 @pytest.fixture 装饰 async generator，
+# pytest-asyncio strict 模式下不生效，且 Database.__init__ 无 url/db_name 参数）。
+# P1-D 已删除；需要真实 Mongo 的测试参考 tests/test_document_lifecycle.py 的
+# @pytest_asyncio.fixture 写法（Database() 无参构造，库名走 MONGODB_DB_NAME 环境变量）。

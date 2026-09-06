@@ -80,6 +80,14 @@ async def lifespan(app: FastAPI):
 
     logger.info(f"应用启动完成, 知识库: {knowledge_store.size()} 条")
 
+    # documents 集合索引（无条件挂载：卡死扫描/列表查询/唯一性都依赖，
+    # 不能像 ensure_incident_indexes 那样锁在告警开关内）
+    try:
+        await db.ensure_document_indexes()
+        logger.info("documents 索引已就绪")
+    except Exception as e:
+        logger.warning(f"documents 索引创建失败（不影响主服务）: {e}")
+
     # MCP 监控工具集成：启用后 Agent 加载 ops_monitoring_server 的 query_metrics/query_logs
     if settings.MCP_ENABLED:
         try:

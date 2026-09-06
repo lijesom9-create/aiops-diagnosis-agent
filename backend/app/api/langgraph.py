@@ -60,6 +60,7 @@ class ChatResponse(BaseModel):
     step_count: int
     diagnosis_report: Optional[dict] = Field(default=None, description="结构化诊断报告（运维诊断 Agent 专用，非诊断问题为 null）")
     session_id: Optional[str] = Field(default=None, description="会话 ID（首次对话时返回新创建的会话 ID）")
+    prompt_version: Optional[str] = Field(default=None, description="系统 prompt 版本（审计/A-B 对照定位用）")
 
 
 # ========== 会话管理 请求/响应模型 ==========
@@ -308,6 +309,7 @@ async def chat(
                 "citations": _cached_resp["citations"],
                 "diagnosis_report": _cached_resp.get("diagnosis_report"),
                 "step_count": 0,
+                "prompt_version": _cached_resp.get("prompt_version"),
             }
             _skip_title = True
             logger.info(f"LLM 响应缓存命中，跳过 LLM 调用: {request.message[:30]}...")
@@ -357,6 +359,7 @@ async def chat(
                 "tools_used": result["tools_used"],
                 "citations": result["citations"],
                 "diagnosis_report": result.get("diagnosis_report"),
+                "prompt_version": result.get("prompt_version"),
             }, _llm_cache_key)
 
         return ChatResponse(
@@ -366,6 +369,7 @@ async def chat(
             diagnosis_report=result.get("diagnosis_report"),
             step_count=result["step_count"],
             session_id=session_id,
+            prompt_version=result.get("prompt_version"),
         )
 
     except HTTPException:
@@ -447,6 +451,7 @@ async def chat_stream(
                         final_meta["step_count"] = event.get("step_count", 0)
                         final_meta["citations"] = event.get("citations", [])
                         final_meta["diagnosis_report"] = event.get("diagnosis_report")
+                        final_meta["prompt_version"] = event.get("prompt_version")
                         # done 事件补上 session_id，前端据此更新会话列表
                         event["session_id"] = session_id
 

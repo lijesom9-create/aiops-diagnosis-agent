@@ -185,3 +185,49 @@ gh run view <run_id> --repo lijesom9-create/RAG
 - 公网访问：`https://mao91.xyz` → 200，health ok，RAG 问答引用真实知识库
 - 仓库 master = `e86be00`（APT_MIRROR 修复）
 - VM 容器：backend(healthy) / frontend / qdrant / mongodb / cf-tunnel 全部运行中
+
+---
+
+## 十、数据备份与恢复（P1-D）
+
+### 备份什么
+
+| 数据 | 位置 | 方式 | 频率建议 |
+|------|------|------|----------|
+| MongoDB（文档/用户/事故/会话） | `mongodb-data` volume | `scripts/backup_mongo.ps1`（mongodump） | 每日 |
+| Qdrant 向量 | `qdrant-data` volume | 停写后整目录拷贝，或由知识库重导入重建（`seed_ops_kb.py` 幂等） | 每周或版本升级前 |
+| `.env` 密钥 | `backend/.env` | 手工拷贝至密码管理器/私钥加密存储 | 变更时 |
+| 上传原始文件 | `backend/uploads` | 目录同步（备份工具/云同步） | 每日 |
+
+> MongoDB 是唯一无脚本难以重建的数据（用户/会话/事故记录）；向量库可由 `data/ops_docs/` + 上传文档重建，但重建耗时，建议与 Mongo 同周期备份。
+
+### 备份
+
+```powershell
+# VM 或本机（需 docker 可用），保留最近 7 份
+.\scripts\backup_mongo.ps1 -Keep 7
+
+# 定时（Windows 计划任务示例，每日 03:00）
+schtasks /create /tn "edu-agent-mongo-backup" /tr "powershell -File D:\path\to\scripts\backup_mongo.ps1 -Keep 7" /sc daily /st 03:00
+```
+
+**异地容灾**：备份完成后再拷贝一份 zip 到另一台机器/对象存储（脚本不做上传，避免把密钥逻辑写进备份链路）。
+
+### 恢复
+
+```powershell
+# 先停写
+docker compose stop backend celery-worker
+
+# 恢复（先 drop 目标库再写入，脚本内置确认逻辑见头部注释）
+.\scripts\restore_mongo.ps1 -Zip .\backups\mongo_20260906_120000.zip -Database education_agent
+
+# 恢复后
+docker compose start backend celery-worker
+# 验证：GET /api/health/ready + 前端登录抽查 + 文档列表数量
+```
+
+### 演练
+
+建议每季度做一次恢复演练：用最近一份备份在**测试库名**（`-Database education_agent_restore_test`）上执行恢复，抽查文档数与事故记录完整性，验证备份可用性——没有演练过的备份等于没有备份。
+

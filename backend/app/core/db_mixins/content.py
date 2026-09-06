@@ -228,6 +228,26 @@ class ContentMixin:
             ).limit(limit)
             return [clean_mongo_doc(d) async for d in cursor]
         return [dict(d) for d in self._documents if d.get("status") == status][:limit]
+
+    async def ensure_document_indexes(self) -> None:
+        """documents 集合索引（幂等：同名 create_index no-op）。
+
+        - uniq_document_id: document_id 唯一（上传并发的最后防线）
+        - idx_status_updated: 卡死扫描（find_stale_documents）与状态过滤
+        - idx_user_public: 列表查询（get_user_documents 的 $or 前缀）
+        """
+        await self.connect()
+        if not self._use_mongo:
+            return
+        await self._mongo.documents.create_index(
+            [("document_id", 1)], unique=True, name="uniq_document_id"
+        )
+        await self._mongo.documents.create_index(
+            [("status", 1), ("updated_at", 1)], name="idx_status_updated"
+        )
+        await self._mongo.documents.create_index(
+            [("user_id", 1), ("is_public", 1)], name="idx_user_public"
+        )
     async def create_study_plan(self, plan_data: dict) -> str:
         """创建学习计划"""
         await self.connect()

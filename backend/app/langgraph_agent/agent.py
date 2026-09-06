@@ -13,7 +13,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 from loguru import logger
 
-from .prompts import build_diagnosis_prompt, build_qa_prompt
+from .prompts import PROMPT_VERSION, build_diagnosis_prompt, build_qa_prompt
 
 try:
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -1144,6 +1144,7 @@ class LangGraphAgent:
                 "monitoring_evidence": final_state.get("monitoring_evidence", []),
                 "diagnosis_report": diagnosis_report,
                 "step_count": final_state.get("step_count", 0),
+                "prompt_version": PROMPT_VERSION,
             }
 
             # 证据充分度（规则计算，校准 LLM 自报置信度）——仅诊断链路有意义
@@ -1177,6 +1178,7 @@ class LangGraphAgent:
                 "monitoring_evidence": [],
                 "diagnosis_report": None,
                 "step_count": 0,
+                "prompt_version": PROMPT_VERSION,
             }
 
     async def run_stream(self, user_input: str, session_id: str = None, context: Dict = None, use_web_search: bool = False):
@@ -1339,6 +1341,7 @@ class LangGraphAgent:
                     "citations": _build_citations(values.get("retrieved_docs", [])),
                     "monitoring_evidence": values.get("monitoring_evidence", []),
                     "diagnosis_report": diagnosis_report,
+                    "prompt_version": PROMPT_VERSION,
                 }
 
         except Exception as e:

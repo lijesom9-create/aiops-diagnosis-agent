@@ -6,6 +6,11 @@ LangGraph Agent 系统提示模板（prompt cortex）
 - build_diagnosis_prompt(): 诊断链路系统提示（证据驱动根因诊断工作流）
 """
 
+# Prompt 模板整体版本（P1-D 最小版本管理）：修改下方任一模板文本时必须递增，
+# 随 agent.run() / 流式 done 事件 / API 响应透出，供审计与"哪版 prompt 生成的回答"定位。
+# 注意：版本常量不注入 prompt 文本（改文本=改 LLM 输入），仅做旁路元数据。
+PROMPT_VERSION = "2.0.0"
+
 
 def build_qa_prompt() -> str:
     """QA 链路系统提示（P1-1）"""
