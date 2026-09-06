@@ -19,7 +19,7 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from fastapi import BackgroundTasks
 from loguru import logger
@@ -27,9 +27,12 @@ from pydantic import BaseModel
 
 from ..core.config import settings
 from ..core.database import Database
-from ..document.uploader import DocumentUploader
 from ..models.document import DocumentCategory, DocumentStatus
-from ..storage.file_storage import get_file_storage
+
+if TYPE_CHECKING:
+    # 重依赖懒加载（仓库既有模式，E402 有意豁免）：uploader 链会拉起
+    # knowledge/chroma 栈，顶层导入会让 API 模块在无 ML 依赖的环境无法 import
+    from ..document.uploader import DocumentUploader
 
 # ========== 请求/响应模型 ==========
 
@@ -139,7 +142,7 @@ def normalize_category(category: str) -> str:
 
 # ========== 上传单例与知识库注入 ==========
 
-_uploader: Optional[DocumentUploader] = None
+_uploader: Optional["DocumentUploader"] = None
 _knowledge_store = None
 
 
@@ -149,7 +152,7 @@ def set_knowledge_store(store):
     _knowledge_store = store
 
 
-def get_document_uploader() -> DocumentUploader:
+def get_document_uploader() -> "DocumentUploader":
     """获取文档上传服务实例"""
     global _uploader
     if _uploader is None:
@@ -158,6 +161,7 @@ def get_document_uploader() -> DocumentUploader:
         ks = _knowledge_store or get_knowledge_store()
         if not ks:
             raise RuntimeError("KnowledgeStore 未初始化，无法创建 DocumentUploader")
+        from ..document.uploader import DocumentUploader
         _uploader = DocumentUploader(knowledge_store=ks)
     return _uploader
 
@@ -285,6 +289,7 @@ async def submit_document_processing(
     """
     try:
         if settings.USE_CELERY:
+            from ..storage.file_storage import get_file_storage
             file_storage = get_file_storage()
             file_info = await file_storage.save(
                 content=content, filename=filename,
@@ -514,7 +519,7 @@ async def document_stale_sweep_loop() -> None:
 
 async def _process_document(
     db: Database,
-    uploader: DocumentUploader,
+    uploader: "DocumentUploader",
     document_id: str,
     content: bytes,
     filename: str,
