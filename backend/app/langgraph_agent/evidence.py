@@ -516,6 +516,8 @@ def _build_citations(retrieved_docs: List[Dict]) -> List[Dict]:
             "service": doc.get("service", ""),
             # 知识时效：检索层对过期文档打了 _expired 标记（valid_until 已过）
             "expired": bool((doc.get("metadata") or {}).get("_expired")),
+            # 飞轮标记：本条引用来自"恢复摘要自动沉淀"的知识（前端可高亮/审计）
+            "auto_ingested": bool(doc.get("auto_ingested")),
         })
     return citations
 

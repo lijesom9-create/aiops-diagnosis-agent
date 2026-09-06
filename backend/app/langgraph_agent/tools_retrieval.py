@@ -5,11 +5,19 @@
 
 对 retrieval_context 的可变全局（_knowledge_store）必须经模块属性访问（活引用）；
 ContextVar 与函数经名字导入即安全（对象身份稳定）。
+
+返回值（P3 回归修复）：
+- graph 语境（state 注入，经 ToolNode 执行）→ 返回 `Command(update=...)`，
+  把检索结果直接写进 LangGraph state 的 retrieved_docs——LangChain 1.x 起
+  工具 wrapper 隔离 ContextVar 写入、ToolMessage 不保留 artifact，旧的
+  buffer/artifact 双通道双双失效（升级引入的静默回归），Command 是官方机制；
+- 非 graph 语境（直接调用，如测试/脚本）→ 返回纯文本 str，行为与历史一致。
 """
 
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional, Union
 
-from langchain_core.tools import tool
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import InjectedToolCallId, tool
 from loguru import logger
 
 try:
@@ -17,7 +25,13 @@ try:
 except ImportError:
     InjectedState = None  # 兼容旧版 langgraph
 
+try:
+    from langgraph.types import Command
+except ImportError:  # 旧版 langgraph 无 Command 机制
+    Command = None
+
 from . import retrieval_context
+from .evidence import _merge_retrieved_docs
 from .retrieval_context import (
     _append_retrieval_buffer,
     _conversation_context,
@@ -74,6 +88,27 @@ def _merge_search_results(results1: List[Dict], results2: List[Dict], limit: int
     return merged[:limit]
 
 
+def _finish_retrieval(text: str, artifact: List[Dict], state, tool_call_id) -> Union[str, Command]:
+    """检索统一出口（P3 回归修复）。
+
+    graph 语境（state 注入）→ 返回 Command 把检索结果直接写进 LangGraph state 的
+    retrieved_docs：LangChain 1.x 起工具 wrapper 隔离 ContextVar 写入、ToolMessage
+    不保留 artifact，旧的 buffer/artifact 双通道双双失效（升级引入的静默回归，
+    citations 恒为空）；Command 是官方 state 回写机制。
+    非 graph 语境（测试/脚本直接调用）→ 返回纯文本，行为与历史一致。
+    buffer 追加保留为兼容性 fallback（当前 langchain 下写入不可见，无害）。
+    """
+    _append_retrieval_buffer(artifact)
+    if state is not None and Command is not None:
+        existing = (state or {}).get("retrieved_docs", [])
+        merged = _merge_retrieved_docs(existing + artifact)
+        return Command(update={
+            "retrieved_docs": merged,
+            "messages": [ToolMessage(content=text, tool_call_id=tool_call_id or "")],
+        })
+    return text
+
+
 @tool
 def search_knowledge(
     query: str,
@@ -81,7 +116,8 @@ def search_knowledge(
     service: Optional[str] = None,
     doc_type: Optional[str] = None,
     state: Annotated[dict, InjectedState] if InjectedState else dict = None,
-) -> str:
+    tool_call_id: Annotated[str, InjectedToolCallId] if InjectedToolCallId else str = "",
+) -> Union[str, Command]:
     """
     搜索企业知识库
 
@@ -146,8 +182,7 @@ def search_knowledge(
         # 缓存命中时，结构化数据也要写入 buffer（供 Agent 生成 citations）
         if isinstance(cached, (tuple, list)):  # list: Redis JSON 反序列化后
             text, artifact = cached
-            _append_retrieval_buffer(artifact)
-            return text
+            return _finish_retrieval(text, artifact, state, tool_call_id)
         return cached
 
     try:
@@ -177,6 +212,18 @@ def search_knowledge(
                         results = _merge_search_results(results or [], alt_results, limit)
 
             if results:
+                from ..observability.metrics import safe_increment
+
+                # 飞轮效果度量：本次检索命中了几条"恢复摘要自动沉淀"的知识。
+                # 仅在新鲜检索分支计数——缓存命中是同一查询的重复诊断，重复计会失真。
+                auto_hits = sum(
+                    1 for r in results if (r.get("metadata") or {}).get("auto_ingested")
+                )
+                safe_increment("ops_flywheel_hit_docs_total", auto_hits,
+                               labels={"doc_type": "incident"})
+                safe_increment("ops_flywheel_searches_total", 1,
+                               labels={"auto_hit": "true" if auto_hits else "false"})
+
                 from ..core.prompt_guard import scan_rag_content
                 from ..core.sanitizer import sanitize_text
                 formatted = []
@@ -220,18 +267,18 @@ def search_knowledge(
                         "incident_id": meta.get("incident_id", ""),
                         # 知识时效标记（检索层对过期文档打的 _expired）
                         "metadata": {"_expired": expired},
+                        # 飞轮标记：是否来自"恢复摘要自动沉淀"（供前端高亮/审计）
+                        "auto_ingested": bool((r.get("metadata") or {}).get("auto_ingested")),
                         # C4: 间接注入扫描结果（risk_level + note），供前端/报告标注可疑来源
                         "injection_risk": injection_risk,
                         "injection_note": injection_note,
                     })
 
                 text = "\n\n".join(formatted) + "\n\n---\n请在回答中使用 [1]、[2] 等编号引用上述来源。"
-                # 写入 buffer（供 Agent._call_agent 读取）
-                _append_retrieval_buffer(artifact)
                 # 缓存 (text, artifact) 元组（缓存命中时重放 artifact 到 buffer）
                 # 缓存键含 user_id，与缓存检查一致，避免跨用户泄漏
                 _tool_cache.set("search_knowledge", (text, artifact), search_query, limit, user_id or "", service or "", doc_type or "")
-                return text
+                return _finish_retrieval(text, artifact, state, tool_call_id)
 
             return "未找到相关知识"
 

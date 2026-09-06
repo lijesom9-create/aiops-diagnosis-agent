@@ -127,13 +127,19 @@ def _build_content(
     return "\n".join(parts)
 
 
-def _build_knowledge_item(
+def _build_knowledge_items(
     incident: Dict[str, Any],
     report: Dict[str, Any],
     action_items: List[Any],
     summary: str,
     valid_days: int,
-) -> KnowledgeItem:
+) -> List["KnowledgeItem"]:
+    """构造父子两条知识条目（对齐 parent-child 分离检索的入库规范）。
+
+    历史缺陷：单条目无 chunk_type，被 add() 分流进子块库，父块库永远没有它，
+    父子分离检索的取回阶段（子块命中 → parent_id 取父块）拿不到文档 →
+    飞轮回流的知识永远检索不到（returned=0）。
+    """
     incident_id = incident.get("incident_id") or ""
     service = incident.get("service") or "unknown"
     confidence = report.get("confidence_level", "unknown")
@@ -143,27 +149,41 @@ def _build_knowledge_item(
         min_confidence="medium", min_sufficiency="medium",
     )
     now = datetime.now()
-    return KnowledgeItem(
-        id=f"incident_{incident_id}",
-        title=f"[事故复盘] {service} - {_clean(report.get('root_cause') or '未知根因')[:60]}",
-        content=_build_content(incident, report, action_items, summary, needs_review),
-        source="user_document",
-        metadata={
-            "doc_type": "incident",
-            "service": service,
-            "severity": incident.get("max_severity") or incident.get("severity") or "",
-            "impact_priority": incident.get("impact_priority"),
-            "incident_id": incident_id,
-            "alertnames": list(incident.get("alertnames") or []),
-            "confidence_level": confidence,
-            "sufficiency_level": suff,
-            "first_seen_at": incident.get("first_seen_at"),
-            "resolved_at": incident.get("resolved_at"),
-            "planned_change": bool(incident.get("planned_change")),
-            "valid_until": (now + timedelta(days=max(1, valid_days))).isoformat(),
-            "_needs_review": needs_review,
-        },
+    parent_id = f"incident_{incident_id}"
+    title = f"[事故复盘] {service} - {_clean(report.get('root_cause') or '未知根因')[:60]}"
+    content = _build_content(incident, report, action_items, summary, needs_review)
+
+    base_meta = {
+        "doc_type": "incident",
+        # 飞轮标记：本条由"恢复摘要→知识回流"自动生成（区别于人工上传的复盘），
+        # 检索命中时据此打 ops_flywheel_* 指标，让"越用越准"可度量
+        "auto_ingested": True,
+        "service": service,
+        "severity": incident.get("max_severity") or incident.get("severity") or "",
+        "impact_priority": incident.get("impact_priority"),
+        "incident_id": incident_id,
+        "document_id": parent_id,
+        "alertnames": list(incident.get("alertnames") or []),
+        "confidence_level": confidence,
+        "sufficiency_level": suff,
+        "first_seen_at": incident.get("first_seen_at"),
+        "resolved_at": incident.get("resolved_at"),
+        "planned_change": bool(incident.get("planned_change")),
+        "valid_until": (now + timedelta(days=max(1, valid_days))).isoformat(),
+        "_needs_review": needs_review,
+    }
+    parent_meta = {**base_meta, "chunk_type": "parent", "parent_id": parent_id}
+    child_meta = {**base_meta, "chunk_type": "child", "parent_id": parent_id}
+
+    parent = KnowledgeItem(
+        id=parent_id, title=title, content=content,
+        source="user_document", metadata=parent_meta,
     )
+    child = KnowledgeItem(
+        id=f"{parent_id}_c0", title=title, content=content,
+        source="user_document", metadata=child_meta,
+    )
+    return [parent, child]
 
 
 def ingest_incident_into_knowledge(
@@ -215,14 +235,14 @@ def ingest_incident_into_knowledge(
             _count("skipped_low_quality")
             return "skipped"
 
-        item = _build_knowledge_item(
+        items = _build_knowledge_items(
             incident, report, action_items, summary,
             valid_days=getattr(settings, "INCIDENT_KNOWLEDGE_VALID_DAYS", 90),
         )
-        store.add(item)
+        store.add_batch(items)
         if callable(getattr(store, "invalidate_caches", None)):
             store.invalidate_caches()
-        log.info(f"经验回流已入库: {item.id}（doc_type=incident）")
+        log.info(f"经验回流已入库: {items[0].id}（doc_type=incident，parent+child）")
         _count("ingested")
         return "ingested"
     except Exception as e:

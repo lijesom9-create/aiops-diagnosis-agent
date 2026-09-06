@@ -58,7 +58,7 @@ class RateLimiter:
             logger.info("限流器使用 Redis 后端（分布式）")
         except Exception as e:
             logger.debug(f"Redis 不可用，限流降级到内存模式: {e}")
-            from .observability.metrics import safe_increment
+            from ..observability.metrics import safe_increment
             safe_increment("ratelimit_fallback_total", 1)
             self._redis = None
             self._redis_ready = False

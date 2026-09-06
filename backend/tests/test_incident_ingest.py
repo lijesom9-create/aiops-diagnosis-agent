@@ -8,7 +8,7 @@ import pytest
 
 from app.knowledge.incident_ingest import (
     _build_content,
-    _build_knowledge_item,
+    _build_knowledge_items,
     extract_sufficiency,
     ingest_incident_into_knowledge,
     should_ingest,
@@ -72,19 +72,27 @@ def _incident(**over):
 
 def test_build_item_id_is_stable_and_idempotent():
     report = {"root_cause": "连接池耗尽", "confidence_level": "high"}
-    i1 = _build_knowledge_item(_incident(), report, [], "摘要", 90)
-    i2 = _build_knowledge_item(_incident(), report, [], "摘要", 90)
-    assert i1.id == i2.id == "incident_INC-1"  # 幂等 upsert，不重复
+    i1 = _build_knowledge_items(_incident(), report, [], "摘要", 90)
+    i2 = _build_knowledge_items(_incident(), report, [], "摘要", 90)
+    # 幂等 upsert，不重复：父条目 id 稳定，子条目由父 id 派生
+    assert [it.id for it in i1] == [it.id for it in i2] == [
+        "incident_INC-1", "incident_INC-1_c0"]
 
 
 def test_build_item_metadata_and_valid_until():
-    item = _build_knowledge_item(_incident(), {"confidence_level": "medium"}, [], "摘要", 90)
-    assert item.metadata["doc_type"] == "incident"
-    assert item.metadata["incident_id"] == "INC-1"
-    assert item.metadata["sufficiency_level"] == "high"
-    assert item.metadata["confidence_level"] == "medium"
-    assert item.metadata["_needs_review"] is True          # medium → 标记复核
-    assert "valid_until" in item.metadata                   # 过期软降权字段存在
+    parent, child = _build_knowledge_items(
+        _incident(), {"confidence_level": "medium"}, [], "摘要", 90)
+    for item in (parent, child):
+        assert item.metadata["doc_type"] == "incident"
+        assert item.metadata["incident_id"] == "INC-1"
+        assert item.metadata["sufficiency_level"] == "high"
+        assert item.metadata["confidence_level"] == "medium"
+        assert item.metadata["_needs_review"] is True          # medium → 标记复核
+        assert item.metadata["auto_ingested"] is True          # 飞轮标记
+        assert "valid_until" in item.metadata                   # 过期软降权字段存在
+    assert parent.metadata["chunk_type"] == "parent"           # 父子分离入库规范
+    assert child.metadata["chunk_type"] == "child"
+    assert child.metadata["parent_id"] == parent.id
 
 
 def test_build_content_annotates_low_confidence():
@@ -114,6 +122,9 @@ class _FakeStore:
         self.invalidations = 0
     def add(self, item):
         self.added.append(item)
+    def add_batch(self, items):
+        for it in items:
+            self.add(it)
     def invalidate_caches(self):
         self.invalidations += 1
 
@@ -130,8 +141,9 @@ def test_ingest_writes_store_and_invalidates(monkeypatch):
     incident = _incident()
     report = {"root_cause": "连接池耗尽", "confidence_level": "high"}
     assert ingest_incident_into_knowledge(incident, report, [], "摘要") == "ingested"
-    assert len(fake.added) == 1
-    assert fake.added[0].id == "incident_INC-1"
+    assert len(fake.added) == 2                       # parent + child
+    assert fake.added[0].id == "incident_INC-1"       # 父条目（可被父块取回）
+    assert fake.added[1].metadata["parent_id"] == "incident_INC-1"
     assert fake.invalidations == 1          # 入库后失效查询缓存
 
 

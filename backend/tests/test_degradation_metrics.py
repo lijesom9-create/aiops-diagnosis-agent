@@ -20,8 +20,12 @@ def test_knowledge_store_missing_metric():
     from app.langgraph_agent.tools_retrieval import search_knowledge
 
     retrieval_context.set_knowledge_store(None)
-    result = search_knowledge.invoke({"query": "测试问题"})
-    assert result == "知识库未初始化"
+    result = search_knowledge.invoke({
+        "args": {"query": "测试问题"}, "name": "search_knowledge",
+        "type": "tool_call", "id": "t0",
+    })
+    # 带 InjectedToolCallId 的工具在完整 ToolCall 形式下返回 ToolMessage 包装
+    assert (result.content if hasattr(result, "content") else result) == "知识库未初始化"
     m = get_metrics().get_metric("rag_knowledge_store_missing_total")
     assert m is not None and m["value"] >= 1
 
@@ -96,3 +100,15 @@ def test_cache_fallback_metric_on_init(monkeypatch):
         assert m is not None and m["value"] >= 1
     finally:
         cache_mod._cache_instance = None  # 还原单例，避免污染其他测试
+
+
+def test_ratelimit_fallback_metric(monkeypatch):
+    """Redis 不可用时限流降级内存并计数（回归守卫：修过一次 ./. 相对导入错误）"""
+    from app.core import rate_limiter as rl_mod
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "REDIS_URL", "redis://localhost:59999/0")
+    limiter = rl_mod.RateLimiter()
+    allowed = limiter.check("user-rl-test")
+    assert allowed is True  # 降级内存模式放行，且不因埋点导入错误而 500
+    assert (get_metrics().get_metric("ratelimit_fallback_total") is not None)
