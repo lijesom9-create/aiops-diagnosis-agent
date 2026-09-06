@@ -20,12 +20,20 @@ BASELINE = BACKEND_DIR / "mypy-baseline.json"
 TARGETS = ["app/core", "app/api"]
 
 
-def run_mypy() -> list:
+def run_mypy() -> tuple:
     proc = subprocess.run(
         [sys.executable, "-m", "mypy", *TARGETS],
         cwd=BACKEND_DIR, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
-    return [ln for ln in (proc.stdout + proc.stderr).splitlines() if "error:" in ln]
+    output = proc.stdout + proc.stderr
+    lines = [ln for ln in output.splitlines() if "error:" in ln]
+    # 防护：mypy 未正常执行（未安装/崩溃）时输出里没有 "error:" 行也没有
+    # "Found"/"Success" 汇总——绝不能当成 0 错误（否则 --update 会把基线腐蚀成空）
+    if not lines and ("Found" not in output) and ("Success" not in output):
+        print("mypy 未能正常执行（未安装或崩溃），原始输出：")
+        print(output[-2000:] or "(无输出)")
+        sys.exit(2)
+    return lines
 
 
 def per_file_counts(lines: list) -> Counter:

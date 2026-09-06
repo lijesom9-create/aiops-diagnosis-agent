@@ -151,6 +151,10 @@ jobs:
         image: mongo:7
         ports:
           - 27017:27017
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
 
     steps:
       - uses: actions/checkout@v4
@@ -171,6 +175,7 @@ jobs:
             "pydantic==2.13.5" "pydantic-settings==2.14.2" "python-dotenv==1.2.2" \
             "httpx==0.28.1" "requests>=2.31.0" "loguru==0.7.3" \
             "langchain-core==1.6.2" "langchain-openai==1.1.14" "langgraph==1.2.11" \
+            "qdrant-client==1.19.0" \
             "email-validator==2.3.0" \
             -r requirements-dev.txt
 
@@ -192,6 +197,9 @@ jobs:
         timeout-minutes: 10
         env:
           MONGODB_URL: mongodb://localhost:27017
+          VECTOR_STORE_BACKEND: qdrant   # 对齐生产后端（默认 chroma 是无 Docker 本地兜底）
+          QDRANT_HOST: localhost
+          QDRANT_PORT: "6333"
           INTENT_USE_LLM: "false"
           USE_REACT: "false"
           USE_LOCAL_EMBEDDING: "false"

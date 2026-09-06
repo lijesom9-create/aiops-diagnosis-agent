@@ -139,3 +139,6 @@ alertmanager-data/
 简历*.md
 # 临时镜像下载脚本（已完成使命）
 pull-image.ps1
+
+# 本地备份产物（backup_mongo.ps1 输出）
+backups/
