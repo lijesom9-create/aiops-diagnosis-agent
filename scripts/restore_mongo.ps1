@@ -1,4 +1,4 @@
-# MongoDB 恢复脚本（mongorestore，先 drop 目标库再写入）
+﻿# MongoDB 恢复脚本（mongorestore，先 drop 目标库再写入）
 # 用法: .\scripts\restore_mongo.ps1 -Zip .\backups\mongo_20260906_120000.zip [-Database education_agent]
 # 警告: 恢复会覆盖现有数据。执行前：
 #   1. 停写（docker compose stop backend celery-worker）

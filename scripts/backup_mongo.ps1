@@ -1,4 +1,4 @@
-# MongoDB 备份脚本（mongodump 经 docker exec，dump 后打包为 zip）
+﻿# MongoDB 备份脚本（mongodump 经 docker exec，dump 后打包为 zip）
 # 用法: .\scripts\backup_mongo.ps1 [-Keep 7] [-OutDir .\backups]
 # 策略建议见 docs/DEPLOYMENT.md「数据备份与恢复」：每日定时执行，
 # 本地保留最近 N 份 + 异地（对象存储/另一台机器）至少一份。
