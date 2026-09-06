@@ -46,7 +46,7 @@ class Metrics:
         self.history = deque(maxlen=self._HISTORY_MAX)
         self._prom_objects: Dict[str, Any] = {}
 
-    def _get_prom(self, name: str, metric_type: str, label_keys: tuple):
+    def _get_prom(self, name: str, metric_type: str, label_keys: tuple) -> Optional[Any]:
         """获取或创建 prometheus_client 指标对象（按名字+类型+标签键缓存）"""
         if not HAS_PROMETHEUS:
             return None
@@ -56,7 +56,7 @@ class Metrics:
             return self._prom_objects[cache_key]
         try:
             if metric_type == "counter":
-                obj = Counter(safe, f"metric {safe}", list(label_keys) if label_keys else [])
+                obj: Any = Counter(safe, f"metric {safe}", list(label_keys) if label_keys else [])
             elif metric_type == "gauge":
                 obj = Gauge(safe, f"metric {safe}", list(label_keys) if label_keys else [])
             elif metric_type == "histogram":
@@ -70,13 +70,13 @@ class Metrics:
         self._prom_objects[cache_key] = obj
         return obj
 
-    def _get_key(self, name: str, labels: Dict = None) -> str:
+    def _get_key(self, name: str, labels: Optional[Dict] = None) -> str:
         if not labels:
             return name
         label_str = ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
         return f"{name}{{{label_str}}}"
 
-    def increment(self, name: str, value: float = 1.0, labels: Dict = None):
+    def increment(self, name: str, value: float = 1.0, labels: Optional[Dict] = None):
         """增加计数器"""
         labels = labels or {}
         prom = self._get_prom(name, "counter", tuple(labels.keys()))
@@ -93,7 +93,7 @@ class Metrics:
             entry["value"] += value
             self.history.append({"name": name, "type": "counter", "value": value, "labels": labels})
 
-    def set_gauge(self, name: str, value: float, labels: Dict = None):
+    def set_gauge(self, name: str, value: float, labels: Optional[Dict] = None):
         """设置仪表盘"""
         labels = labels or {}
         prom = self._get_prom(name, "gauge", tuple(labels.keys()))
@@ -109,7 +109,7 @@ class Metrics:
             }
             self.history.append({"name": name, "type": "gauge", "value": value, "labels": labels})
 
-    def observe(self, name: str, value: float, labels: Dict = None):
+    def observe(self, name: str, value: float, labels: Optional[Dict] = None):
         """记录直方图观测值（真实分桶，不再只记录最新值）"""
         labels = labels or {}
         prom = self._get_prom(name, "histogram", tuple(labels.keys()))
@@ -125,7 +125,7 @@ class Metrics:
             }
             self.history.append({"name": name, "type": "histogram", "value": value, "labels": labels})
 
-    def get_metric(self, name: str, labels: Dict = None) -> Optional[Dict]:
+    def get_metric(self, name: str, labels: Optional[Dict] = None) -> Optional[Dict]:
         """获取指标快照"""
         with self._lock:
             entry = self.metrics.get(self._get_key(name, labels))
@@ -139,7 +139,7 @@ class Metrics:
                 for e in self.metrics.values()
             ]
 
-    def get_history(self, name: str = None, limit: int = 100) -> List[Dict]:
+    def get_history(self, name: Optional[str] = None, limit: int = 100) -> List[Dict]:
         """获取近期观测历史（有界）"""
         with self._lock:
             items = list(self.history)
@@ -170,7 +170,7 @@ def get_metrics() -> Metrics:
         return _metrics
 
 
-def safe_increment(name: str, value: float = 1.0, labels: Dict = None) -> None:
+def safe_increment(name: str, value: float = 1.0, labels: Optional[Dict] = None) -> None:
     """指标埋点的容错封装：采集失败静默忽略（埋点不应影响业务主流程）。
 
     降级/异常路径埋点的统一入口——调用方不再各自写 try/except。

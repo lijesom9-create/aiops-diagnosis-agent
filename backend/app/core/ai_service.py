@@ -30,9 +30,9 @@ class AIModelProvider(ABC):
         pass
 
     @abstractmethod
-    async def chat_stream(self, messages: List[Dict]) -> AsyncIterator[str]:
-        """流式聊天"""
-        pass
+    def chat_stream(self, messages: List[Dict]) -> AsyncIterator[str]:
+        """流式聊天（实现为 async generator，基类签名用同步 def 返回 AsyncIterator）"""
+        raise NotImplementedError
 
 
 # 提供商默认配置
@@ -136,6 +136,8 @@ class OpenAICompatibleProvider(AIModelProvider):
 
         async with ResilienceContext(self._breaker, self._limiter):
             return await self._chat_with_retry(messages, tools)
+        # 不可达：ResilienceContext 正常退出必返回；异常向上传播
+        raise RuntimeError("unreachable: ResilienceContext did not return")
 
     async def _chat_with_retry(self, messages: List[Dict], tools: Optional[List[Dict]] = None) -> Dict:
         """内部：带重试的 chat 调用（不含熔断限流）"""

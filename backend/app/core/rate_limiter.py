@@ -103,9 +103,14 @@ class RateLimiter:
         now = _time.time()
         cutoff = now - self.window
 
+        redis_client = self._redis
+        if redis_client is None:
+            logger.warning("限流器 Redis 未就绪，本次检查放行（内存降级）")
+            return True
+
         # 先统计窗口内请求数，仅在未超限时才写入当前请求——
         # 被拒绝的请求不计入窗口，避免持续重试导致"越刷锁越久"
-        pipe = self._redis.pipeline()
+        pipe = redis_client.pipeline()
         pipe.zremrangebyscore(key, 0, cutoff)
         pipe.zcard(key)
         pipe.expire(key, self.window + 10)
@@ -115,8 +120,8 @@ class RateLimiter:
         if current_count >= self.max_requests:
             return False
 
-        self._redis.zadd(key, {str(now): now})
-        self._redis.expire(key, self.window + 10)
+        redis_client.zadd(key, {str(now): now})
+        redis_client.expire(key, self.window + 10)
         return True
 
 

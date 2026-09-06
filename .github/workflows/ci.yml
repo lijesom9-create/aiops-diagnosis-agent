@@ -106,14 +106,14 @@ jobs:
           ruff check .
 
   # ──────────────────────────────────────────────
-  # Backend Type Check: mypy（C5 渐进接入——非阻塞起步）
-  # 仅检查 app/core + app/api 新代码目录；continue-on-error 阶段，
-  # 不阻塞流水线。随新代码类型覆盖度提升再逐步收紧为阻塞门禁。
+  # Backend Type Check: mypy 棘轮门禁（P1-C 升级为阻塞）
+  # 仅检查 app/core + app/api；按「文件级错误计数」与 mypy-baseline.json 比较，
+  # 存量错误冻结不增、新增代码零错误——有意放宽需 python scripts/mypy_ratchet.py --update
+  # 并在提交说明注明。基线在 CI 镜像依赖环境生成（本地全量 venv 计数会漂移）。
   # ──────────────────────────────────────────────
   backend-mypy:
-    name: Backend Type Check (mypy, non-blocking)
+    name: Backend Type Check (mypy ratchet)
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
@@ -130,10 +130,10 @@ jobs:
             "loguru==0.7.3" "PyJWT==2.13.0" "passlib[bcrypt]==1.7.4" \
             "httpx==0.28.1" "motor==3.7.1"
 
-      - name: Run mypy (app/core + app/api only)
+      - name: Run mypy ratchet (blocking on new errors)
         run: |
           cd backend
-          python -m mypy app/core app/api
+          python scripts/mypy_ratchet.py
 
   # ──────────────────────────────────────────────
   # Backend: install core deps, run critical tests.
