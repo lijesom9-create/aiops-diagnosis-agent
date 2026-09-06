@@ -55,6 +55,7 @@ FeishuClient → 飞书告警卡片（firing 红 / resolved 绿）
 - **执行层可靠性**：诊断任务落 Mongo 任务表（原子认领 + 失败退避重试 + 启动捞回），重启不丢诊断、多副本不重复消费；`CHECKPOINT_BACKEND=mongodb` 会话现场全集群共享；重试走"继续完成"（checkpoint 保留现场，不重复取证）
 - **诊断可见性**：自动诊断以 `DIAGNOSIS_ORG_ID` 服务身份检索（公共 + 该组织文档），文档级 `shared_to_diagnosis` 标记（上传默认共享、敏感文档可关闭）旁路组织隔离
 - **事故记录落库**：Mongo `incidents` 集合保存指纹集、诊断历史（时间线）、恢复摘要，支撑事后复盘统计
+- **知识飞轮（越用越准）**：高质量恢复摘要经质量门（置信度/充分度达标）自动沉淀为事故复盘知识并回流检索库，标记 `auto_ingested`；`ops_flywheel_*` 指标度量「自动沉淀知识被后续诊断命中」的比率
 - **测试端点**：`GET /api/alerts/test`（仅管理员）手动触发一条测试告警验证链路
 - webhook 需配置 `ALERT_WEBHOOK_SECRET`（未配置时端点拒绝处理），Alertmanager 侧通过 `http_config.authorization` 携带
 
@@ -438,6 +439,7 @@ education-agent/
 - ✅ 告警通知闭环（Alertmanager → Bridge → 飞书卡片，端到端验证通过）
 - ✅ 管理后台前端（监控看板 / 告警管理 / 日志查询 / 知识库 / 任务 / 用户）
 - ✅ 代码质量整改 T1-T10：业务编排层下沉 `app/services/`、巨型文件拆分（database 2009→299、tools 1346→147、documents 940→690）、ruff 零告警、FastAPI 0.141 / LangGraph 1.2 框架升级；全量回归 488 passed 基线不变（详见 [docs/代码质量整改记录.md](docs/代码质量整改记录.md)）
+- ✅ P2 产品侧优化：飞轮效果度量（auto_ingested 标记 + ops_flywheel_* 指标，真链路验证通过）、修复 P3 框架升级引入的 citations 静默回归（Command 回写 state）、教学域聚焦裁剪（净删约 2100 行，项目收敛为纯运维诊断叙事）
 - ✅ P0/P1 企业级补齐：AI 供应商主备容灾（`AI_FALLBACK_*`）、文档幂等与卡死恢复（投递补偿/删除挂起/周期扫描）、真实 LLM 端到端脚本复活、降级路径 metrics 化 + request_id 链路贯穿、mypy 棘轮阻塞门禁（存量 530 冻结）、pip-audit 供应链审计（27→4 漏洞）、Mongo 备份/恢复脚本 + 演练预案、PROMPT_VERSION 版本管理
 
 后续方向：
