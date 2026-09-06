@@ -170,7 +170,6 @@ jobs:
             "PyJWT==2.13.0" "passlib[bcrypt]==1.7.4" "bcrypt==4.0.1" \
             "pydantic==2.13.5" "pydantic-settings==2.14.2" "python-dotenv==1.2.2" \
             "httpx==0.28.1" "requests>=2.31.0" "loguru==0.7.3" \
-            "websockets==12.0" \
             "langchain-core==1.6.2" "langchain-openai==1.1.14" "langgraph==1.2.11" \
             "email-validator==2.3.0" \
             -r requirements-dev.txt
@@ -217,9 +216,15 @@ jobs:
         run: pip install pip-audit==2.10.1
 
       - name: Audit core dependency subset
+        # chromadb 1.5.9 的 4 项为已知豁免（上游无修复版，见整改记录 §11-B）；
+        # 其余任何漏洞出现都会让本步非零退出（continue-on-error 只吞已知项）
         run: |
           cd backend
-          pip-audit -r requirements-audit.txt --no-deps
+          pip-audit -r requirements-audit.txt --no-deps \
+            --ignore-vuln PYSEC-2026-311 \
+            --ignore-vuln CVE-2026-45830 \
+            --ignore-vuln CVE-2026-45831 \
+            --ignore-vuln CVE-2026-45833
 
   # ──────────────────────────────────────────────
   # Docker: build & push images (main/master only)

@@ -6,12 +6,21 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.core.db_utils import clean_mongo_doc, clean_mongo_docs
 
 
 class ContentMixin:
+    # 属性由 Database 组合后在其 __init__ 赋值（Mixin 自身不初始化）；
+    # 类级声明让 mypy 识别跨 Mixin 共享状态（P1-C 棘轮：新增代码零错误）。
+    _mongo: Any
+    _use_mongo: bool
+    _documents: List[Dict]
+    _topics: List[Dict]
+    _study_plans: List[Dict]
+    _organizations: List[Dict]
+
     async def create_topic(self, topic_data: dict) -> str:
         """创建学习主题"""
         await self.connect()
