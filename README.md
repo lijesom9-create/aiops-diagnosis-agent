@@ -1,10 +1,14 @@
-# 🤖 智能运维故障诊断 Agent（基于 RAG + LangGraph）
+# 🤖 智能运维故障诊断 Agent（AIOps）
 
-企业级运维故障诊断系统：用户上报线上故障，Agent 依据 **实时监控取证 → 知识库历史经验 → 根因定位 → 处置方案** 的流程进行证据驱动的诊断，输出结构化诊断报告。
+![CI/CD Pipeline](https://img.shields.io/badge/CI-8%20jobs%20passing-brightgreen) ![Tests](https://img.shields.io/badge/tests-523%20passed-brightgreen) ![Python](https://img.shields.io/badge/Python-3.12-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
-后端基于 **FastAPI + LangGraph + RAG**，前端为 React（用户端问答 + 管理后台），向量检索使用 **Qdrant**（本地嵌入式 / Docker Server 两种模式）。
+面向企业智能运维场景的**故障诊断 Agent**：告警触发 → 自动多源取证诊断 → 结构化报告推送飞书 → 事故全生命周期跟进 → 复盘知识回流。核心解决 MTTR 中最耗时的环节——**告警响应初期的信息聚合与根因假设生成**。
 
-**AIOps 全链路**：Prometheus（指标）+ Loki（日志）+ Alertmanager（告警）+ 飞书自建应用（通知），告警触发 → 自动推送飞书卡片，Agent 可调 MCP 工具三源交叉印证定位根因。
+**核心链路**：Prometheus/Alertmanager 告警 → 按服务聚合为事故实体 → 持久化诊断任务（原子认领/断点恢复）→ LangGraph Agent 多步取证（实时监控 + 变更事件 + 依赖拓扑 + 知识库历史经验，四源交叉印证）→ 结构化诊断报告（根因/证据/处置/置信度/引用溯源）→ 恢复摘要复盘 → 知识回流检索库，形成"越用越准"的飞轮。
+
+**技术栈**：LangGraph + MCP + DeepSeek/Qwen（OpenAI 兼容）+ BGE-M3（dense+sparse）+ Qdrant + CrossEncoder（ONNX int8）+ FastAPI + MongoDB + Redis + Celery + Prometheus/Loki/Alertmanager/Grafana + 飞书 + React
+
+**评测数据**：263 条 8 类查询评测驱动调优，recall@5 **0.615 → 0.883**（MRR 1.000 / NDCG@5 0.893）；523 项测试全绿；工具调用全量审计，证据充分度规则化校准 LLM 置信度。
 
 ---
 
@@ -16,7 +20,7 @@
 - **结构化诊断报告**：`### 现象 / 证据 / 根因分析 / 处置方案 / 置信度`，答案自动带引用溯源
 - **证据充分性约束**：诊断 prompt 强制 ≥2 次 search_knowledge + 并行监控取证（旧版反思裁判节点已移除，改确定性约束兜底）
 - **循环保护**：`max_steps=8`，超限自动生成低置信度降级报告，避免无限循环
-- **会话记忆**：SQLite Checkpoint（AsyncSqliteSaver）持久化多轮会话
+- **会话记忆**：Checkpoint 双后端（SQLite 单机 / MongoDB 多副本共享），多轮会话持久化
 
 ### 🔍 RAG 检索链路
 - **父子分离存储**：子块检索、父块取回，保留 heading_path 结构上下文
@@ -447,6 +451,14 @@ education-agent/
 - 故障自动闭环（诊断 → 工单 → 变更执行）
 - 知识图谱（服务依赖 / 故障传播链可视化）
 - 接入云监控 API（阿里云云监控 / AWS CloudWatch），扩展多源数据
+
+## 📚 文档导航
+
+| 文档 | 内容 |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系统架构设计 |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 部署手册（含数据备份与恢复） |
+| [docs/代码质量整改记录.md](docs/代码质量整改记录.md) | 工程化演进全记录：T1-T10 质量整改 + P0/P1 企业级补齐 + P2 产品侧优化，每项含"针对什么问题/如何解决/验证数据"与踩坑复盘 |
 
 ## 📄 许可证
 
