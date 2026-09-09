@@ -142,3 +142,11 @@ pull-image.ps1
 
 # 本地备份产物（backup_mongo.ps1 输出）
 backups/
+
+# 私人文件（不上传公开仓库）
+简历*.md
+*resume*.md
+docs/交付文档.md
+backend_rebuild.log
+learning-notes/
+*.log
