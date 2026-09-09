@@ -265,8 +265,8 @@ jobs:
           file: ./backend/Dockerfile.ci
           push: true
           tags: |
-            ghcr.io/lijesom9-create/agent-backend:latest
-            ghcr.io/lijesom9-create/agent-backend:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/aiops-backend:latest
+            ghcr.io/${{ github.repository_owner }}/aiops-backend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -276,8 +276,8 @@ jobs:
           context: ./frontend
           push: true
           tags: |
-            ghcr.io/lijesom9-create/agent-frontend:latest
-            ghcr.io/lijesom9-create/agent-frontend:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/aiops-frontend:latest
+            ghcr.io/${{ github.repository_owner }}/aiops-frontend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -287,7 +287,7 @@ jobs:
           context: ./admin-frontend
           push: true
           tags: |
-            ghcr.io/lijesom9-create/agent-admin-frontend:latest
-            ghcr.io/lijesom9-create/agent-admin-frontend:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/aiops-admin-frontend:latest
+            ghcr.io/${{ github.repository_owner }}/aiops-admin-frontend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
