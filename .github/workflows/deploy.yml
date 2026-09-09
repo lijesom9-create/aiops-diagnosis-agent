@@ -9,7 +9,7 @@
 #   注意：VM 访问 github/ghcr 慢，backend 含 3.5GB torch 层，从 ghcr 拉取不可行，
 #   故 backend 在 VM 本地构建（SSH deploy key pull 源码 → docker build）。
 #   frontend 走 ghcr（62MB）。
-#   VM 部署目录 /home/jesom/rag-src 是 git 仓库（origin = git@github.com）。
+#   VM 部署目录 /home/deploy_user/aiops-agent 是 git 仓库（origin = git@github.com）。
 #   compose 文件已随库入库，CI 负责 git pull → 拉 frontend 镜像 → 重建 backend
 # ===========================================
 name: Deploy to VM
@@ -32,18 +32,18 @@ jobs:
 
       - name: Update source code
         run: |
-          cd /home/jesom/rag-src
+          cd /home/deploy_user/aiops-agent
           git fetch origin master
           git reset --hard origin/master
 
       - name: Pull frontend image
         run: |
-          cd /home/jesom/rag-src
+          cd /home/deploy_user/aiops-agent
           docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml pull frontend
 
       - name: Rebuild & redeploy
         run: |
-          cd /home/jesom/rag-src
+          cd /home/deploy_user/aiops-agent
           docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml build backend
           docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml up -d backend frontend
 

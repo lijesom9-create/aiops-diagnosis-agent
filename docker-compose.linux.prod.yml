@@ -1,6 +1,6 @@
 # ===========================================
 # Linux 生产部署 override（CI/CD 自动部署专用）
-# 用法（在 /home/jesom/rag-src 下）：
+# 用法（在 /home/deploy_user/aiops-agent 下）：
 #   docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml pull
 #   docker compose -f docker-compose.linux.yml -f docker-compose.linux.prod.yml up -d
 #
@@ -12,4 +12,4 @@
 # ===========================================
 services:
   frontend:
-    image: ghcr.io/lijesom9-create/agent-frontend:latest
+    image: ghcr.io/lijesom9-create/aiops-frontend:latest
