@@ -183,7 +183,7 @@ gh run view <run_id> --repo lijesom9-create/RAG
 
 - 部署流水线全绿：CI（构建+推送 ghcr）✅、CD（VM 自动部署）✅
 - 公网访问：`https://mao91.xyz` → 200，health ok，RAG 问答引用真实知识库
-- 仓库 master = `e86be00`（APT_MIRROR 修复）
+- 仓库 master：APT_MIRROR 修复（历史 commit，hash 已因历史重写变更）
 - VM 容器：backend(healthy) / frontend / qdrant / mongodb / cf-tunnel 全部运行中
 
 ---
